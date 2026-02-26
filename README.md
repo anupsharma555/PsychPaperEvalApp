@@ -4,6 +4,12 @@ Desktop + backend pipeline for evaluating psychiatric research papers from URL/D
 
 ## UI Snapshot
 
+### Main Dashboard
+
+![PaperEval Desktop Main Dashboard](docs/images/papereval-desktop-main-dashboard.png)
+
+### Detailed Analysis Modal
+
 ![PaperEval Desktop Detailed Analysis](docs/images/papereval-desktop-detailed-analysis.png)
 
 ## Repo Scope
