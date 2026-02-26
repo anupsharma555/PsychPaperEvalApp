@@ -2,6 +2,10 @@
 
 Desktop + backend pipeline for evaluating psychiatric research papers from URL/DOI or manual PDF upload.
 
+## UI Snapshot
+
+![PaperEval Desktop Detailed Analysis](docs/images/papereval-desktop-detailed-analysis.png)
+
 ## Repo Scope
 
 This repository tracks source code, tests, and configuration templates.
