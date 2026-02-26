@@ -1,0 +1,75 @@
+{
+  "timestamp_utc": "20260223_212941",
+  "pdf": "/Users/anup/Desktop/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association.pdf",
+  "reference_md": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma_2017_chatgpt_extraction.md",
+  "backend_profile": "balanced",
+  "parser_engine": "docling",
+  "records": [
+    {
+      "model": "qwen3-8b",
+      "model_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/models/Qwen3-8B-Q4_K_M.gguf",
+      "ok": true,
+      "run_json_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_run_20260223_212958.json",
+      "comparison_json_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_212958.json",
+      "run_mode": "pipeline",
+      "pipeline_ok": true,
+      "run_note": "",
+      "failing_stage": "",
+      "runtime_seconds": 14.796,
+      "overall_recall": 0.042,
+      "section_recalls": {
+        "introduction": 0.083,
+        "methods": 0.033,
+        "results": 0.067,
+        "discussion": 0.0,
+        "conclusion": 0.0
+      },
+      "stdout": "document_id=1\njob_id=1\nruntime_seconds=14.796\nrun_mode=pipeline\napp_extraction_md=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_app_extraction_20260223_212958.md\ncomparison_md=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_212958.md\ncomparison_json=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_212958.json\nrun_json=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_run_20260223_212958.json\nartifacts_pruned=0\n",
+      "stderr": ""
+    },
+    {
+      "model": "qwen3-14b",
+      "model_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/models/Qwen3-14B-Q4_K_M.gguf",
+      "ok": true,
+      "run_json_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_run_20260223_213013.json",
+      "comparison_json_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_213013.json",
+      "run_mode": "pipeline",
+      "pipeline_ok": true,
+      "run_note": "",
+      "failing_stage": "",
+      "runtime_seconds": 13.63,
+      "overall_recall": 0.042,
+      "section_recalls": {
+        "introduction": 0.083,
+        "methods": 0.033,
+        "results": 0.067,
+        "discussion": 0.0,
+        "conclusion": 0.0
+      },
+      "stdout": "document_id=1\njob_id=1\nruntime_seconds=13.63\nrun_mode=pipeline\napp_extraction_md=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_app_extraction_20260223_213013.md\ncomparison_md=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_213013.md\ncomparison_json=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_213013.json\nrun_json=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_run_20260223_213013.json\nartifacts_pruned=4\n",
+      "stderr": ""
+    }
+  ],
+  "best_model": {
+    "model": "qwen3-14b",
+    "model_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/models/Qwen3-14B-Q4_K_M.gguf",
+    "ok": true,
+    "run_json_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_run_20260223_213013.json",
+    "comparison_json_path": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_213013.json",
+    "run_mode": "pipeline",
+    "pipeline_ok": true,
+    "run_note": "",
+    "failing_stage": "",
+    "runtime_seconds": 13.63,
+    "overall_recall": 0.042,
+    "section_recalls": {
+      "introduction": 0.083,
+      "methods": 0.033,
+      "results": 0.067,
+      "discussion": 0.0,
+      "conclusion": 0.0
+    },
+    "stdout": "document_id=1\njob_id=1\nruntime_seconds=13.63\nrun_mode=pipeline\napp_extraction_md=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_app_extraction_20260223_213013.md\ncomparison_md=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_213013.md\ncomparison_json=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260223_213013.json\nrun_json=/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_run_20260223_213013.json\nartifacts_pruned=4\n",
+    "stderr": ""
+  }
+}

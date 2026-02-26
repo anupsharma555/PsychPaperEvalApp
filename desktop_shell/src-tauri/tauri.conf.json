@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PaperEval",
+  "version": "0.7.0",
+  "identifier": "com.papereval.desktop",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../desktop_ui run dev",
+    "devUrl": "http://127.0.0.1:5174",
+    "beforeBuildCommand": "npm --prefix ../desktop_ui run build",
+    "frontendDist": "../../desktop_ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PaperEval Desktop V8",
+        "label": "main",
+        "width": 1520,
+        "height": 980,
+        "minWidth": 1220,
+        "minHeight": 760,
+        "resizable": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "icon": ["icons/icon.png", "icons/PaperEval.icns"]
+  }
+}

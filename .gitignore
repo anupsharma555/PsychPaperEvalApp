@@ -1,0 +1,54 @@
+# macOS / editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Python environments and caches
+.venv/
+.desktop-venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+**/__pycache__/
+*.py[cod]
+
+# Runtime state / logs
+.run/
+*.log
+logs/
+
+# Local secrets and env files
+backend/.env
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Local databases and generated data
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Models (keep docs only)
+models/*
+!models/README.md
+!models/.gitkeep
+
+# Frontend / shell build artifacts
+desktop_ui/node_modules/
+desktop_ui/dist/
+desktop_shell/node_modules/
+desktop_shell/src-tauri/target/
+desktop_packaging/.eggs/
+
+# Packaged desktop app artifacts
+PaperEval*.app/
+PaperEval.app.backup-*/
+PaperEval-latest*.app
+build/
+dist/
+
+# Vendored third-party tool checkout (keep out of primary repo)
+tools/pdffigures2/

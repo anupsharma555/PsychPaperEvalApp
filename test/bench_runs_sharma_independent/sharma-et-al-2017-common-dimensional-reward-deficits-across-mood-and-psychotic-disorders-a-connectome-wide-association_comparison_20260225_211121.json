@@ -1,0 +1,1131 @@
+{
+  "overall_reference_points": 71,
+  "overall_matched_points": 3,
+  "overall_recall": 0.042,
+  "overall_sentence_inclusion_recall": 0.042,
+  "overall_sentence_inclusion_any_section_recall": 0.07,
+  "overall_section_fidelity": 0.6,
+  "overall_inclusion_precision": 0.167,
+  "sentence_inclusion_threshold": 0.42,
+  "sections": {
+    "introduction": {
+      "reference_points": 12,
+      "app_points": 2,
+      "matched_points": 1,
+      "recall": 0.083,
+      "precision_proxy": 0.5,
+      "match_mode": "hybrid",
+      "match_mode_note": "hybrid_no_embedding_fallback",
+      "match_threshold": 0.42,
+      "match_components": {
+        "lexical": 1.0,
+        "keyword": 0.0,
+        "embedding": 0.0
+      },
+      "missing_top": [
+        {
+          "reference": "The presence of anhedonia across mood and psychotic disorders suggests shared underlying reward system dysfunction rather than disorder-specific mechanisms alone.",
+          "best_score": 0.138,
+          "best_app_match": "Anhedonia is central to multiple psychiatric disorders and causes substantial disability. A dimensional conceptualization posits that anhedonia severity is...",
+          "match_components": {
+            "lexical": 0.138,
+            "keyword": 0.074,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "The National Institute of Mental Health Research Domain Criteria (RDoC) framework promotes dimensional models of psychopathology, conceptualizing anhedonia as a transdiagnostic construct linked to abnormalities in specific neural circuits.",
+          "best_score": 0.118,
+          "best_app_match": "Anhedonia is central to multiple psychiatric disorders and causes substantial disability. A dimensional conceptualization posits that anhedonia severity is...",
+          "match_components": {
+            "lexical": 0.118,
+            "keyword": 0.062,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Convergent animal and human research implicates the mesolimbic reward system, particularly the ventral striatum and nucleus accumbens, in reward processing and anhedonia.",
+          "best_score": 0.074,
+          "best_app_match": "Anhedonia is central to multiple psychiatric disorders and causes substantial disability. A dimensional conceptualization posits that anhedonia severity is...",
+          "match_components": {
+            "lexical": 0.074,
+            "keyword": 0.038,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Prior task-based fMRI studies show blunted ventral striatal activation during reward processing in unipolar depression, bipolar depression, schizophrenia, and psychosis-risk populations.",
+          "best_score": 0.111,
+          "best_app_match": "Method: In a sample of 225 adults from five diagnostic groups (major depressive disorder, N=32; bipolar disorder, N=50; schizophrenia, N=51; psychosis risk...",
+          "match_components": {
+            "lexical": 0.111,
+            "keyword": 0.059,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Recent dimensional studies demonstrate that reward-related dysfunctions are observable across diagnostic boundaries rather than being confined to individual disorders.",
+          "best_score": 0.143,
+          "best_app_match": "Anhedonia is central to multiple psychiatric disorders and causes substantial disability. A dimensional conceptualization posits that anhedonia severity is...",
+          "match_components": {
+            "lexical": 0.143,
+            "keyword": 0.077,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Resting-state functional connectivity studies have revealed widespread dysconnectivity in psychiatric disorders, but most prior work has used seed-based approaches that restrict analysis to predefined brain regions.",
+          "best_score": 0.114,
+          "best_app_match": "Anhedonia is central to multiple psychiatric disorders and causes substantial disability. A dimensional conceptualization posits that anhedonia severity is...",
+          "match_components": {
+            "lexical": 0.114,
+            "keyword": 0.061,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Such seed-based designs inherently limit detection of broader network-level abnormalities outside selected regions.",
+          "best_score": 0.0,
+          "best_app_match": "",
+          "match_components": {
+            "lexical": 0.0,
+            "keyword": 0.0,
+            "embedding": 0.0
+          },
+          "match_reason": "no_signal"
+        },
+        {
+          "reference": "Few studies have examined reward dysfunction across multiple psychiatric diagnoses using a whole-brain, data-driven approach.",
+          "best_score": 0.154,
+          "best_app_match": "Anhedonia is central to multiple psychiatric disorders and causes substantial disability. A dimensional conceptualization posits that anhedonia severity is...",
+          "match_components": {
+            "lexical": 0.154,
+            "keyword": 0.083,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        }
+      ],
+      "matched_top": [
+        {
+          "reference": "Anhedonia, defined as diminished reward responsivity, is a central feature across multiple psychiatric disorders including major depressive disorder, bipolar disorder, and schizophrenia, and is associated with substantial psychosocial disability.",
+          "app_match": "Anhedonia is central to multiple psychiatric disorders and causes substantial disability. A dimensional conceptualization posits that anhedonia severity is...",
+          "match_confidence": 0.424,
+          "match_mode": "hybrid",
+          "match_reason": "lexical_match",
+          "match_components": {
+            "lexical": 0.424,
+            "keyword": 0.269,
+            "embedding": 0.0
+          }
+        }
+      ],
+      "sentence_inclusion_recall": 0.083,
+      "sentence_inclusion_any_section_recall": 0.083,
+      "section_fidelity": 1.0,
+      "inclusion_precision": 0.5
+    },
+    "methods": {
+      "reference_points": 30,
+      "app_points": 7,
+      "matched_points": 1,
+      "recall": 0.033,
+      "precision_proxy": 0.143,
+      "match_mode": "hybrid",
+      "match_mode_note": "hybrid_no_embedding_fallback",
+      "match_threshold": 0.42,
+      "match_components": {
+        "lexical": 1.0,
+        "keyword": 0.0,
+        "embedding": 0.0
+      },
+      "missing_top": [
+        {
+          "reference": "The study initially assessed 244 participants; after quality assurance procedures, 225 individuals were included in final analyses.",
+          "best_score": 0.296,
+          "best_app_match": "For this study, 244 participants were assessed at two halfday visits using a common imaging and phenotyping protocol.",
+          "match_components": {
+            "lexical": 0.296,
+            "keyword": 0.174,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Participants were recruited into five groups: major depressive disorder (N=32), bipolar disorder (N=50), schizophrenia (N=51), psychosis risk (genetic or clinical high risk; N=39), and healthy controls (N=53).",
+          "best_score": 0.056,
+          "best_app_match": "For this study, 244 participants were assessed at two halfday visits using a common imaging and phenotyping protocol.",
+          "match_components": {
+            "lexical": 0.056,
+            "keyword": 0.029,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "All participants underwent structured clinical diagnostic assessment, reward responsiveness assessment, and resting-state fMRI acquisition.",
+          "best_score": 0.08,
+          "best_app_match": "For this study, 244 participants were assessed at two halfday visits using a common imaging and phenotyping protocol.",
+          "match_components": {
+            "lexical": 0.08,
+            "keyword": 0.042,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "The sample included medicated and unmedicated individuals, and medication load was quantified for secondary analyses.",
+          "best_score": 0.071,
+          "best_app_match": "As in previous studies (24, 25), we conducted post hoc seed-based analyses from each cluster returned by MDMR, followed by network analyses of these regions...",
+          "match_components": {
+            "lexical": 0.071,
+            "keyword": 0.037,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "The Institutional Review Board approved procedures and participants provided informed consent.",
+          "best_score": 0.091,
+          "best_app_match": "For this study, 244 participants were assessed at two halfday visits using a common imaging and phenotyping protocol.",
+          "match_components": {
+            "lexical": 0.091,
+            "keyword": 0.048,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Reward responsivity was measured using the Behavioral Activation Scale (BAS), specifically the reward sensitivity subscale.",
+          "best_score": 0.207,
+          "best_app_match": "was used to test how well the dimensional variable of interest (BAS reward sensitivity subscore) explained the distances between each subject ' s pattern of...",
+          "match_components": {
+            "lexical": 0.207,
+            "keyword": 0.115,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "The BAS reward sensitivity subscale has been validated as a transdiagnostic measure of reward functioning.",
+          "best_score": 0.214,
+          "best_app_match": "was used to test how well the dimensional variable of interest (BAS reward sensitivity subscore) explained the distances between each subject ' s pattern of...",
+          "match_components": {
+            "lexical": 0.214,
+            "keyword": 0.12,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "A factor analysis was conducted within the clinical sample to confirm the reward sensitivity subfactor structure.",
+          "best_score": 0.138,
+          "best_app_match": "was used to test how well the dimensional variable of interest (BAS reward sensitivity subscore) explained the distances between each subject ' s pattern of...",
+          "match_components": {
+            "lexical": 0.138,
+            "keyword": 0.074,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        }
+      ],
+      "matched_top": [
+        {
+          "reference": "A distance metric quantified similarity in connectivity patterns between subjects for each voxel.",
+          "app_match": "The distance metric quantifies the similarity in the pattern of connectivity between each pairof subjects(16).Finally,in the third step,MDMR",
+          "match_confidence": 0.56,
+          "match_mode": "hybrid",
+          "match_reason": "lexical_match",
+          "match_components": {
+            "lexical": 0.56,
+            "keyword": 0.389,
+            "embedding": 0.0
+          }
+        }
+      ],
+      "sentence_inclusion_recall": 0.033,
+      "sentence_inclusion_any_section_recall": 0.1,
+      "section_fidelity": 0.333,
+      "inclusion_precision": 0.143
+    },
+    "results": {
+      "reference_points": 15,
+      "app_points": 5,
+      "matched_points": 1,
+      "recall": 0.067,
+      "precision_proxy": 0.2,
+      "match_mode": "hybrid",
+      "match_mode_note": "hybrid_no_embedding_fallback",
+      "match_threshold": 0.42,
+      "match_components": {
+        "lexical": 1.0,
+        "keyword": 0.0,
+        "embedding": 0.0
+      },
+      "missing_top": [
+        {
+          "reference": "These regions spanned default mode network (DMN), cingulo-opercular network (CON), and mesolimbic reward circuitry.",
+          "best_score": 0.4,
+          "best_app_match": "The default mode network comprises brain regions that are importantforinternallydirectedmodesofcognition,including",
+          "match_components": {
+            "lexical": 0.4,
+            "keyword": 0.25,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Clinical diagnosis alone did not identify reward-system hubs in MDMR analyses, emphasizing dimensional rather than categorical effects.",
+          "best_score": 0.143,
+          "best_app_match": "Follow-up analyses used the regions identified by MDMR as the basis for seed-based connectivity analyses, which examined the connectivity from a given...",
+          "match_components": {
+            "lexical": 0.143,
+            "keyword": 0.077,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Higher BAS reward sensitivity was associated with increased nucleus accumbens connectivity with DMN regions and decreased nucleus accumbens connectivity with cingulo-opercular regions.",
+          "best_score": 0.16,
+          "best_app_match": "Follow-up analyses used the regions identified by MDMR as the basis for seed-based connectivity analyses, which examined the connectivity from a given...",
+          "match_components": {
+            "lexical": 0.16,
+            "keyword": 0.087,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Within DMN clusters, higher reward sensitivity was associated with reduced DMN-DMN connectivity and increased connectivity between DMN and cingulo-opercular network.",
+          "best_score": 0.1,
+          "best_app_match": "memory, prospection, theory of mind, and reward valuation.",
+          "match_components": {
+            "lexical": 0.1,
+            "keyword": 0.053,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Within CON clusters, higher reward sensitivity corresponded to reduced CON-CON connectivity and increased connectivity between CON and DMN.",
+          "best_score": 0.105,
+          "best_app_match": "memory, prospection, theory of mind, and reward valuation.",
+          "match_components": {
+            "lexical": 0.105,
+            "keyword": 0.056,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Community detection revealed two cortical modules: default mode network module and cingulo-opercular network module.",
+          "best_score": 0.316,
+          "best_app_match": "The default mode network comprises brain regions that are importantforinternallydirectedmodesofcognition,including",
+          "match_components": {
+            "lexical": 0.316,
+            "keyword": 0.188,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Reward deficits were associated with default mode network hyperconnectivity (t=3.75, p=2.3\u00d710\u22124), decreased integration between DMN and CON (t=\u22125.17, p=5.3\u00d710\u22127), decreased connectivity between nucleus accumbens and DMN (t=\u22122.45, p=1.5\u00d710\u22122), and increased connectivity between nucleus accumbens and CON (t=3.35, p=9.4\u00d710\u22124).",
+          "best_score": 0.158,
+          "best_app_match": "The default mode network comprises brain regions that are importantforinternallydirectedmodesofcognition,including",
+          "match_components": {
+            "lexical": 0.158,
+            "keyword": 0.086,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Associations were present within each diagnostic category.",
+          "best_score": 0.083,
+          "best_app_match": "Next, because these results do not describe which specific connections form the basis for the observed multivariate results, each significant MDMR cluster...",
+          "match_components": {
+            "lexical": 0.083,
+            "keyword": 0.043,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        }
+      ],
+      "matched_top": [
+        {
+          "reference": "Significant MDMR clusters were identified in left and right nucleus accumbens, temporoparietal junction (bilateral), lateral temporal cortex, insular cortex, lateral orbitofrontal cortex, and dorsomedial frontal cortex.",
+          "app_match": "heterogeneous sample, MDMR identified default mode network regions, including the temporoparietal junction and the lateral temporal cortex.",
+          "match_confidence": 0.438,
+          "match_mode": "hybrid",
+          "match_reason": "lexical_match",
+          "match_components": {
+            "lexical": 0.438,
+            "keyword": 0.28,
+            "embedding": 0.0
+          }
+        }
+      ],
+      "sentence_inclusion_recall": 0.067,
+      "sentence_inclusion_any_section_recall": 0.067,
+      "section_fidelity": 1.0,
+      "inclusion_precision": 0.2
+    },
+    "discussion": {
+      "reference_points": 9,
+      "app_points": 2,
+      "matched_points": 0,
+      "recall": 0.0,
+      "precision_proxy": 0.0,
+      "match_mode": "hybrid",
+      "match_mode_note": "hybrid_no_embedding_fallback",
+      "match_threshold": 0.42,
+      "match_components": {
+        "lexical": 1.0,
+        "keyword": 0.0,
+        "embedding": 0.0
+      },
+      "missing_top": [
+        {
+          "reference": "MDMR allowed unbiased exploration of the entire functional connectome without a priori seed selection.",
+          "best_score": 0.154,
+          "best_app_match": "We used a fully data-driven survey of the functional connectome to identify regions where the multivariate pattern of brain connectivity was dimensionally...",
+          "match_components": {
+            "lexical": 0.154,
+            "keyword": 0.083,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Identification of nucleus accumbens as a hub validates the data-driven method given its centrality in reward processing.",
+          "best_score": 0.074,
+          "best_app_match": "We used a fully data-driven survey of the functional connectome to identify regions where the multivariate pattern of brain connectivity was dimensionally...",
+          "match_components": {
+            "lexical": 0.074,
+            "keyword": 0.038,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Reward deficits were associated with hyperconnectivity within the dorsomedial prefrontal subsystem of the DMN.",
+          "best_score": 0.0,
+          "best_app_match": "",
+          "match_components": {
+            "lexical": 0.0,
+            "keyword": 0.0,
+            "embedding": 0.0
+          },
+          "match_reason": "no_signal"
+        },
+        {
+          "reference": "Reduced DMN-CON connectivity suggests impaired integration between internal mentation and external salience detection systems.",
+          "best_score": 0.087,
+          "best_app_match": "To date, the majority of studies examining reward-related functional connectivity abnormalities in psychiatric disorders",
+          "match_components": {
+            "lexical": 0.087,
+            "keyword": 0.045,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "The authors speculate that DMN hyperconnectivity may relate to rumination and difficulty transitioning from internal to external focus.",
+          "best_score": 0.0,
+          "best_app_match": "",
+          "match_components": {
+            "lexical": 0.0,
+            "keyword": 0.0,
+            "embedding": 0.0
+          },
+          "match_reason": "no_signal"
+        },
+        {
+          "reference": "Reward deficits involved reduced nucleus accumbens-DMN connectivity and increased nucleus accumbens-CON connectivity.",
+          "best_score": 0.105,
+          "best_app_match": "To date, the majority of studies examining reward-related functional connectivity abnormalities in psychiatric disorders",
+          "match_components": {
+            "lexical": 0.105,
+            "keyword": 0.056,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "These patterns were consistent across major depression, bipolar disorder, schizophrenia, and psychosis risk.",
+          "best_score": 0.0,
+          "best_app_match": "",
+          "match_components": {
+            "lexical": 0.0,
+            "keyword": 0.0,
+            "embedding": 0.0
+          },
+          "match_reason": "no_signal"
+        },
+        {
+          "reference": "Strengths included a large heterogeneous sample, data-driven connectome-wide methodology, dimensional framework aligned with RDoC, and replication across diagnoses.",
+          "best_score": 0.067,
+          "best_app_match": "We used a fully data-driven survey of the functional connectome to identify regions where the multivariate pattern of brain connectivity was dimensionally...",
+          "match_components": {
+            "lexical": 0.067,
+            "keyword": 0.034,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        }
+      ],
+      "matched_top": [],
+      "sentence_inclusion_recall": 0.0,
+      "sentence_inclusion_any_section_recall": 0.0,
+      "section_fidelity": 0.0,
+      "inclusion_precision": 0.0
+    },
+    "conclusion": {
+      "reference_points": 5,
+      "app_points": 2,
+      "matched_points": 0,
+      "recall": 0.0,
+      "precision_proxy": 0.0,
+      "match_mode": "hybrid",
+      "match_mode_note": "hybrid_no_embedding_fallback",
+      "match_threshold": 0.42,
+      "match_components": {
+        "lexical": 1.0,
+        "keyword": 0.0,
+        "embedding": 0.0
+      },
+      "missing_top": [
+        {
+          "reference": "Reward deficits across mood and psychotic disorders are associated with shared patterns of large-scale network dysconnectivity.",
+          "best_score": 0.08,
+          "best_app_match": "Our results corroborate previous research using case-control designs and emphasize that corticostriatal dysconnectivity is implicated in reward-related...",
+          "match_components": {
+            "lexical": 0.08,
+            "keyword": 0.042,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Core abnormalities involve default mode network hyperconnectivity, reduced DMN-CON integration, nucleus accumbens decoupling from DMN, and increased nucleus accumbens-CON coupling.",
+          "best_score": 0.0,
+          "best_app_match": "",
+          "match_components": {
+            "lexical": 0.0,
+            "keyword": 0.0,
+            "embedding": 0.0
+          },
+          "match_reason": "no_signal"
+        },
+        {
+          "reference": "These findings support a transdiagnostic model of anhedonia grounded in corticostriatal network dysfunction.",
+          "best_score": 0.087,
+          "best_app_match": "Our results corroborate previous research using case-control designs and emphasize that corticostriatal dysconnectivity is implicated in reward-related...",
+          "match_components": {
+            "lexical": 0.087,
+            "keyword": 0.045,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Targeting shared neural network abnormalities may inform intervention strategies for anhedonia across diagnostic categories.",
+          "best_score": 0.143,
+          "best_app_match": "Research employing longitudinal designs may allow for evaluation of early interventions that promote resilience against shared rewardrelated psychopathology...",
+          "match_components": {
+            "lexical": 0.143,
+            "keyword": 0.077,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        },
+        {
+          "reference": "Longitudinal research is needed to evaluate whether modifying these network patterns promotes resilience against reward-related psychopathology.",
+          "best_score": 0.345,
+          "best_app_match": "Research employing longitudinal designs may allow for evaluation of early interventions that promote resilience against shared rewardrelated psychopathology...",
+          "match_components": {
+            "lexical": 0.345,
+            "keyword": 0.208,
+            "embedding": 0.0
+          },
+          "match_reason": "below_threshold"
+        }
+      ],
+      "matched_top": [],
+      "sentence_inclusion_recall": 0.0,
+      "sentence_inclusion_any_section_recall": 0.0,
+      "section_fidelity": 0.0,
+      "inclusion_precision": 0.0
+    }
+  },
+  "match_mode": "hybrid",
+  "match_mode_note": "hybrid_no_embedding_fallback",
+  "match_components": {
+    "lexical": 1.0,
+    "keyword": 0.0,
+    "embedding": 0.0
+  },
+  "match_threshold": 0.42,
+  "sentence_inclusion": {
+    "overall_reference_sentences": 71,
+    "overall_included_sentences": 3,
+    "overall_included_any_section_sentences": 5,
+    "overall_sentence_inclusion_recall": 0.042,
+    "overall_sentence_inclusion_any_section_recall": 0.07,
+    "overall_section_fidelity": 0.6,
+    "overall_inclusion_precision": 0.167,
+    "sections": {
+      "introduction": {
+        "reference_sentences": 12,
+        "app_sentences": 2,
+        "included_sentences": 1,
+        "included_any_section_sentences": 1,
+        "sentence_inclusion_recall": 0.083,
+        "sentence_inclusion_any_section_recall": 0.083,
+        "section_fidelity": 1.0,
+        "inclusion_precision": 0.5,
+        "missing_top": [
+          {
+            "reference": "The presence of anhedonia across mood and psychotic disorders suggests shared underlying reward system dysfunction rather than disorder-specific mechanisms alone.",
+            "best_same_section_score": 0.138,
+            "best_any_section_score": 0.138,
+            "best_same_section_components": {
+              "lexical": 0.138,
+              "keyword": 0.074,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.138,
+              "keyword": 0.074,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "The National Institute of Mental Health Research Domain Criteria (RDoC) framework promotes dimensional models of psychopathology, conceptualizing anhedonia as a transdiagnostic construct linked to abnormalities in specific neural circuits.",
+            "best_same_section_score": 0.118,
+            "best_any_section_score": 0.118,
+            "best_same_section_components": {
+              "lexical": 0.118,
+              "keyword": 0.062,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.118,
+              "keyword": 0.062,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Convergent animal and human research implicates the mesolimbic reward system, particularly the ventral striatum and nucleus accumbens, in reward processing and anhedonia.",
+            "best_same_section_score": 0.074,
+            "best_any_section_score": 0.095,
+            "best_same_section_components": {
+              "lexical": 0.074,
+              "keyword": 0.038,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.095,
+              "keyword": 0.05,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Prior task-based fMRI studies show blunted ventral striatal activation during reward processing in unipolar depression, bipolar depression, schizophrenia, and psychosis-risk populations.",
+            "best_same_section_score": 0.111,
+            "best_any_section_score": 0.111,
+            "best_same_section_components": {
+              "lexical": 0.111,
+              "keyword": 0.059,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.111,
+              "keyword": 0.059,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Recent dimensional studies demonstrate that reward-related dysfunctions are observable across diagnostic boundaries rather than being confined to individual disorders.",
+            "best_same_section_score": 0.143,
+            "best_any_section_score": 0.231,
+            "best_same_section_components": {
+              "lexical": 0.143,
+              "keyword": 0.077,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.231,
+              "keyword": 0.13,
+              "embedding": 0.0
+            }
+          }
+        ]
+      },
+      "methods": {
+        "reference_sentences": 30,
+        "app_sentences": 7,
+        "included_sentences": 1,
+        "included_any_section_sentences": 3,
+        "sentence_inclusion_recall": 0.033,
+        "sentence_inclusion_any_section_recall": 0.1,
+        "section_fidelity": 0.333,
+        "inclusion_precision": 0.143,
+        "missing_top": [
+          {
+            "reference": "The study initially assessed 244 participants; after quality assurance procedures, 225 individuals were included in final analyses.",
+            "best_same_section_score": 0.296,
+            "best_any_section_score": 0.296,
+            "best_same_section_components": {
+              "lexical": 0.296,
+              "keyword": 0.174,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.296,
+              "keyword": 0.174,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "All participants underwent structured clinical diagnostic assessment, reward responsiveness assessment, and resting-state fMRI acquisition.",
+            "best_same_section_score": 0.08,
+            "best_any_section_score": 0.111,
+            "best_same_section_components": {
+              "lexical": 0.08,
+              "keyword": 0.042,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.111,
+              "keyword": 0.059,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "The sample included medicated and unmedicated individuals, and medication load was quantified for secondary analyses.",
+            "best_same_section_score": 0.071,
+            "best_any_section_score": 0.091,
+            "best_same_section_components": {
+              "lexical": 0.071,
+              "keyword": 0.037,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.091,
+              "keyword": 0.048,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "The Institutional Review Board approved procedures and participants provided informed consent.",
+            "best_same_section_score": 0.091,
+            "best_any_section_score": 0.091,
+            "best_same_section_components": {
+              "lexical": 0.091,
+              "keyword": 0.048,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.091,
+              "keyword": 0.048,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Reward responsivity was measured using the Behavioral Activation Scale (BAS), specifically the reward sensitivity subscale.",
+            "best_same_section_score": 0.207,
+            "best_any_section_score": 0.207,
+            "best_same_section_components": {
+              "lexical": 0.207,
+              "keyword": 0.115,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.207,
+              "keyword": 0.115,
+              "embedding": 0.0
+            }
+          }
+        ]
+      },
+      "results": {
+        "reference_sentences": 15,
+        "app_sentences": 5,
+        "included_sentences": 1,
+        "included_any_section_sentences": 1,
+        "sentence_inclusion_recall": 0.067,
+        "sentence_inclusion_any_section_recall": 0.067,
+        "section_fidelity": 1.0,
+        "inclusion_precision": 0.2,
+        "missing_top": [
+          {
+            "reference": "These regions spanned default mode network (DMN), cingulo-opercular network (CON), and mesolimbic reward circuitry.",
+            "best_same_section_score": 0.4,
+            "best_any_section_score": 0.4,
+            "best_same_section_components": {
+              "lexical": 0.4,
+              "keyword": 0.25,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.4,
+              "keyword": 0.25,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Clinical diagnosis alone did not identify reward-system hubs in MDMR analyses, emphasizing dimensional rather than categorical effects.",
+            "best_same_section_score": 0.143,
+            "best_any_section_score": 0.143,
+            "best_same_section_components": {
+              "lexical": 0.143,
+              "keyword": 0.077,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.143,
+              "keyword": 0.077,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Higher BAS reward sensitivity was associated with increased nucleus accumbens connectivity with DMN regions and decreased nucleus accumbens connectivity with cingulo-opercular regions.",
+            "best_same_section_score": 0.16,
+            "best_any_section_score": 0.194,
+            "best_same_section_components": {
+              "lexical": 0.16,
+              "keyword": 0.087,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.194,
+              "keyword": 0.107,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Within DMN clusters, higher reward sensitivity was associated with reduced DMN-DMN connectivity and increased connectivity between DMN and cingulo-opercular network.",
+            "best_same_section_score": 0.1,
+            "best_any_section_score": 0.188,
+            "best_same_section_components": {
+              "lexical": 0.1,
+              "keyword": 0.053,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.188,
+              "keyword": 0.103,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Within CON clusters, higher reward sensitivity corresponded to reduced CON-CON connectivity and increased connectivity between CON and DMN.",
+            "best_same_section_score": 0.105,
+            "best_any_section_score": 0.194,
+            "best_same_section_components": {
+              "lexical": 0.105,
+              "keyword": 0.056,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.194,
+              "keyword": 0.107,
+              "embedding": 0.0
+            }
+          }
+        ]
+      },
+      "discussion": {
+        "reference_sentences": 9,
+        "app_sentences": 2,
+        "included_sentences": 0,
+        "included_any_section_sentences": 0,
+        "sentence_inclusion_recall": 0.0,
+        "sentence_inclusion_any_section_recall": 0.0,
+        "section_fidelity": 0.0,
+        "inclusion_precision": 0.0,
+        "missing_top": [
+          {
+            "reference": "MDMR allowed unbiased exploration of the entire functional connectome without a priori seed selection.",
+            "best_same_section_score": 0.154,
+            "best_any_section_score": 0.154,
+            "best_same_section_components": {
+              "lexical": 0.154,
+              "keyword": 0.083,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.154,
+              "keyword": 0.083,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Identification of nucleus accumbens as a hub validates the data-driven method given its centrality in reward processing.",
+            "best_same_section_score": 0.074,
+            "best_any_section_score": 0.111,
+            "best_same_section_components": {
+              "lexical": 0.074,
+              "keyword": 0.038,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.111,
+              "keyword": 0.059,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Reward deficits were associated with hyperconnectivity within the dorsomedial prefrontal subsystem of the DMN.",
+            "best_same_section_score": 0.0,
+            "best_any_section_score": 0.133,
+            "best_same_section_components": {
+              "lexical": 0.0,
+              "keyword": 0.0,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.133,
+              "keyword": 0.071,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Reduced DMN-CON connectivity suggests impaired integration between internal mentation and external salience detection systems.",
+            "best_same_section_score": 0.087,
+            "best_any_section_score": 0.143,
+            "best_same_section_components": {
+              "lexical": 0.087,
+              "keyword": 0.045,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.143,
+              "keyword": 0.077,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "The authors speculate that DMN hyperconnectivity may relate to rumination and difficulty transitioning from internal to external focus.",
+            "best_same_section_score": 0.0,
+            "best_any_section_score": 0.074,
+            "best_same_section_components": {
+              "lexical": 0.0,
+              "keyword": 0.0,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.074,
+              "keyword": 0.038,
+              "embedding": 0.0
+            }
+          }
+        ]
+      },
+      "conclusion": {
+        "reference_sentences": 5,
+        "app_sentences": 2,
+        "included_sentences": 0,
+        "included_any_section_sentences": 0,
+        "sentence_inclusion_recall": 0.0,
+        "sentence_inclusion_any_section_recall": 0.0,
+        "section_fidelity": 0.0,
+        "inclusion_precision": 0.0,
+        "missing_top": [
+          {
+            "reference": "Reward deficits across mood and psychotic disorders are associated with shared patterns of large-scale network dysconnectivity.",
+            "best_same_section_score": 0.08,
+            "best_any_section_score": 0.111,
+            "best_same_section_components": {
+              "lexical": 0.08,
+              "keyword": 0.042,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.111,
+              "keyword": 0.059,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Core abnormalities involve default mode network hyperconnectivity, reduced DMN-CON integration, nucleus accumbens decoupling from DMN, and increased nucleus accumbens-CON coupling.",
+            "best_same_section_score": 0.0,
+            "best_any_section_score": 0.24,
+            "best_same_section_components": {
+              "lexical": 0.0,
+              "keyword": 0.0,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.24,
+              "keyword": 0.136,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "These findings support a transdiagnostic model of anhedonia grounded in corticostriatal network dysfunction.",
+            "best_same_section_score": 0.087,
+            "best_any_section_score": 0.143,
+            "best_same_section_components": {
+              "lexical": 0.087,
+              "keyword": 0.045,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.143,
+              "keyword": 0.077,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Targeting shared neural network abnormalities may inform intervention strategies for anhedonia across diagnostic categories.",
+            "best_same_section_score": 0.143,
+            "best_any_section_score": 0.143,
+            "best_same_section_components": {
+              "lexical": 0.143,
+              "keyword": 0.077,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.143,
+              "keyword": 0.077,
+              "embedding": 0.0
+            }
+          },
+          {
+            "reference": "Longitudinal research is needed to evaluate whether modifying these network patterns promotes resilience against reward-related psychopathology.",
+            "best_same_section_score": 0.345,
+            "best_any_section_score": 0.345,
+            "best_same_section_components": {
+              "lexical": 0.345,
+              "keyword": 0.208,
+              "embedding": 0.0
+            },
+            "best_any_section_components": {
+              "lexical": 0.345,
+              "keyword": 0.208,
+              "embedding": 0.0
+            }
+          }
+        ]
+      }
+    },
+    "match_mode": "hybrid",
+    "match_mode_note": "hybrid_no_embedding_fallback",
+    "match_threshold": 0.42,
+    "inclusion_threshold": 0.42,
+    "match_components": {
+      "lexical": 1.0,
+      "keyword": 0.0,
+      "embedding": 0.0
+    }
+  },
+  "discrepancy_diagnostics": {
+    "overall_recall": 0.042,
+    "overall_sentence_inclusion_recall": 0.042,
+    "overall_sentence_inclusion_any_section_recall": 0.07,
+    "overall_section_fidelity": 0.6,
+    "overall_inclusion_precision": 0.167,
+    "low_recall_sections": [
+      "introduction",
+      "methods",
+      "results",
+      "discussion",
+      "conclusion"
+    ],
+    "low_sentence_inclusion_sections": [
+      "introduction",
+      "methods",
+      "results",
+      "discussion",
+      "conclusion"
+    ],
+    "coverage_total_gap": 53,
+    "noisy_line_total": 0,
+    "section_diagnostics": {
+      "introduction": {
+        "recall": 0.083,
+        "app_points": 2,
+        "reference_points": 12,
+        "coverage_gap": 10,
+        "mean_app_tokens": 22.0,
+        "mean_reference_tokens": 22.4,
+        "noisy_line_count": 0,
+        "noisy_line_examples": [],
+        "sentence_inclusion_recall": 0.083,
+        "sentence_inclusion_any_section_recall": 0.083,
+        "section_fidelity": 1.0,
+        "inclusion_precision": 0.5
+      },
+      "methods": {
+        "recall": 0.033,
+        "app_points": 7,
+        "reference_points": 30,
+        "coverage_gap": 23,
+        "mean_app_tokens": 22.4,
+        "mean_reference_tokens": 13.3,
+        "noisy_line_count": 0,
+        "noisy_line_examples": [],
+        "sentence_inclusion_recall": 0.033,
+        "sentence_inclusion_any_section_recall": 0.1,
+        "section_fidelity": 0.333,
+        "inclusion_precision": 0.143
+      },
+      "results": {
+        "recall": 0.067,
+        "app_points": 5,
+        "reference_points": 15,
+        "coverage_gap": 10,
+        "mean_app_tokens": 16.0,
+        "mean_reference_tokens": 16.6,
+        "noisy_line_count": 0,
+        "noisy_line_examples": [],
+        "sentence_inclusion_recall": 0.067,
+        "sentence_inclusion_any_section_recall": 0.067,
+        "section_fidelity": 1.0,
+        "inclusion_precision": 0.2
+      },
+      "discussion": {
+        "recall": 0.0,
+        "app_points": 2,
+        "reference_points": 9,
+        "coverage_gap": 7,
+        "mean_app_tokens": 18.0,
+        "mean_reference_tokens": 16.3,
+        "noisy_line_count": 0,
+        "noisy_line_examples": [],
+        "sentence_inclusion_recall": 0.0,
+        "sentence_inclusion_any_section_recall": 0.0,
+        "section_fidelity": 0.0,
+        "inclusion_precision": 0.0
+      },
+      "conclusion": {
+        "recall": 0.0,
+        "app_points": 2,
+        "reference_points": 5,
+        "coverage_gap": 3,
+        "mean_app_tokens": 17.5,
+        "mean_reference_tokens": 15.8,
+        "noisy_line_count": 0,
+        "noisy_line_examples": [],
+        "sentence_inclusion_recall": 0.0,
+        "sentence_inclusion_any_section_recall": 0.0,
+        "section_fidelity": 0.0,
+        "inclusion_precision": 0.0
+      }
+    },
+    "likely_causes": [
+      "Late-section extraction is weak; section boundaries likely drift after methods/results-heavy text.",
+      "Methods under-coverage remains high; ranking is selecting fewer protocol-detail lines than reference.",
+      "Current lexical matching threshold misses semantically similar lines; embedding-based matching would raise measured recall."
+    ]
+  }
+}

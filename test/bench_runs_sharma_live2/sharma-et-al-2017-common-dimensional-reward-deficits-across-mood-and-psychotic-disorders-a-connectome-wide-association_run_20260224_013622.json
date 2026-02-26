@@ -1,0 +1,19 @@
+{
+  "document_id": 0,
+  "job_id": 0,
+  "runtime_seconds": 0.15,
+  "job_status": "completed",
+  "run_mode": "lightweight",
+  "run_note": "Auto fallback engaged before pipeline run: GROBID not reachable at http://localhost:8070. Using lightweight deterministic mode.",
+  "matching_mode": "hybrid",
+  "matching_threshold": 0.42,
+  "pdf": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association.pdf",
+  "reference_md": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma_2017_chatgpt_extraction.md",
+  "app_extraction_md": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/bench_runs_sharma_live2/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_app_extraction_20260224_013622.md",
+  "comparison_md": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/bench_runs_sharma_live2/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260224_013622.md",
+  "comparison_json": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/bench_runs_sharma_live2/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260224_013622.json",
+  "analysis_diagnostics": {
+    "mode": "lightweight_text_only",
+    "rows_extracted": 13
+  }
+}

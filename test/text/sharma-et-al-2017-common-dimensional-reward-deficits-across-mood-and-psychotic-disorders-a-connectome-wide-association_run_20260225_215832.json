@@ -1,0 +1,465 @@
+{
+  "document_id": 118,
+  "job_id": 111,
+  "runtime_seconds": 8.733,
+  "job_status": "completed",
+  "run_mode": "pipeline",
+  "run_note": "",
+  "matching_mode": "hybrid",
+  "matching_threshold": 0.42,
+  "pdf": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association.pdf",
+  "reference_md": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma_2017_chatgpt_extraction.md",
+  "app_extraction_md": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_app_extraction_20260225_215832.md",
+  "comparison_md": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260225_215832.md",
+  "comparison_json": "/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/test/text/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association_comparison_20260225_215832.json",
+  "analysis_diagnostics": {
+    "document_id": 118,
+    "diagnostics": {
+      "analysis_timing": {
+        "text": 0.5252,
+        "table": 0.0,
+        "figure": 0.0,
+        "supplement": 0.0,
+        "reconcile": 0.0,
+        "synthesis": 0.2866,
+        "store": 0.0069,
+        "analysis_total_seconds": 0.8348
+      },
+      "coverage": {
+        "figures": {
+          "expected": 3,
+          "expected_refs": [
+            "1",
+            "2",
+            "5"
+          ],
+          "extracted": 0,
+          "extracted_refs": [],
+          "missing_refs": [
+            "1",
+            "2",
+            "5"
+          ]
+        },
+        "tables": {
+          "expected": 0,
+          "expected_refs": [],
+          "extracted": 0,
+          "extracted_refs": [],
+          "missing_refs": []
+        },
+        "supp_figures": {
+          "expected": 2,
+          "expected_refs": [
+            "3",
+            "4"
+          ],
+          "extracted": 0,
+          "extracted_refs": [],
+          "missing_refs": [
+            "3",
+            "4"
+          ]
+        },
+        "supp_tables": {
+          "expected": 10,
+          "expected_refs": [
+            "1",
+            "S1",
+            "S2",
+            "S3",
+            "S4",
+            "S5",
+            "S6",
+            "S7",
+            "S8",
+            "S9"
+          ],
+          "extracted": 0,
+          "extracted_refs": [],
+          "missing_refs": [
+            "1",
+            "S1",
+            "S2",
+            "S3",
+            "S4",
+            "S5",
+            "S6",
+            "S7",
+            "S8",
+            "S9"
+          ]
+        }
+      },
+      "summary_schema_version": 2,
+      "sectioned_report_version": 2,
+      "section_diagnostics": {
+        "cross_section_dedupe": {
+          "removed_count": 1,
+          "removed_by_section": {
+            "methods": 1
+          },
+          "kept_by_section": {
+            "introduction": 9,
+            "methods": 7,
+            "results": 10,
+            "discussion": 8,
+            "conclusion": 5
+          }
+        },
+        "introduction": {
+          "explicit_packet_count": 0,
+          "final_item_count": 9,
+          "untrusted_item_count": 0,
+          "avg_section_confidence": 0.658,
+          "fallback_used": true,
+          "fallback_reason": "Explicit introduction packets were sparse; supplemented with early-body text before Methods/Results."
+        },
+        "methods": {
+          "explicit_packet_count": 7,
+          "final_item_count": 7,
+          "untrusted_item_count": 0,
+          "avg_section_confidence": 1.0,
+          "fallback_used": false,
+          "fallback_reason": ""
+        },
+        "results": {
+          "explicit_packet_count": 6,
+          "final_item_count": 10,
+          "untrusted_item_count": 0,
+          "avg_section_confidence": 0.734,
+          "fallback_used": true,
+          "fallback_reason": "Results section was sparse; supplemented with concrete outcome statements from raw text chunks.",
+          "text_primary_count": 10,
+          "media_support_count": 0
+        },
+        "discussion": {
+          "explicit_packet_count": 2,
+          "final_item_count": 8,
+          "untrusted_item_count": 0,
+          "avg_section_confidence": 0.67,
+          "fallback_used": true,
+          "fallback_reason": "Explicit discussion anchors were limited; supplemented with interpretive/limitations statements."
+        },
+        "conclusion": {
+          "explicit_packet_count": 1,
+          "final_item_count": 5,
+          "untrusted_item_count": 0,
+          "avg_section_confidence": 0.648,
+          "fallback_used": true,
+          "fallback_reason": "Conclusion section was sparse; supplemented with conclusion-like statements from raw text chunks."
+        },
+        "fallback_notes": [
+          "Introduction: Explicit introduction anchors were sparse; used background/objective lines and pre-Methods/Results context.",
+          "Introduction: Explicit introduction packets were sparse; supplemented with early-body text before Methods/Results.",
+          "Results: Results section was sparse; supplemented with concrete outcome statements from raw text chunks.",
+          "Discussion: Explicit discussion anchors were limited; supplemented with interpretive/limitations statements.",
+          "Conclusion: Conclusion section was sparse; supplemented with conclusion-like statements from raw text chunks."
+        ],
+        "section_packet_counts": {
+          "introduction": {
+            "count": 2,
+            "sources": {
+              "meta": 2
+            }
+          },
+          "methods": {
+            "count": 7,
+            "sources": {
+              "meta": 7
+            }
+          },
+          "results": {
+            "count": 6,
+            "sources": {
+              "meta": 6
+            }
+          },
+          "discussion": {
+            "count": 2,
+            "sources": {
+              "meta": 2
+            }
+          },
+          "conclusion": {
+            "count": 1,
+            "sources": {
+              "meta": 1
+            }
+          }
+        },
+        "section_conflict_count": 0,
+        "unknown_section_count": 0,
+        "slot_fill_rates": {
+          "introduction": {
+            "found": 2,
+            "total": 3,
+            "rate": 0.6666666666666666
+          },
+          "methods": {
+            "found": 6,
+            "total": 12,
+            "rate": 0.5
+          },
+          "results": {
+            "found": 5,
+            "total": 5,
+            "rate": 1.0
+          },
+          "discussion": {
+            "found": 4,
+            "total": 4,
+            "rate": 1.0
+          },
+          "conclusion": {
+            "found": 1,
+            "total": 2,
+            "rate": 0.5
+          }
+        },
+        "sections_compact_cross_section_dedupe": {
+          "removed_count": 2,
+          "removed_by_section": {
+            "methods": 1,
+            "conclusion": 1
+          }
+        },
+        "cross_section_rejections": 0,
+        "section_extraction_enabled": true,
+        "section_extraction_counts": {
+          "introduction": 2,
+          "methods": 7,
+          "results": 6,
+          "discussion": 2,
+          "conclusion": 1
+        },
+        "extractive_evidence_counts": {
+          "introduction": 9,
+          "methods": 7,
+          "results": 10,
+          "discussion": 8,
+          "conclusion": 5
+        },
+        "presentation_evidence_counts": {
+          "introduction": 5,
+          "methods": 7,
+          "results": 10,
+          "discussion": 8,
+          "conclusion": 5
+        },
+        "executive_report_style": "succinct_grounded_v1"
+      },
+      "section_packet_counts": {
+        "introduction": {
+          "count": 2,
+          "sources": {
+            "meta": 2
+          }
+        },
+        "methods": {
+          "count": 7,
+          "sources": {
+            "meta": 7
+          }
+        },
+        "results": {
+          "count": 6,
+          "sources": {
+            "meta": 6
+          }
+        },
+        "discussion": {
+          "count": 2,
+          "sources": {
+            "meta": 2
+          }
+        },
+        "conclusion": {
+          "count": 1,
+          "sources": {
+            "meta": 1
+          }
+        }
+      },
+      "section_conflict_count": 0,
+      "unknown_section_count": 0,
+      "slot_fill_rates": {
+        "introduction": {
+          "found": 2,
+          "total": 3,
+          "rate": 0.6666666666666666
+        },
+        "methods": {
+          "found": 6,
+          "total": 12,
+          "rate": 0.5
+        },
+        "results": {
+          "found": 5,
+          "total": 5,
+          "rate": 1.0
+        },
+        "discussion": {
+          "found": 4,
+          "total": 4,
+          "rate": 1.0
+        },
+        "conclusion": {
+          "found": 1,
+          "total": 2,
+          "rate": 0.5
+        }
+      },
+      "cross_section_rejections": 0,
+      "sections_fallback_used": true,
+      "sections_fallback_notes": [
+        "Introduction: Explicit introduction anchors were sparse; used background/objective lines and pre-Methods/Results context.",
+        "Introduction: Explicit introduction packets were sparse; supplemented with early-body text before Methods/Results.",
+        "Results: Results section was sparse; supplemented with concrete outcome statements from raw text chunks.",
+        "Discussion: Explicit discussion anchors were limited; supplemented with interpretive/limitations statements.",
+        "Conclusion: Conclusion section was sparse; supplemented with conclusion-like statements from raw text chunks."
+      ],
+      "section_confidence_distribution": {
+        "total_items": 39,
+        "bucket_counts": {
+          "high": {
+            "count": 18,
+            "share": 0.462
+          },
+          "medium": {
+            "count": 21,
+            "share": 0.538
+          },
+          "low": {
+            "count": 0,
+            "share": 0.0
+          },
+          "unknown": {
+            "count": 0,
+            "share": 0.0
+          }
+        }
+      },
+      "fallback_counts_by_reason": {
+        "explicit_introduction_anchors_were_sparse;_used_background/objective_lines_and_pre-methods/results_context.": 1,
+        "introduction_fallback": 2,
+        "explicit_introduction_packets_were_sparse;_supplemented_with_early-body_text_before_methods/results.": 1,
+        "results_section_was_sparse;_supplemented_with_concrete_outcome_statements_from_raw_text_chunks.": 1,
+        "results_fallback": 1,
+        "explicit_discussion_anchors_were_limited;_supplemented_with_interpretive/limitations_statements.": 1,
+        "discussion_fallback": 1,
+        "conclusion_section_was_sparse;_supplemented_with_conclusion-like_statements_from_raw_text_chunks.": 1,
+        "conclusion_fallback": 1,
+        "text_subprocess_fallback:exitcode=-11": 1
+      },
+      "text_llm_calls": 0,
+      "deep_vision_calls": 0,
+      "ocr_calls": 0,
+      "metadata_diagnostics": {
+        "authors_extracted_count": 0,
+        "authors_display_count": 0,
+        "metadata_source": ""
+      },
+      "modality_packet_counts": {
+        "text": 18,
+        "table": 0,
+        "figure": 0,
+        "supplement": 0
+      },
+      "model_usage": {
+        "text_calls": 0.0,
+        "text_errors": 0.0,
+        "text_total_seconds": 0.0,
+        "text_avg_seconds": 0.0,
+        "deep_calls": 0.0,
+        "deep_errors": 0.0,
+        "deep_total_seconds": 0.0,
+        "deep_avg_seconds": 0.0,
+        "vision_calls": 0.0,
+        "vision_errors": 0.0,
+        "vision_total_seconds": 0.0,
+        "vision_avg_seconds": 0.0
+      },
+      "vision_input_diagnostics": {
+        "figure": {},
+        "supplement": {}
+      },
+      "stage_model_usage": {
+        "text": {
+          "text_calls": 0.0,
+          "text_errors": 0.0,
+          "text_total_seconds": 0.0,
+          "text_avg_seconds": 0.0,
+          "deep_calls": 0.0,
+          "deep_errors": 0.0,
+          "deep_total_seconds": 0.0,
+          "deep_avg_seconds": 0.0,
+          "vision_calls": 0.0,
+          "vision_errors": 0.0,
+          "vision_total_seconds": 0.0,
+          "vision_avg_seconds": 0.0
+        },
+        "table": {
+          "text_calls": 0,
+          "text_errors": 0,
+          "text_total_seconds": 0.0,
+          "text_avg_seconds": 0.0,
+          "deep_calls": 0,
+          "deep_errors": 0,
+          "deep_total_seconds": 0.0,
+          "deep_avg_seconds": 0.0,
+          "vision_calls": 0,
+          "vision_errors": 0,
+          "vision_total_seconds": 0.0,
+          "vision_avg_seconds": 0.0
+        },
+        "figure": {
+          "text_calls": 0,
+          "text_errors": 0,
+          "text_total_seconds": 0.0,
+          "text_avg_seconds": 0.0,
+          "deep_calls": 0,
+          "deep_errors": 0,
+          "deep_total_seconds": 0.0,
+          "deep_avg_seconds": 0.0,
+          "vision_calls": 0,
+          "vision_errors": 0,
+          "vision_total_seconds": 0.0,
+          "vision_avg_seconds": 0.0
+        },
+        "supplement": {
+          "text_calls": 0,
+          "text_errors": 0,
+          "text_total_seconds": 0.0,
+          "text_avg_seconds": 0.0,
+          "deep_calls": 0,
+          "deep_errors": 0,
+          "deep_total_seconds": 0.0,
+          "deep_avg_seconds": 0.0,
+          "vision_calls": 0,
+          "vision_errors": 0,
+          "vision_total_seconds": 0.0,
+          "vision_avg_seconds": 0.0
+        }
+      },
+      "reconcile": {
+        "claims_total": 0,
+        "claims_supported": 0,
+        "claims_contradicted": 0,
+        "claims_partial": 0,
+        "claims_unresolved": 0,
+        "discrepancies_total": 0,
+        "llm_review_invoked": false,
+        "llm_review_inputs": 0,
+        "llm_discrepancies_added": 0
+      },
+      "parse_timing": {
+        "parse_total_seconds": 7.8804
+      }
+    },
+    "ts": "2026-02-25T21:58:31.457621",
+    "isolated_pipeline": true,
+    "returncode": 0,
+    "runtime_seconds": 10.004
+  }
+}

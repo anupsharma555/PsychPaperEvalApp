@@ -1,0 +1,364 @@
+from __future__ import annotations
+
+import re
+import shutil
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse, urlunparse
+
+from fastapi import UploadFile
+import httpx
+from sqlmodel import Session
+from bs4 import BeautifulSoup
+
+from app.db.models import Asset, Document
+from app.services.fetcher import (
+    discover_additional_supplement_urls,
+    download_file,
+    fetch_url,
+    filter_supp_urls,
+    guess_filename,
+    resolve_url,
+)
+from app.services.storage import asset_path, document_dir, ensure_document_dirs
+
+
+def _looks_like_pdf(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(1024)
+    except Exception:
+        return False
+    return b"%PDF-" in head
+
+
+def _looks_like_html(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(2048)
+    except Exception:
+        return False
+    lowered = head.decode("utf-8", errors="ignore").lower()
+    return "<html" in lowered or "<!doctype html" in lowered or "<body" in lowered
+
+
+def _url_suggests_pdf(url: str) -> bool:
+    parsed = urlparse(url or "")
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+    return path.endswith(".pdf") or "/doi/suppl/" in path or "pdf" in query or "suppl_file" in path
+
+
+def _supplement_url_variants(url: str) -> list[str]:
+    parsed = urlparse(url or "")
+    if not parsed.scheme and not parsed.netloc:
+        return [url]
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(candidate: str) -> None:
+        key = candidate.strip().lower()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        out.append(candidate)
+
+    netloc = (parsed.netloc or "").lower()
+    scheme = (parsed.scheme or "https").lower()
+    _push(urlunparse(parsed._replace(scheme=scheme, netloc=netloc)))
+
+    if netloc == "ajp.psychiatryonline.org":
+        _push(urlunparse(parsed._replace(scheme="https", netloc="psychiatryonline.org")))
+    if netloc.endswith("psychiatryonline.org") and scheme != "https":
+        _push(urlunparse(parsed._replace(scheme="https")))
+    return out
+
+
+def _download_supplement_with_resolution(
+    *,
+    supp_url: str,
+    dest: Path,
+    referer: str,
+    doi: str | None = None,
+) -> bool:
+    attempted: set[str] = set()
+
+    def _attempt(candidate_url: str, candidate_referer: str) -> bool:
+        key = candidate_url.strip().lower()
+        if not key or key in attempted:
+            return False
+        attempted.add(key)
+        try:
+            download_file(candidate_url, dest, referer=candidate_referer)
+        except Exception:
+            return False
+        if _url_suggests_pdf(candidate_url) and not _looks_like_pdf(dest):
+            try:
+                dest.unlink()
+            except Exception:
+                pass
+            return False
+        return True
+
+    for candidate in _supplement_url_variants(supp_url):
+        if _attempt(candidate, referer):
+            return True
+        try:
+            nested = fetch_url(candidate, doi=doi)
+        except Exception:
+            continue
+        nested_urls: list[str] = []
+        if nested.resolved_pdf_url:
+            nested_urls.append(nested.resolved_pdf_url)
+        nested_urls.extend(filter_supp_urls(nested.supplement_urls or [], main_url=nested.main_url))
+        nested_urls.extend(
+            discover_additional_supplement_urls(
+                main_url=nested.main_url,
+                doi=doi,
+                resolved_pdf_url=nested.resolved_pdf_url,
+            )
+        )
+        nested_referer = nested.main_url or referer
+        for nested_url in nested_urls:
+            for nested_candidate in _supplement_url_variants(nested_url):
+                if _attempt(nested_candidate, nested_referer):
+                    return True
+    return False
+
+
+def _extract_readable_html_text(html: str) -> str:
+    if not html:
+        return ""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+
+    root = soup.find("article") or soup.find("main") or soup.body or soup
+    text = root.get_text("\n", strip=True) if root else ""
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _try_add_html_fallback_main_asset(
+    session: Session,
+    document_id: int,
+    html: str | None,
+) -> bool:
+    raw_html = str(html or "")
+    html_text = _extract_readable_html_text(raw_html)
+    if len(html_text) < 1200:
+        return False
+    main_filename = "main_from_url.html"
+    main_path = asset_path(document_id, main_filename)
+    main_path.write_text(raw_html, encoding="utf-8")
+    session.add(
+        Asset(
+            document_id=document_id,
+            kind="main",
+            filename=main_filename,
+            content_type="text/html",
+            path=str(main_path),
+        )
+    )
+    return True
+
+
+async def ingest_upload(
+    session: Session,
+    main_file: UploadFile,
+    supp_files: Optional[list[UploadFile]] = None,
+    source_url: Optional[str] = None,
+    doi: Optional[str] = None,
+) -> Document:
+    document = Document(source_url=source_url, doi=doi)
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+
+    ensure_document_dirs(document.id)
+
+    main_path = asset_path(document.id, main_file.filename)
+    with open(main_path, "wb") as f:
+        f.write(await main_file.read())
+
+    session.add(
+        Asset(
+            document_id=document.id,
+            kind="main",
+            filename=main_file.filename,
+            content_type=main_file.content_type,
+            path=str(main_path),
+        )
+    )
+
+    for supp in supp_files or []:
+        supp_path = asset_path(document.id, supp.filename)
+        with open(supp_path, "wb") as f:
+            f.write(await supp.read())
+        session.add(
+            Asset(
+                document_id=document.id,
+                kind="supp",
+                filename=supp.filename,
+                content_type=supp.content_type,
+                path=str(supp_path),
+            )
+        )
+
+    session.commit()
+    session.refresh(document)
+    return document
+
+
+def ingest_url(
+    session: Session,
+    input_url: str,
+    doi: Optional[str] = None,
+    fetch_supplements: bool = True,
+) -> Document:
+    document = Document(source_url=input_url, doi=doi)
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+
+    try:
+        ensure_document_dirs(document.id)
+
+        resolved = resolve_url(input_url, doi)
+        fetch_result = fetch_url(resolved, doi=doi)
+        if fetch_result.main_url:
+            document.source_url = str(fetch_result.main_url)
+
+        pdf_url = fetch_result.resolved_pdf_url
+        if pdf_url:
+            main_filename = guess_filename(pdf_url, "main.pdf")
+            main_path = asset_path(document.id, main_filename)
+            try:
+                download_file(pdf_url, main_path, referer=fetch_result.main_url or resolved)
+            except httpx.HTTPStatusError as exc:
+                try:
+                    if main_path.exists():
+                        main_path.unlink()
+                except Exception:
+                    pass
+                if _try_add_html_fallback_main_asset(session, document.id, fetch_result.html):
+                    main_path = None
+                else:
+                    status_code = int(exc.response.status_code)
+                    if status_code in (401, 403):
+                        raise ValueError(
+                            f"Resolved PDF is access-restricted by publisher (HTTP {status_code}). "
+                            "Use From Upload and choose the main PDF."
+                        ) from exc
+                    if status_code == 429:
+                        raise ValueError(
+                            "Resolved PDF download was rate-limited (HTTP 429). "
+                            "Retry later, or use From Upload with the main PDF."
+                        ) from exc
+                    raise ValueError(
+                        f"Could not download resolved PDF (HTTP {status_code}). "
+                        "Use From Upload and choose the main PDF."
+                    ) from exc
+            except Exception as exc:
+                try:
+                    if main_path.exists():
+                        main_path.unlink()
+                except Exception:
+                    pass
+                if _try_add_html_fallback_main_asset(session, document.id, fetch_result.html):
+                    main_path = None
+                else:
+                    raise ValueError(
+                        "Could not download resolved PDF. Use From Upload and choose the main PDF."
+                    ) from exc
+
+            if main_path and not _looks_like_pdf(main_path):
+                try:
+                    if main_path.exists():
+                        main_path.unlink()
+                except Exception:
+                    pass
+                if _try_add_html_fallback_main_asset(session, document.id, fetch_result.html):
+                    main_path = None
+                else:
+                    raise ValueError(
+                        "Resolved download did not return a valid PDF (likely publisher block page). "
+                        "Use From Upload and choose the main PDF."
+                    )
+
+            if main_path:
+                session.add(
+                    Asset(
+                        document_id=document.id,
+                        kind="main",
+                        filename=main_filename,
+                        content_type="application/pdf",
+                        path=str(main_path),
+                    )
+                )
+        else:
+            if not _try_add_html_fallback_main_asset(session, document.id, fetch_result.html):
+                raise ValueError(
+                    "Could not resolve a downloadable PDF, and the page does not expose enough full-text content. "
+                    "Use From Upload and choose the main PDF."
+                )
+
+        supp_urls: list[str] = []
+        if fetch_supplements:
+            if fetch_result.supplement_urls:
+                supp_urls.extend(fetch_result.supplement_urls)
+            supp_urls.extend(
+                discover_additional_supplement_urls(
+                    main_url=fetch_result.main_url or resolved,
+                    doi=doi,
+                    resolved_pdf_url=pdf_url,
+                )
+            )
+            supp_urls = filter_supp_urls(supp_urls, main_url=fetch_result.main_url)
+
+        for idx, supp_url in enumerate(supp_urls):
+            supp_filename = guess_filename(supp_url, f"supp_{idx + 1}")
+            supp_path = asset_path(document.id, supp_filename)
+            try:
+                downloaded = _download_supplement_with_resolution(
+                    supp_url=supp_url,
+                    dest=supp_path,
+                    referer=fetch_result.main_url or resolved,
+                    doi=doi,
+                )
+                if not downloaded:
+                    raise ValueError("supplement download failed")
+                expects_pdf = _url_suggests_pdf(supp_url)
+                is_pdf = _looks_like_pdf(supp_path)
+                if expects_pdf and not is_pdf:
+                    try:
+                        supp_path.unlink()
+                    except Exception:
+                        pass
+                    continue
+                content_type = "application/pdf" if is_pdf else ("text/html" if _looks_like_html(supp_path) else None)
+                session.add(
+                    Asset(
+                        document_id=document.id,
+                        kind="supp",
+                        filename=supp_filename,
+                        content_type=content_type,
+                        path=str(supp_path),
+                    )
+                )
+            except Exception:
+                # Skip failed supplements but keep main document
+                continue
+
+        session.commit()
+        session.refresh(document)
+        return document
+    except Exception:
+        session.rollback()
+        try:
+            session.delete(document)
+            session.commit()
+        except Exception:
+            session.rollback()
+        shutil.rmtree(document_dir(document.id), ignore_errors=True)
+        raise
