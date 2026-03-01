@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 
 from app.db.models import Asset, Chunk, Discrepancy, Document, Finding, Report
 from app.core.config import settings
+from app.services.author_utils import sanitize_author_list
 from app.services.analysis.figure_analysis import analyze_figures
 from app.services.analysis.llm import reset_model_usage_counters, snapshot_model_usage_counters
 from app.services.analysis.reconcile import reconcile_reports
@@ -128,6 +129,16 @@ def run_full_analysis(
     _emit_progress(progress_callback, 0.9, "Synthesizing executive report")
     _analysis_trace("run_full_analysis:synthesis:start")
     stage_started = monotonic()
+
+    def _synthesis_progress(local_progress: float, local_message: str) -> None:
+        bounded_local = max(0.0, min(float(local_progress or 0.0), 1.0))
+        absolute_progress = 0.90 + (0.05 * bounded_local)
+        _emit_progress(
+            progress_callback,
+            absolute_progress,
+            str(local_message or "Synthesizing executive report"),
+        )
+
     summary = synthesize_report(
         text_report,
         table_report,
@@ -137,6 +148,7 @@ def run_full_analysis(
         paper_meta=paper_meta,
         coverage=coverage,
         text_chunk_records=[_chunk_to_dict(c, asset_kind, document_source_url) for c in text_chunks],
+        progress_callback=_synthesis_progress,
     )
     stage_timings["synthesis"] = monotonic() - stage_started
     _analysis_trace("run_full_analysis:synthesis:done")
@@ -623,21 +635,9 @@ def _sanitize_meta(meta: dict[str, Any]) -> dict[str, Any]:
     out["metadata_source"] = str(out.get("metadata_source") or "meta_chunk")
     authors_raw = out.get("authors")
     if isinstance(authors_raw, list):
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for value in authors_raw:
-            name = " ".join(str(value or "").split()).strip()
-            if not name:
-                continue
-            key = name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(name)
-        extracted_count = len(deduped)
-        display = deduped[:24]
+        display, extracted_count = sanitize_author_list(authors_raw, max_items=24)
         out["authors"] = display
-        out["authors_extracted_count"] = max(int(out.get("authors_extracted_count", 0) or 0), extracted_count)
+        out["authors_extracted_count"] = extracted_count
         out["authors_display_count"] = len(display)
     return out
 

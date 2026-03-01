@@ -17,6 +17,7 @@ os.environ.setdefault("ANALYSIS_USE_PROCESS_POOL", "false")
 
 from app.api import routes as api_routes
 from app.db.models import Asset, Chunk, Document, Job, JobStatus, Report
+from app.services import ingest as ingest_service
 
 
 class _FakeRunner:
@@ -240,6 +241,31 @@ def client(tmp_path, monkeypatch):
                 Chunk(
                     document_id=doc_1.id,
                     asset_id=main_asset.id,
+                    anchor="image:yoi260001f2_mock.png",
+                    modality="figure",
+                    content="",
+                    meta=json.dumps(
+                        {
+                            "source": "image_file",
+                            "caption": "",
+                            "ocr_text": "Noisy OCR content from chart labels only.",
+                        }
+                    ),
+                ),
+                Chunk(
+                    document_id=doc_1.id,
+                    asset_id=main_asset.id,
+                    anchor="section:Results:3",
+                    modality="text",
+                    content=(
+                        "Figure 2 shows reduced ventral striatal coupling in the patient group and highlights "
+                        "a stronger frontostriatal dysconnectivity pattern compared with controls."
+                    ),
+                    meta=json.dumps({"source": "docling"}),
+                ),
+                Chunk(
+                    document_id=doc_1.id,
+                    asset_id=main_asset.id,
                     anchor="table:9",
                     modality="table",
                     content=json.dumps({"columns": ["c1"], "data": [[1]]}),
@@ -316,6 +342,9 @@ def test_desktop_bootstrap_contract(client: TestClient) -> None:
     assert "deep_model_path" in payload["models"]
     assert "vision_model_path" in payload["models"]
     assert "vision_mmproj_path" in payload["models"]
+    assert isinstance(payload.get("runtime_build"), dict)
+    assert "git_commit" in payload["runtime_build"]
+    assert "build_marker" in payload["runtime_build"]
     assert isinstance(payload["latest_jobs"], list)
     assert payload["lifecycle"]["latest_event"]["kind"] == "shutdown_completed"
 
@@ -332,6 +361,9 @@ def test_status_exposes_split_model_fields(client: TestClient) -> None:
     assert "vision_model_exists" in payload
     assert "vision_mmproj_path" in payload
     assert "vision_mmproj_exists" in payload
+    assert isinstance(payload.get("runtime_build"), dict)
+    assert "git_commit" in payload["runtime_build"]
+    assert "build_marker" in payload["runtime_build"]
 
 
 def test_from_url_blocked_access_returns_upload_remediation(client: TestClient, monkeypatch) -> None:
@@ -450,11 +482,97 @@ def test_sanitize_summary_payload_strips_fallback_ids_from_evidence_refs() -> No
     assert "text-fallback" not in conclusion_items[0]["statement"].lower()
 
 
+def test_sanitize_summary_payload_filters_authors_and_recomputes_counts() -> None:
+    raw = {
+        "paper_meta": {
+            "title": "Sample",
+            "authors": [
+                "Ana Smith",
+                "Ben Jones",
+                "Department of Radiology Research JAMA Psychiatry Xiamen Hospital",
+            ],
+            "authors_extracted_count": 23,
+            "authors_display_count": 23,
+        }
+    }
+    sanitized = api_routes._sanitize_summary_payload(raw)
+    meta = sanitized["paper_meta"]
+    assert meta["authors"] == ["Ana Smith", "Ben Jones"]
+    assert meta["authors_extracted_count"] == 2
+    assert meta["authors_display_count"] == 2
+
+
 def test_media_endpoint_sorts_assets_by_ordinal_number(client: TestClient) -> None:
     resp = client.get("/api/documents/1/media")
     assert resp.status_code == 200
     payload = resp.json()
+    figures = payload.get("figures", [])
     figure_anchors = [str(item.get("anchor", "")) for item in payload.get("figures", [])]
     table_anchors = [str(item.get("anchor", "")) for item in payload.get("tables", [])]
-    assert figure_anchors[:2] == ["figure:2", "figure:10"]
+    assert "figure:2" in figure_anchors
+    assert "figure:10" in figure_anchors
+    assert figure_anchors.index("figure:2") < figure_anchors.index("figure:10")
     assert table_anchors[:2] == ["table:1", "table:9"]
+    assert figures[0]["legend_source"] == "linked_text"
+    assert "ventral striatal coupling" in str(figures[0]["legend"]).lower()
+    assert str(figures[0]["legend"]).strip().lower() != str(figures[0]["caption"]).strip().lower()
+    linked = next((item for item in figures if str(item.get("source", "")).lower() == "image_file"), None)
+    assert linked is not None
+    assert linked["caption"] == "Figure 2. Earlier image"
+    assert linked["legend_source"] in {"missing", "ocr", "linked_text"}
+
+
+def test_media_legend_uses_ocr_when_caption_unavailable() -> None:
+    chunk = Chunk(
+        document_id=1,
+        anchor="figure:3",
+        modality="figure",
+        content="",
+    )
+    legend, source = api_routes._media_legend(
+        chunk,
+        {
+            "caption": "",
+            "ocr_text": "Figure 3. Connectivity maps show reduced ventral striatal coupling in major depression.",
+        },
+    )
+    assert source == "ocr"
+    assert "connectivity maps show reduced ventral striatal coupling" in legend.lower()
+
+
+def test_extract_source_figure_legend_maps_from_html_text_blocks() -> None:
+    html = """
+    <html>
+      <body>
+        <div>Figure 2. Nodal Heterogeneity of Extreme Topological Deviations</div>
+        <div>View Large</div>
+        <div>Download</div>
+        <div>Go to Figure in Article</div>
+        <div>This figure shows case-control spatial overlap in nodal deviations across topological metrics.</div>
+        <div>Abbreviations: ADHD, attention-deficit/hyperactivity disorder.</div>
+        <div>Figure 3. Multivariate Distance-Based Regression</div>
+      </body>
+    </html>
+    """
+    maps = ingest_service._extract_source_figure_legend_maps(html)
+    caption_map = maps.get("caption_map", {})
+    legend_map = maps.get("legend_map", {})
+    assert caption_map.get("2", "").startswith("Figure 2.")
+    assert "case-control spatial overlap" in legend_map.get("2", "").lower()
+
+
+def test_load_source_figure_legend_maps_normalizes_tokens(tmp_path, monkeypatch) -> None:
+    def _fake_artifacts_dir(document_id: int) -> Path:
+        path = tmp_path / f"doc_{document_id}" / "artifacts"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    monkeypatch.setattr(api_routes, "artifacts_dir", _fake_artifacts_dir)
+    payload = {
+        "caption_map": {"Figure 2": "Figure 2. Nodal map"},
+        "legend_map": {"2A": "Panel A shows a stronger frontostriatal dysconnectivity pattern."},
+    }
+    (_fake_artifacts_dir(99) / "source_figure_legends.json").write_text(json.dumps(payload), encoding="utf-8")
+    caption_map, legend_map = api_routes._load_source_figure_legend_maps(99)
+    assert caption_map.get("2") == "Figure 2. Nodal map"
+    assert "frontostriatal dysconnectivity" in legend_map.get("2A", "").lower()

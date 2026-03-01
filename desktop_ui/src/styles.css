@@ -64,6 +64,13 @@ body,
   color: #d8ecde;
 }
 
+.top-bar .runtime-marker-line {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: #c6e0d0;
+  font-family: "SFMono-Regular", Menlo, Monaco, "Courier New", monospace;
+}
+
 .top-actions {
   display: flex;
   gap: 8px;
@@ -615,6 +622,25 @@ pre {
   color: #1f5034;
   margin-bottom: 6px;
   min-height: 32px;
+}
+
+.detail-asset-legend {
+  margin: 0 0 6px;
+  padding: 6px 7px;
+  border: 1px solid #dbece1;
+  border-radius: 6px;
+  background: #f3faf5;
+  color: #2e5e45;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.detail-asset-legend.missing {
+  border-style: dashed;
+  background: #f7faf8;
+  color: #5f7468;
 }
 
 .detail-modality-card {

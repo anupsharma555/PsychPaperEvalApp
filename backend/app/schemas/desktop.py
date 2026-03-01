@@ -71,6 +71,7 @@ class DesktopBootstrap(_SchemaModel):
     backend_ready: bool
     processing: DesktopProcessingStatus
     models: DesktopModelReadiness
+    runtime_build: dict[str, Any] = Field(default_factory=dict)
     lifecycle: DesktopLifecycleStatus
     latest_jobs: list[DesktopJobRow] = Field(default_factory=list)
 

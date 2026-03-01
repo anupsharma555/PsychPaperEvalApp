@@ -66,6 +66,20 @@ function nowLabel() {
   return ET_DATE_TIME_FORMATTER.format(new Date());
 }
 
+function shortToken(value, maxLength = 8) {
+  const token = String(value || "").trim();
+  if (!token) return "unknown";
+  return token.length <= maxLength ? token : token.slice(0, maxLength);
+}
+
+function shortPathName(value) {
+  const parts = String(value || "")
+    .split(/[\\/]/)
+    .filter(Boolean);
+  if (parts.length === 0) return "unknown-root";
+  return parts[parts.length - 1];
+}
+
 function normalizeDoi(input) {
   const match = String(input || "").trim().match(/10\.\d{4,9}\/\S+/i);
   return match ? match[0] : "";
@@ -134,6 +148,16 @@ function formatEtDateTime(value) {
 function parseBackendDate(value) {
   const raw = String(value || "").trim();
   if (!raw) return new Date(NaN);
+  if (/^\d{10,13}$/.test(raw)) {
+    const numeric = Number(raw);
+    if (!Number.isNaN(numeric)) {
+      const millis = raw.length >= 13 ? numeric : numeric * 1000;
+      const epochDate = new Date(millis);
+      if (!Number.isNaN(epochDate.getTime())) {
+        return epochDate;
+      }
+    }
+  }
   const date = new Date(raw);
   if (!Number.isNaN(date.getTime())) return date;
   const normalized = raw.replace(" ", "T");
@@ -325,9 +349,26 @@ function toDisplayLine(item) {
 }
 
 function assetLabel(item, fallback) {
-  const base = String(item?.caption || item?.anchor || fallback || "").trim() || String(fallback || "");
-  if (base.length <= 180) return base;
-  return `${base.slice(0, 177)}...`;
+  const figureId = String(item?.figure_id || "").trim();
+  const anchor = String(item?.anchor || "").trim();
+  const figureLikeLabel = formatEvidenceRef(figureId) || formatEvidenceRef(anchor);
+  if (figureLikeLabel) return figureLikeLabel;
+  const base = String(item?.caption || anchor || fallback || "").trim() || String(fallback || "");
+  if (base.length <= 120) return base;
+  return `${base.slice(0, 117)}...`;
+}
+
+function assetLegend(item) {
+  const value = String(item?.legend || "").replace(/\s+/g, " ").trim();
+  if (!value) return "";
+  const caption = String(item?.caption || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const legendLower = value.toLowerCase();
+  if (caption) {
+    if (legendLower === caption || legendLower.includes(caption) || caption.includes(legendLower)) return "";
+  }
+  const maxChars = 6000;
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars - 3)}...`;
 }
 
 function mediaAssetHref(item) {
@@ -1157,6 +1198,38 @@ export default function App() {
   const processing = statusPayload?.processing || {};
   const inflight = Number(processing.inflight || 0);
   const workerCapacity = Number(processing.worker_capacity || 1);
+  const runtimeBuild =
+    statusPayload?.runtime_build && typeof statusPayload.runtime_build === "object"
+      ? statusPayload.runtime_build
+      : {};
+  const runtimeCommit = String(runtimeBuild.git_commit || "").trim() || "unknown";
+  const runtimeDirty = Boolean(runtimeBuild.git_dirty);
+  const runtimeVersion = String(runtimeBuild.app_version || "").trim();
+  const runtimeBuiltAtRaw = String(runtimeBuild.build_timestamp || "").trim();
+  const runtimeCmdFingerprint = String(runtimeInfo?.backend_command_fingerprint || "").trim();
+  const runtimeSourceRoot = String(runtimeBuild.source_root || "").trim() || String(runtimeInfo?.run_dir || "").trim();
+  const runtimeBuiltAt = runtimeBuiltAtRaw ? formatEtDateTime(runtimeBuiltAtRaw) : "";
+  const runtimeBuiltAtLabel = runtimeBuiltAt && runtimeBuiltAt !== "-" ? runtimeBuiltAt : "";
+  const runtimeStartedAt = formatEtDateTime(runtimeInfo?.backend_started_at);
+  const runtimeStartedLabel = runtimeStartedAt && runtimeStartedAt !== "-" ? runtimeStartedAt : "unknown";
+  const runtimeVersionLabel = runtimeVersion ? `v${runtimeVersion}` : "version-unknown";
+  const runtimeLineVersion = runtimeBuiltAtLabel
+    ? `${runtimeVersionLabel} (${runtimeBuiltAtLabel})`
+    : `${runtimeVersionLabel} (${shortToken(runtimeCommit, 10)}${runtimeDirty ? "*" : ""})`;
+  const runtimeMarkerLine = [
+    "Runtime:",
+    runtimeLineVersion,
+    "|",
+    `started ${runtimeStartedLabel}`,
+  ].join(" ");
+  const runtimeMarkerTitle = [
+    `Build marker: ${String(runtimeBuild.build_marker || "unknown")}`,
+    `Git commit: ${runtimeCommit}${runtimeDirty ? " (dirty)" : ""}`,
+    `Build timestamp: ${runtimeBuiltAtLabel || "unknown"}`,
+    `Command fingerprint: ${runtimeCmdFingerprint || "unknown"}`,
+    `Source root: ${runtimeSourceRoot || "unknown"}`,
+    `Backend started: ${runtimeStartedLabel}`,
+  ].join(" | ");
 
   const canSubmit = backendReady && validation.valid && !submitBusy;
   const canLoadReport = !!latestCompletedJob && !loadBusy && backendReady;
@@ -1771,6 +1844,10 @@ export default function App() {
           processing: payload.processing,
           model_exists: payload.models?.model_exists,
           mmproj_exists: payload.models?.mmproj_exists,
+          runtime_build:
+            payload?.runtime_build && typeof payload.runtime_build === "object"
+              ? payload.runtime_build
+              : {},
         });
         setBackendReady(Boolean(payload.backend_ready));
         setConnectionState(payload.backend_ready ? "ready" : "unavailable");
@@ -2130,6 +2207,7 @@ export default function App() {
         <div>
           <h1>PaperEval Desktop V8</h1>
           <p>Guided multimodal paper evaluation with deterministic lifecycle control. Build marker: HF3.</p>
+          <p className="runtime-marker-line" title={runtimeMarkerTitle}>{runtimeMarkerLine}</p>
         </div>
         <div className="top-actions">
           <button onClick={handleOpenLogs}>Open Logs</button>
@@ -2703,10 +2781,18 @@ export default function App() {
                                       const tablePreview = normalizeTablePreview(item.table_preview);
                                       const compactPreview = compactTablePreview(item.table_preview, 8, 8);
                                       const label = assetLabel(item, `asset ${idx + 1}`);
+                                      const legend = assetLegend(item);
+                                      const viewerTitle = legend || item.caption || item.anchor || title;
                                       return (
                                         <li key={`${title}-${item.chunk_id || idx}`} className="detail-asset-card">
-                                          <div className="detail-asset-title" title={item.caption || item.anchor || `asset ${idx + 1}`}>
+                                          <div className="detail-asset-title" title={viewerTitle}>
                                             {label}
+                                          </div>
+                                          <div
+                                            className={`detail-asset-legend ${legend ? "" : "missing"}`.trim()}
+                                            title={legend || "Legend unavailable from source extraction."}
+                                          >
+                                            {legend || "Legend unavailable from source extraction."}
                                           </div>
                                           <div className="detail-asset-meta">
                                             <span>{item.anchor || "anchor:n/a"}</span>
@@ -2715,7 +2801,7 @@ export default function App() {
                                               <button
                                                 type="button"
                                                 className="detail-link-button"
-                                                onClick={() => openAssetViewer(imageHref, item.caption || item.anchor || title, "image")}
+                                                onClick={() => openAssetViewer(imageHref, viewerTitle, "image")}
                                               >
                                                 Open image
                                               </button>
@@ -2723,7 +2809,7 @@ export default function App() {
                                               <button
                                                 type="button"
                                                 className="detail-link-button"
-                                                onClick={() => openAssetViewer(sourceHref, item.caption || item.anchor || title)}
+                                                onClick={() => openAssetViewer(sourceHref, viewerTitle)}
                                               >
                                                 Open asset
                                               </button>
@@ -2740,7 +2826,7 @@ export default function App() {
                                                 type="button"
                                                 className="detail-link-button"
                                                 onClick={() =>
-                                                  openTableViewer(item.caption || item.anchor || title, tablePreview, sourceHref)
+                                                  openTableViewer(viewerTitle, tablePreview, sourceHref)
                                                 }
                                               >
                                                 Open table view
@@ -2751,12 +2837,12 @@ export default function App() {
                                             <button
                                               type="button"
                                               className="detail-icon-button"
-                                              onClick={() => openAssetViewer(imageHref, item.caption || item.anchor || title, "image")}
+                                              onClick={() => openAssetViewer(imageHref, viewerTitle, "image")}
                                             >
                                               <img
                                                 className="detail-asset-icon"
                                                 src={imageHref}
-                                                alt={item.caption || item.anchor || title}
+                                                alt={viewerTitle}
                                                 onError={(event) => {
                                                   if (proxiedImageHref && event.currentTarget.src !== proxiedImageHref) {
                                                     event.currentTarget.src = proxiedImageHref;
@@ -2770,7 +2856,7 @@ export default function App() {
                                             <button
                                               type="button"
                                               className="detail-icon-button"
-                                              onClick={() => openAssetViewer(sourceHref, item.caption || item.anchor || title)}
+                                              onClick={() => openAssetViewer(sourceHref, viewerTitle)}
                                             >
                                               <div className="detail-asset-icon detail-asset-icon-placeholder">
                                                 {isPdfHref(sourceHref) ? "PDF" : "ASSET"}

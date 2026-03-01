@@ -5,9 +5,10 @@ import multiprocessing as mp
 import os
 from queue import Empty as QueueEmpty
 import re
-from typing import Any
+from typing import Any, Callable
 
 from app.core.config import settings
+from app.services.author_utils import sanitize_author_list
 from app.services.analysis.llm import chat_text_deep
 from app.services.analysis.schemas import StructuredDossierV2
 from app.services.analysis.utils import (
@@ -126,8 +127,23 @@ CONCRETE_RESULT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+HIGH_SIGNAL_RESULT_RE = re.compile(
+    r"\b("
+    r"identified|revealed|demonstrated|showed|stratif(?:y|ication)|biotype|cluster(?:ing)?|subtype|"
+    r"replicat(?:ed|ion)|validation cohort|normative model(?:ing)?|deviation pattern|network pattern"
+    r")\b",
+    re.IGNORECASE,
+)
 GENERIC_VISUAL_RE = re.compile(
     r"^(figure|table|supplement(?:ary)?\s+figure|supplement(?:ary)?\s+table)\b.*\b(shows?|displays?|illustrates?|depicts?|presents?)\b",
+    re.IGNORECASE,
+)
+VISUAL_ANNOTATION_RE = re.compile(
+    r"\b("
+    r"solid dots indicate|outer circles?|distance from center|each axis represents|"
+    r"panel [a-h]|axis represents|color bar|heatmap scale|"
+    r"nodes? exhibiting|rings? indicate|circle size indicates"
+    r")\b",
     re.IGNORECASE,
 )
 INTRO_FALLBACK_RE = re.compile(
@@ -135,7 +151,7 @@ INTRO_FALLBACK_RE = re.compile(
     re.IGNORECASE,
 )
 CONCLUSION_FALLBACK_RE = re.compile(
-    r"\b(in conclusion|overall|these findings|these results (?:suggest|support|emphasize)|this study suggests|conclude|conclusion|future research|longitudinal)\b",
+    r"\b(in conclusion|overall|these findings|these results (?:suggest|support|emphasize)|this study suggests|conclude|conclusion|future research|longitudinal|replicat(?:ed|ion)|generalizab(?:ility|le))\b",
     re.IGNORECASE,
 )
 CONCLUSION_RECOVERY_RE = re.compile(
@@ -144,12 +160,21 @@ CONCLUSION_RECOVERY_RE = re.compile(
     r"these (?:findings|results) (?:suggest|support|indicate|emphasize)|"
     r"clinical (?:implication|relevance)|implications?|"
     r"future (?:work|research)|longitudinal|intervention(?:s)?|target(?:ing)?|"
-    r"caution|interpret(?:ation|ive)?|may reflect|shared (?:neural|network)|transdiagnostic"
+    r"caution|interpret(?:ation|ive)?|may reflect|shared (?:neural|network)|transdiagnostic|"
+    r"replicat(?:ed|ion)|generalizab(?:ility|le)"
     r")\b",
     re.IGNORECASE,
 )
 DISCUSSION_FALLBACK_RE = re.compile(
     r"\b(to date|in our study|in contrast|consistent with|may reflect|limitations?|interpret|implication)\b",
+    re.IGNORECASE,
+)
+CONCLUSION_SIGNAL_RE = re.compile(
+    r"\b("
+    r"overall|in conclusion|these findings|these results|taken together|collectively|"
+    r"suggest|support|indicat|implication|clinical|future|generalizab|replicat|"
+    r"highlight|underscore|caution|warrant"
+    r")\b",
     re.IGNORECASE,
 )
 NOISE_STATEMENT_RE = re.compile(
@@ -175,6 +200,21 @@ INTRO_EXCLUDE_RE = re.compile(
 CONFIDENCE_INLINE_RE = re.compile(
     r"\s*(?:\((?:model\s+)?confidence[:\s]*\d{1,3}(?:\.\d+)?%?\)|(?:model\s+)?confidence[:\s]+\d{1,3}(?:\.\d+)?%|\(\d{1,3}(?:\.\d+)?%\))\s*",
     re.IGNORECASE,
+)
+LEADING_CITATION_PREFIX_RE = re.compile(
+    r"""
+    ^\s*
+    (?:
+        [\(\[\{]?\s*
+        \d{1,3}(?:\s*[-–]\s*\d{1,3})?
+        (?:\s*(?:,|;)\s*\d{1,3}(?:\s*[-–]\s*\d{1,3})?)*
+        \s*[\)\]\}]?
+        (?:\s*(?:,|;|:))?
+        \s*
+    )
+    (?=[A-Z])
+    """,
+    re.VERBOSE,
 )
 CANONICAL_STATEMENT_TOKEN_RE = re.compile(r"[a-z0-9]+(?:\.[0-9]+)?")
 FRAGMENT_START_RE = re.compile(
@@ -202,6 +242,37 @@ SECTION_EXTRACTION_LIMITS: dict[str, int] = {
     "discussion": 10,
     "conclusion": 8,
 }
+INCOMPLETE_TAIL_TOKENS = {
+    "and",
+    "or",
+    "with",
+    "without",
+    "to",
+    "of",
+    "in",
+    "on",
+    "for",
+    "by",
+    "from",
+    "as",
+    "than",
+    "that",
+    "which",
+    "whose",
+    "while",
+    "when",
+    "where",
+    "because",
+    "therefore",
+    "however",
+    "thus",
+    "including",
+    "beginning",
+    "using",
+    "via",
+    "consistent",
+}
+ALLOWED_SHORT_FINAL_TOKENS = {"adhd", "fdr", "ci", "sd", "msn", "auc", "sex", "age"}
 
 METHODS_COMPACT_SLOTS: list[dict[str, Any]] = [
     {
@@ -399,7 +470,13 @@ def synthesize_report(
     paper_meta: dict[str, Any] | None = None,
     coverage: dict[str, Any] | None = None,
     text_chunk_records: list[dict[str, Any]] | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, Any]:
+    _emit_synthesis_progress(
+        progress_callback,
+        0.05,
+        "Synthesizing executive report: preparing payload",
+    )
     _trace_synthesis_step("synthesize:start")
     safe_paper_meta = _sanitize_paper_meta(paper_meta or {})
     safe_coverage = _sanitize_coverage(coverage or {})
@@ -423,19 +500,49 @@ def synthesize_report(
         "text_chunk_records": list(text_chunk_records or []),
     }
     _trace_synthesis_step("synthesize:payload_ready")
+    _emit_synthesis_progress(
+        progress_callback,
+        0.22,
+        "Synthesizing executive report: building evidence payload",
+    )
 
     _trace_synthesis_step("synthesize:assemble_begin")
+    _emit_synthesis_progress(
+        progress_callback,
+        0.38,
+        "Synthesizing executive report: assembling section dossier",
+    )
     draft = _assemble_structured_dossier(payload)
     _trace_synthesis_step("synthesize:assemble_done")
+    _emit_synthesis_progress(
+        progress_callback,
+        0.58,
+        "Synthesizing executive report: dossier assembled",
+    )
     if settings.analysis_narrative_overrides_enabled:
+        _emit_synthesis_progress(
+            progress_callback,
+            0.67,
+            "Synthesizing executive report: narrative override pass",
+        )
         llm_overrides = _llm_synthesis_overrides(payload)
         if llm_overrides:
             _apply_narrative_overrides(draft, llm_overrides)
 
         if settings.analysis_verifier_enabled:
+            _emit_synthesis_progress(
+                progress_callback,
+                0.77,
+                "Synthesizing executive report: verifier pass",
+            )
             verifier_overrides = _llm_verifier_overrides(payload, draft)
             if verifier_overrides:
                 _apply_narrative_overrides(draft, verifier_overrides)
+    _emit_synthesis_progress(
+        progress_callback,
+        0.86,
+        "Synthesizing executive report: finalizing summary",
+    )
 
     if settings.analysis_exec_summary_second_pass_enabled:
         _ensure_executive_summary_components(draft, payload)
@@ -445,11 +552,38 @@ def synthesize_report(
     draft["coverage_snapshot_line"] = _media_counts_line(payload.get("coverage", {}) or {})
     report_payload = draft
     if settings.analysis_schema_validation_enabled:
+        _emit_synthesis_progress(
+            progress_callback,
+            0.94,
+            "Synthesizing executive report: validating report schema",
+        )
         _trace_synthesis_step("synthesize:validate_begin")
         report_payload = StructuredDossierV2.model_validate(draft).model_dump()
         _trace_synthesis_step("synthesize:validate_done")
     _trace_synthesis_step("synthesize:return")
+    _emit_synthesis_progress(
+        progress_callback,
+        1.0,
+        "Synthesizing executive report: complete",
+    )
     return _attach_v1_compat_fields(report_payload)
+
+
+def _emit_synthesis_progress(
+    progress_callback: Callable[[float, str], None] | None,
+    progress: float,
+    message: str,
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        bounded = max(0.0, min(float(progress), 1.0))
+    except Exception:
+        bounded = 0.0
+    try:
+        progress_callback(bounded, str(message or "Synthesizing executive report"))
+    except Exception:
+        return
 
 
 def _trace_synthesis_step(step: str) -> None:
@@ -548,6 +682,12 @@ def _sanitize_paper_meta(meta: dict[str, Any]) -> dict[str, Any]:
             continue
         if isinstance(value, (str, int, float, bool)):
             out[clean_key] = _sanitize_text_atom(value)
+    authors_raw = out.get("authors")
+    if isinstance(authors_raw, list):
+        authors_display, authors_extracted_count = sanitize_author_list(authors_raw, max_items=24)
+        out["authors"] = authors_display
+        out["authors_extracted_count"] = authors_extracted_count
+        out["authors_display_count"] = len(authors_display)
     return out
 
 
@@ -1806,12 +1946,7 @@ def _compact_section_statement(statement: str, max_chars: int = METHOD_STATEMENT
     text = " ".join(_strip_confidence_annotations(str(statement or "")).split()).strip()
     if not text:
         return ""
-    if len(text) <= max_chars:
-        return text
-    cut = text[: max_chars - 3]
-    if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]
-    return cut.rstrip(" ,;:.") + "..."
+    return _compact_without_cutoff(text, max_chars=max_chars)
 
 
 def _method_candidate(packet: dict[str, Any], *, idx: int) -> dict[str, Any] | None:
@@ -1916,12 +2051,7 @@ def _compact_method_statement(statement: str, max_chars: int = METHOD_STATEMENT_
     if not text:
         return ""
     text = _strip_method_hedges(text)
-    if len(text) <= max_chars:
-        return text
-    cut = text[: max_chars - 3]
-    if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]
-    return cut.rstrip(" ,;:.") + "..."
+    return _compact_without_cutoff(text, max_chars=max_chars)
 
 
 def _strip_method_hedges(text: str) -> str:
@@ -1939,7 +2069,32 @@ def _strip_method_hedges(text: str) -> str:
 
 
 def _strip_confidence_annotations(text: str) -> str:
-    return " ".join(CONFIDENCE_INLINE_RE.sub(" ", str(text or "")).split()).strip()
+    clean = " ".join(CONFIDENCE_INLINE_RE.sub(" ", str(text or "")).split()).strip()
+    if not clean:
+        return ""
+    clean = re.sub(r"^\s*[-*•]+\s*", "", clean).strip()
+    # Remove citation-style numeric prefixes (for example, "4, 5 In contrast ...").
+    while True:
+        updated = LEADING_CITATION_PREFIX_RE.sub("", clean, count=1).strip()
+        if updated == clean:
+            break
+        clean = updated
+    # Drop trailing ellipsis markers that commonly indicate clipped extraction text.
+    clean = re.sub(r"(?:\.\s*){3,}\s*$", "", clean).strip()
+    clean = re.sub(r"…+\s*$", "", clean).strip()
+    return clean
+
+
+def _clean_section_statement(statement: str) -> str:
+    clean = _strip_confidence_annotations(statement)
+    if not clean:
+        return ""
+    trimmed = _trim_dangling_tail_tokens(clean)
+    if trimmed:
+        clean = trimmed
+    if _is_incomplete_statement(clean):
+        return ""
+    return clean
 
 
 def _is_redundant_statement_key(statement_key: str, seen_keys: set[str]) -> bool:
@@ -2241,10 +2396,96 @@ def _unique_strings(items: list[str], max_items: int | None = None) -> list[str]
 
 SECTION_MIN_TARGETS = {
     "methods": 8,
-    "results": 10,
-    "discussion": 5,
+    "results": 12,
+    "discussion": 6,
     "conclusion": 4,
 }
+
+
+def _section_item_passes_fidelity(section_key: str, item: dict[str, Any]) -> bool:
+    section = str(section_key or "").strip().lower()
+    statement = _clean_section_statement(str(item.get("statement", "")).strip())
+    if not statement:
+        return False
+    if _is_noise_statement(statement) or _is_layout_artifact_statement(statement):
+        return False
+    if _is_fragment_like_statement(statement):
+        return False
+
+    anchor = str(item.get("anchor", "")).strip()
+    anchor_section = _anchor_section_label(anchor)
+    lowered = statement.lower()
+    panel_label_prefix = _has_panel_prefix(lowered)
+
+    if section == "introduction":
+        return _is_intro_fidelity_statement(statement)
+
+    if section == "methods":
+        return _is_method_like_statement(statement) or _has_method_signal(statement) or _is_methods_anchor(anchor)
+
+    if section == "results":
+        has_concrete = _has_concrete_result_outcome(statement)
+        has_high_signal = _is_high_signal_result_statement(statement)
+        if panel_label_prefix:
+            return False
+        if _is_visual_annotation_statement(statement):
+            return False
+        if _is_method_like_statement(statement) and not has_concrete:
+            return False
+        if _is_generic_visual_statement(statement) and not has_concrete:
+            return False
+        if not (has_concrete or has_high_signal or anchor_section == "results" or RESULTS_SECTION_RE.search(statement)):
+            return False
+        return True
+
+    if section == "discussion":
+        if panel_label_prefix:
+            return False
+        if _is_visual_annotation_statement(statement):
+            return False
+        if _is_method_like_statement(statement) and not DISCUSSION_FALLBACK_RE.search(statement):
+            return False
+        if _has_concrete_result_outcome(statement) and not re.search(
+            r"\b(suggest|implication|interpret|limitation|generalizab|context|may|caution)\b",
+            statement,
+            re.IGNORECASE,
+        ):
+            return False
+        return True
+
+    if section == "conclusion":
+        if panel_label_prefix or _is_visual_annotation_statement(statement):
+            return False
+        if _is_method_like_statement(statement):
+            return False
+        if re.search(
+            r"\b(to examine|we analyzed|was used to|using linear|participants?\s+were|sample\s+included|consisted of)\b",
+            statement,
+            re.IGNORECASE,
+        ):
+            return False
+        if _is_conclusion_like_statement(statement):
+            return True
+        if anchor_section == "conclusion":
+            return bool(CONCLUSION_SIGNAL_RE.search(statement) or _has_concrete_result_outcome(statement))
+        return bool(
+            _has_concrete_result_outcome(statement)
+            and re.search(
+                r"\b(revealed|showed|demonstrated|identified|found|no significant|without significant)\b",
+                statement,
+                re.IGNORECASE,
+            )
+        )
+
+    return True
+
+
+def _filter_section_items_by_fidelity(section_key: str, items: list[dict[str, Any]], *, max_items: int) -> list[dict[str, Any]]:
+    section = str(section_key or "").strip().lower()
+    if section not in {"introduction", "methods", "results", "discussion", "conclusion"}:
+        return _dedupe_section_items(items, max_items=max_items)
+    filtered = [item for item in items if isinstance(item, dict) and _section_item_passes_fidelity(section, item)]
+    return _dedupe_section_items(filtered, max_items=max_items)
 
 
 def _enforce_min_section_coverage(
@@ -2272,16 +2513,17 @@ def _enforce_min_section_coverage(
         key = " ".join(statement.lower().split())
         if key in existing_hashes:
             continue
-        existing_hashes.add(key)
-        extras.append(
-            _section_evidence_from_packet(
-                packet,
-                source_modality,
-                flags=["min_coverage", "fallback"],
-                result_evidence_type=result_evidence_type,
-                is_untrusted=True,
-            )
+        candidate = _section_evidence_from_packet(
+            packet,
+            source_modality,
+            flags=["min_coverage", "fallback"],
+            result_evidence_type=result_evidence_type,
+            is_untrusted=True,
         )
+        if not _section_item_passes_fidelity(section_key, candidate):
+            continue
+        existing_hashes.add(key)
+        extras.append(candidate)
 
     if not extras:
         return section_items, None
@@ -2334,6 +2576,7 @@ def _build_detailed_sections(
         ],
         max_items=18,
     )
+    intro_items = _filter_section_items_by_fidelity("introduction", intro_items, max_items=18)
     intro_fallback_reason = None
     intro_cutoff_index = _intro_cutoff_index(text_packets)
     if len(intro_items) < 6:
@@ -2389,6 +2632,7 @@ def _build_detailed_sections(
         + [_section_evidence_from_packet(packet, "text") for packet in methods_explicit],
         max_items=24,
     )
+    methods_items = _filter_section_items_by_fidelity("methods", methods_items, max_items=24)
     methods_fallback_reason = None
     if len(methods_items) < 6:
         methods_fallback_packets = [packet for packet in text_packets if _is_methods_fallback_candidate(packet)]
@@ -2467,6 +2711,7 @@ def _build_detailed_sections(
         ],
         max_items=24,
     )
+    results_text_items = _filter_section_items_by_fidelity("results", results_text_items, max_items=24)
     results_fallback_reason = None
     results_coverage_candidates: list[dict[str, Any]] = []
     if len(results_text_items) < 6:
@@ -2548,6 +2793,7 @@ def _build_detailed_sections(
         results_text_items = results_min_coverage_items
         results_fallback_reason = results_min_coverage_reason
         _record_fallback_note("Results", results_min_coverage_reason)
+    results_text_items = _filter_section_items_by_fidelity("results", results_text_items, max_items=24)
 
     results_media_items = _dedupe_section_items(
         [
@@ -2564,7 +2810,9 @@ def _build_detailed_sections(
         ],
         max_items=16,
     )
+    results_media_items = _filter_section_items_by_fidelity("results", results_media_items, max_items=16)
     results_items = _dedupe_section_items(results_text_items + results_media_items, max_items=36)
+    results_items = _filter_section_items_by_fidelity("results", results_items, max_items=36)
 
     discussion_explicit = _select_text_packets_by_section(text_packets, "discussion", min_section_confidence=0.6)
     discussion_coverage_candidates: list[dict[str, Any]] = []
@@ -2577,6 +2825,7 @@ def _build_detailed_sections(
         ],
         max_items=18,
     )
+    discussion_items = _filter_section_items_by_fidelity("discussion", discussion_items, max_items=18)
     discussion_fallback_reason = None
     if len(discussion_items) < 4:
         discussion_fallback_packets = [packet for packet in text_packets if _is_discussion_fallback_candidate(packet)]
@@ -2641,6 +2890,7 @@ def _build_detailed_sections(
         discussion_items = discussion_min_coverage_items
         discussion_fallback_reason = discussion_min_coverage_reason
         _record_fallback_note("Discussion", discussion_min_coverage_reason)
+    discussion_items = _filter_section_items_by_fidelity("discussion", discussion_items, max_items=18)
 
     conclusion_explicit = _select_text_packets_by_section(text_packets, "conclusion", min_section_confidence=0.6)
     conclusion_coverage_candidates: list[dict[str, Any]] = []
@@ -2653,6 +2903,7 @@ def _build_detailed_sections(
         ],
         max_items=16,
     )
+    conclusion_items = _filter_section_items_by_fidelity("conclusion", conclusion_items, max_items=16)
     conclusion_fallback_reason = None
     if len(conclusion_items) < 4:
         conclusion_fallback_pool = [
@@ -2758,6 +3009,7 @@ def _build_detailed_sections(
         conclusion_items = conclusion_min_coverage_items
         conclusion_fallback_reason = conclusion_min_coverage_reason
         _record_fallback_note("Conclusion", conclusion_min_coverage_reason)
+    conclusion_items = _filter_section_items_by_fidelity("conclusion", conclusion_items, max_items=16)
 
     sections = {
         "introduction": _build_section_block(
@@ -2779,7 +3031,7 @@ def _build_detailed_sections(
             results_items,
             fallback_used=bool(results_fallback_reason),
             fallback_reason=results_fallback_reason,
-            max_items=10,
+            max_items=12,
         ),
         "discussion": _build_section_block(
             "Discussion",
@@ -2793,7 +3045,7 @@ def _build_detailed_sections(
             conclusion_items,
             fallback_used=bool(conclusion_fallback_reason),
             fallback_reason=conclusion_fallback_reason,
-            max_items=5,
+            max_items=6,
         ),
     }
     sections, cross_section_dedupe = _dedupe_items_across_sections(sections)
@@ -3257,7 +3509,7 @@ def _section_evidence_from_method_slots(methods_compact: list[dict[str, Any]]) -
     for slot in methods_compact:
         if str(slot.get("status", "")) != "found":
             continue
-        statement = str(slot.get("statement", "")).strip()
+        statement = _clean_section_statement(str(slot.get("statement", "")).strip())
         if not statement:
             continue
         refs = [str(ref).strip() for ref in slot.get("evidence_refs", []) if str(ref).strip()]
@@ -3284,7 +3536,7 @@ def _section_evidence_from_extracted_bullets(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        statement = _strip_confidence_annotations(str(row.get("statement", "")).strip())
+        statement = _clean_section_statement(str(row.get("statement", "")).strip())
         if not statement:
             continue
         refs = [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()]
@@ -3329,7 +3581,7 @@ def _section_evidence_from_packet(
     if anchor and anchor not in refs:
         refs = [anchor] + refs
     return {
-        "statement": str(packet.get("statement", "")).strip(),
+        "statement": _clean_section_statement(str(packet.get("statement", "")).strip()),
         "anchor": anchor,
         "evidence_refs": refs[:6],
         "source_modality": _normalize_modality_name(source_modality),
@@ -3392,7 +3644,7 @@ def _dedupe_section_items(items: list[dict[str, Any]], *, max_items: int) -> lis
     for item in items:
         if not isinstance(item, dict):
             continue
-        statement = str(item.get("statement", "")).strip()
+        statement = _clean_section_statement(str(item.get("statement", "")).strip())
         if not statement:
             continue
         key = _canonical_statement_text(statement)
@@ -3512,8 +3764,8 @@ EXEC_REPORT_SECTION_HEADERS: dict[str, str] = {
 EXEC_REPORT_SECTION_LIMITS: dict[str, int] = {
     "introduction": 4,
     "methods": 6,
-    "results": 7,
-    "discussion": 5,
+    "results": 9,
+    "discussion": 6,
     "conclusion": 4,
 }
 CROSS_SECTION_DEDUPE_MIN_KEEP: dict[str, int] = {
@@ -3546,7 +3798,8 @@ def _build_extractive_evidence(
         for item in items:
             if not isinstance(item, dict):
                 continue
-            statement = _strip_confidence_annotations(str(item.get("statement", "")).strip())
+            raw_statement = str(item.get("statement", "")).strip()
+            statement = _strip_confidence_annotations(raw_statement)
             if not statement or _is_noise_statement(statement):
                 continue
             refs = [str(ref).strip() for ref in item.get("evidence_refs", []) if str(ref).strip()]
@@ -3559,6 +3812,11 @@ def _build_extractive_evidence(
             text_anchor = _first_text_anchor(refs) or (anchor if _is_text_anchor(anchor) else "")
             source_text = anchor_index.get(text_anchor, "")
             verbatim = _best_verbatim_excerpt(statement=statement, source_text=source_text)
+            repaired_statement = _repair_statement_from_verbatim(raw_statement, verbatim)
+            if repaired_statement:
+                statement = repaired_statement
+            if _is_incomplete_statement(statement):
+                continue
             span_start, span_end = _extractive_span(source_text, verbatim)
             evidence_id = f"{section}:e{len(by_section[section]) + 1}"
             dedupe_key = _canonical_text(f"{section}|{anchor}|{statement}")
@@ -3599,9 +3857,16 @@ def _build_presentation_evidence(
     limits = {
         "introduction": 5,
         "methods": 10,
-        "results": 10,
-        "discussion": 8,
+        "results": 14,
+        "discussion": 10,
         "conclusion": 6,
+    }
+    anchor_caps = {
+        "introduction": 2,
+        "methods": 2,
+        "results": 2,
+        "discussion": 2,
+        "conclusion": 2,
     }
     out: dict[str, list[dict[str, Any]]] = {section: [] for section in EXEC_REPORT_SECTION_ORDER}
     for section in EXEC_REPORT_SECTION_ORDER:
@@ -3613,19 +3878,29 @@ def _build_presentation_evidence(
         )
         selected: list[dict[str, Any]] = []
         seen_statement_keys: set[str] = set()
+        anchor_counts: dict[str, int] = {}
         for row in ranked:
-            statement = _strip_confidence_annotations(str(row.get("statement", "")).strip())
+            statement = _clean_section_statement(str(row.get("statement", "")).strip())
             if not statement or _is_noise_statement(statement):
+                continue
+            anchor = str(row.get("anchor", "")).strip()
+            if not _section_item_passes_fidelity(section, {"statement": statement, "anchor": anchor}):
                 continue
             statement_key = _canonical_statement_text(statement)
             if statement_key and _is_redundant_statement_key(statement_key, seen_statement_keys):
                 continue
+            if anchor:
+                current_anchor_count = int(anchor_counts.get(anchor, 0) or 0)
+                if current_anchor_count >= int(anchor_caps.get(section, 2)):
+                    continue
             if statement_key:
                 seen_statement_keys.add(statement_key)
+            if anchor:
+                anchor_counts[anchor] = int(anchor_counts.get(anchor, 0) or 0) + 1
             selected.append(
                 {
                     "statement": statement,
-                    "anchor": str(row.get("anchor", "")).strip(),
+                    "anchor": anchor,
                     "evidence_refs": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:6],
                     "confidence": clamp_confidence(row.get("confidence", 0.0)),
                     "section_confidence": clamp_confidence(row.get("section_confidence", row.get("confidence", 0.0))),
@@ -3743,6 +4018,11 @@ def _extractive_rank_score(entry: dict[str, Any]) -> float:
         score += 0.2
     if bool(entry.get("is_untrusted", False)):
         score -= 0.45
+    result_evidence_type = str(entry.get("result_evidence_type") or "").strip().lower()
+    if result_evidence_type == "text_primary":
+        score += 0.35
+    elif result_evidence_type == "media_support":
+        score -= 0.05
     flags = {str(flag).strip().lower() for flag in entry.get("flags", [])}
     if "fallback" in flags:
         score -= 0.2
@@ -3814,18 +4094,22 @@ def _build_executive_report(
 def _filter_result_text_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for packet in packets:
-        statement = str(packet.get("statement", "")).strip()
+        statement = _clean_section_statement(str(packet.get("statement", "")).strip())
         if not statement:
             continue
         if _is_noise_statement(statement):
             continue
-        if _is_method_like_statement(statement) and not _has_concrete_result_outcome(statement):
+        if _is_visual_annotation_statement(statement):
             continue
-        if _is_generic_visual_statement(statement) and not _has_concrete_result_outcome(statement):
+        has_concrete = _has_concrete_result_outcome(statement)
+        has_high_signal = _is_high_signal_result_statement(statement)
+        if _is_method_like_statement(statement) and not has_concrete:
             continue
-        if not _has_concrete_result_outcome(statement):
+        if _is_generic_visual_statement(statement) and not has_concrete:
             continue
-        out.append(packet)
+        if not has_concrete and not has_high_signal:
+            continue
+        out.append({**packet, "statement": statement})
     return out
 
 
@@ -3851,6 +4135,10 @@ def _has_concrete_result_outcome(statement: str) -> bool:
     return bool(CONCRETE_RESULT_RE.search(str(statement or "")))
 
 
+def _is_high_signal_result_statement(statement: str) -> bool:
+    return bool(HIGH_SIGNAL_RESULT_RE.search(str(statement or "")))
+
+
 def _is_generic_visual_statement(statement: str) -> bool:
     text = str(statement or "").strip()
     if not text:
@@ -3858,6 +4146,21 @@ def _is_generic_visual_statement(statement: str) -> bool:
     if not GENERIC_VISUAL_RE.search(text):
         return False
     return not _has_concrete_result_outcome(text)
+
+
+def _has_panel_prefix(statement: str) -> bool:
+    return bool(re.match(r"^\s*[a-h](?:\s*(?:and|,)\s*[a-h])?,\s+", str(statement or ""), flags=re.IGNORECASE))
+
+
+def _is_visual_annotation_statement(statement: str) -> bool:
+    text = str(statement or "").strip()
+    if not text:
+        return False
+    if _has_panel_prefix(text):
+        return True
+    if VISUAL_ANNOTATION_RE.search(text):
+        return True
+    return False
 
 
 def _is_layout_artifact_statement(value: str) -> bool:
@@ -4101,7 +4404,7 @@ def _build_executive_summary(
     results_text = _summary_text_from_compact_section(
         sections_compact.get("results", []),
         default_text="key quantitative outcomes were limited in the extracted packets",
-        max_points=6,
+        max_points=7,
         max_chars=680,
         extracted_rows=extracted.get("results", []),
     )
@@ -4115,8 +4418,8 @@ def _build_executive_summary(
     conclusion_text = _summary_text_from_compact_section(
         sections_compact.get("conclusion", []),
         default_text="the paper's overall conclusion was only partially explicit in extracted content",
-        max_points=4,
-        max_chars=420,
+        max_points=5,
+        max_chars=520,
         extracted_rows=extracted.get("conclusion", []),
     )
     parts = [
@@ -4124,7 +4427,7 @@ def _build_executive_summary(
         f"Methods: {_summary_fragment(methods_text, max_chars=620)}.",
         f"Results: {_summary_fragment(results_text, max_chars=680)}.",
         f"Discussion: {_summary_fragment(discussion_text, max_chars=520)}.",
-        f"Conclusion: {_summary_fragment(conclusion_text, max_chars=420)}.",
+        f"Conclusion: {_summary_fragment(conclusion_text, max_chars=520)}.",
     ]
     return " ".join(parts).strip()
 
@@ -4146,7 +4449,7 @@ def _summary_text_from_compact_section(
     for row in rows:
         if str(row.get("status", "")).strip().lower() != "found":
             continue
-        statement = _strip_confidence_annotations(str(row.get("statement", "")).strip())
+        statement = _clean_section_statement(str(row.get("statement", "")).strip())
         if not statement:
             continue
         found_rows.append({**row, "statement": statement})
@@ -4186,7 +4489,7 @@ def _summary_text_from_extracted_rows(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        statement = _strip_confidence_annotations(str(row.get("statement", "")).strip())
+        statement = _clean_section_statement(str(row.get("statement", "")).strip())
         if not statement:
             continue
         key = _canonical_text(statement)
@@ -4521,6 +4824,120 @@ def _chunk_order_key(chunk: dict[str, Any], idx: int) -> tuple[int, int]:
 def _split_sentences(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"(?<=[.!?])\s+", str(text or "")) if part.strip()]
 
+
+def _tail_token(value: str) -> str:
+    token = str(value or "").strip().lower()
+    return re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", token)
+
+
+def _trim_dangling_tail_tokens(text: str) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean:
+        return ""
+    clean = clean.rstrip(" ,;:/-")
+    parts = clean.split()
+    removed = False
+    while parts:
+        if _tail_token(parts[-1]) not in INCOMPLETE_TAIL_TOKENS:
+            break
+        parts.pop()
+        removed = True
+    trimmed = " ".join(parts).strip().rstrip(" ,;:/-")
+    if removed and trimmed and trimmed[-1] not in ".!?":
+        trimmed += "."
+    return trimmed
+
+
+def _is_incomplete_statement(value: str) -> bool:
+    raw = " ".join(str(value or "").split()).strip()
+    if not raw:
+        return True
+    if raw.endswith("...") or raw.endswith("…"):
+        return True
+    clean = _strip_confidence_annotations(raw)
+    if not clean:
+        return True
+    if clean[-1] in ",;:/-([{":
+        return True
+    if clean.count("(") > clean.count(")"):
+        return True
+    if re.match(r"^\s*(?:our|this|these)\s+finding(?:s)?\s+that\b", clean, flags=re.IGNORECASE):
+        if not re.search(
+            r"\b(suggest|indicat|support|demonstrat|highlight|imply|point(?:s)?\s+to|show(?:ed|s)?)\b",
+            clean,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    tail = _tail_token(clean.split()[-1])
+    if tail in INCOMPLETE_TAIL_TOKENS:
+        return True
+    if (
+        tail.isalpha()
+        and len(tail) <= 3
+        and tail not in ALLOWED_SHORT_FINAL_TOKENS
+        and len(clean) >= 110
+        and clean[-1] not in ".!?"
+    ):
+        return True
+    return False
+
+
+def _repair_statement_from_verbatim(statement: str, verbatim: str) -> str:
+    raw = " ".join(str(statement or "").split()).strip()
+    clean = _strip_confidence_annotations(raw)
+    if not clean:
+        return ""
+    needs_repair = _is_incomplete_statement(raw) or _is_incomplete_statement(clean)
+    if not needs_repair:
+        return clean
+
+    source = " ".join(_strip_confidence_annotations(verbatim).split()).strip()
+    if source:
+        sentences = _split_sentences(source)
+        if sentences:
+            first_sentence = _trim_dangling_tail_tokens(sentences[0])
+            if first_sentence and not _is_incomplete_statement(first_sentence):
+                return first_sentence
+        if source.lower().startswith(clean.lower()) and len(source) > len(clean) + 8:
+            expanded = _trim_dangling_tail_tokens(source[:420])
+            if expanded and not _is_incomplete_statement(expanded):
+                return expanded
+
+    return _trim_dangling_tail_tokens(clean)
+
+
+def _compact_without_cutoff(text: str, *, max_chars: int) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean:
+        return ""
+    if len(clean) <= max_chars:
+        return clean
+
+    # Prefer complete sentences that fit the configured limit.
+    sentences = _split_sentences(clean)
+    if len(sentences) > 1:
+        picked: list[str] = []
+        for sentence in sentences:
+            candidate = " ".join(picked + [sentence]).strip()
+            if len(candidate) > max_chars:
+                break
+            picked.append(sentence)
+        if picked:
+            return " ".join(picked).strip()
+
+    # If no full sentence fits, try clause-boundary trim without ellipsis.
+    window = clean[:max_chars]
+    for marker in ("; ", ": ", ", "):
+        idx = window.rfind(marker)
+        if idx >= int(max_chars * 0.65):
+            trimmed = window[:idx].rstrip(" ,;:")
+            if trimmed and trimmed[-1] not in ".!?":
+                trimmed += "."
+            return trimmed
+
+    # Avoid mid-thought truncation; keep the full statement.
+    return clean
+
 def _summary_has_all_components(summary: str) -> bool:
     text = summary.lower()
     checks = [
@@ -4542,10 +4959,7 @@ def _summary_fragment(value: str, *, max_chars: int, sentence: bool = False) -> 
             text = parts[0].strip()
     text = text.rstrip(" \t\r\n.;,:!?")
     if len(text) > max_chars:
-        cut = text[: max_chars - 3]
-        if " " in cut:
-            cut = cut.rsplit(" ", 1)[0]
-        text = cut.rstrip(" ,;:.") + "..."
+        text = _compact_without_cutoff(text, max_chars=max_chars).rstrip(" \t\r\n.;,:!?")
     if sentence and text and text[-1] not in ".!?":
         text += "."
     return text

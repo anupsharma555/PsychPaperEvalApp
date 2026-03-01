@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import lru_cache
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -13,7 +15,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app.core.config import settings
+from app.core.config import ROOT_DIR, settings
 from app.db.models import Asset, Chunk, Discrepancy, Document, Finding, Job, JobStatus, Report
 from app.db.session import get_session
 from app.schemas.desktop import (
@@ -27,6 +29,7 @@ from app.schemas.desktop import (
 )
 from app.services.ingest import ingest_upload, ingest_url
 from app.services.jobs import enqueue_job, job_runner
+from app.services.author_utils import sanitize_author_list
 from app.services.report_retention import (
     is_document_saved,
     list_saved_reports,
@@ -63,10 +66,88 @@ CONFIDENCE_TAG_RE = re.compile(
 )
 FIGURE_ORDER_RE = re.compile(r"(?:\bfig(?:ure)?\b|^f)\s*[_:\s-]*(s?\d+)([a-z]?)", flags=re.IGNORECASE)
 TABLE_ORDER_RE = re.compile(r"\btable\b\s*[_:\s-]*(s?\d+)([a-z]?)", flags=re.IGNORECASE)
+FIGURE_TOKEN_RE = re.compile(r"(?:^|[^a-z0-9])f(?:ig(?:ure)?)?[_:\s-]*(s?\d+[a-z]?)(?:[^a-z0-9]|$)", flags=re.IGNORECASE)
+FIGURE_FILENAME_TOKEN_RE = re.compile(r"f(?:ig(?:ure)?)?[_:\s-]?(s?\d+[a-z]?)(?:[^a-z0-9]|$)", flags=re.IGNORECASE)
+FIGURE_TEXT_REF_RE = re.compile(r"\bfig(?:ure)?\.?\s*(s?\d+)([a-z]?)\b", flags=re.IGNORECASE)
 FALLBACK_ID_CONTEXT_RE = re.compile(r"\s*\(id:text-fallback-[^)]+\)\s*", flags=re.IGNORECASE)
 FALLBACK_ID_BRACKET_RE = re.compile(r"\s*\[id:text-fallback-[^\]]+\]\s*", flags=re.IGNORECASE)
 FALLBACK_ID_TOKEN_RE = re.compile(r"\bid:text-fallback-[a-z0-9_.:-]+\b", flags=re.IGNORECASE)
 STATEMENT_TOKEN_RE = re.compile(r"[a-z0-9]+(?:\.[0-9]+)?")
+LEGEND_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+LEGEND_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
+LEGEND_STOPWORD_RE = re.compile(r"\b(the|and|of|in|to|with|for|that|this|was|were|from|across|between)\b", flags=re.IGNORECASE)
+LEGEND_VERB_RE = re.compile(
+    r"\b(show|shows|showed|indicate|indicates|indicated|reveal|reveals|revealed|demonstrate|demonstrates|demonstrated|identify|identifies|identified|compare|compares|compared|was|were|is|are)\b",
+    flags=re.IGNORECASE,
+)
+LEGEND_LINK_VERB_RE = re.compile(
+    r"\b(show|shows|showed|indicate|indicates|indicated|reveal|reveals|revealed|demonstrate|demonstrates|demonstrated|identify|identifies|identified|associated|correlated|difference|differences|pattern|patterns|characteriz(?:e|ed|es|ing)|relat(?:ed|es|ing)|correspond(?:ed|ence|ing)?|validate(?:d|s|ion)?)\b",
+    flags=re.IGNORECASE,
+)
+GENERIC_LEGEND_RE = re.compile(
+    r"^(?:page\s+\d+\s+(?:raster(?:\s+fallback)?|image(?:\s+fallback)?)|supplementary material|image)$",
+    flags=re.IGNORECASE,
+)
+MEDIA_LEGEND_MAX_CHARS = max(1200, int(getattr(settings, "media_legend_max_chars", 6000) or 6000))
+OCR_LEGEND_MAX_CHARS = max(900, int(getattr(settings, "media_ocr_legend_max_chars", 1800) or 1800))
+
+
+def _safe_git_output(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT_DIR), *args],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return str(result.stdout or "").strip()
+
+
+def _load_build_manifest() -> dict[str, Any]:
+    path = ROOT_DIR / ".run" / "build_manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+@lru_cache(maxsize=1)
+def _runtime_build_info() -> dict[str, Any]:
+    version = ""
+    try:
+        version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    except Exception:
+        version = ""
+
+    manifest = _load_build_manifest()
+    manifest_git_sha = str(manifest.get("git_sha") or "").strip()
+    git_commit = manifest_git_sha[:12] if manifest_git_sha else _safe_git_output("rev-parse", "--short=12", "HEAD")
+    git_dirty = bool(_safe_git_output("status", "--porcelain", "--untracked-files=no"))
+    build_timestamp = str(manifest.get("built_at") or "").strip()
+
+    marker_parts: list[str] = []
+    if version:
+        marker_parts.append(f"v{version}")
+    marker_parts.append(git_commit or "no-git")
+    if git_dirty:
+        marker_parts.append("dirty")
+
+    return {
+        "app_version": version,
+        "git_commit": git_commit or "unknown",
+        "git_dirty": git_dirty,
+        "build_timestamp": build_timestamp,
+        "source_root": str(ROOT_DIR),
+        "build_marker": "-".join(marker_parts),
+    }
 
 
 def _raise_bad_request(error_code: str, user_message: str, next_action: str) -> None:
@@ -370,6 +451,188 @@ def _normalize_media_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
+def _normalize_media_legend(value: Any, *, max_chars: int = MEDIA_LEGEND_MAX_CHARS) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(FALLBACK_ID_CONTEXT_RE, " ", text)
+    text = re.sub(FALLBACK_ID_BRACKET_RE, " ", text)
+    text = re.sub(FALLBACK_ID_TOKEN_RE, " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    trimmed = text[:max_chars]
+    cut = trimmed.rfind(" ")
+    if cut >= int(max_chars * 0.65):
+        trimmed = trimmed[:cut]
+    return f"{trimmed.rstrip(',;:.- ')}..."
+
+
+def _is_generic_legend(value: str) -> bool:
+    text = _normalize_media_text(value)
+    if not text:
+        return True
+    if GENERIC_LEGEND_RE.match(text):
+        return True
+    if re.fullmatch(r"(?:fig(?:ure)?|table)[:\s_-]*[a-z0-9]+", text):
+        return True
+    if re.fullmatch(r"(?:figure|table):[a-z0-9:_-]+", text):
+        return True
+    return False
+
+
+def _extract_legend_from_ocr(ocr_text: Any) -> str:
+    def _looks_sentence_like_legend(value: str) -> bool:
+        text = _normalize_media_legend(value, max_chars=OCR_LEGEND_MAX_CHARS)
+        if not text:
+            return False
+        words = LEGEND_WORD_RE.findall(text)
+        if len(words) < 10:
+            return False
+        if len(LEGEND_STOPWORD_RE.findall(text)) < 1:
+            return False
+        if not LEGEND_VERB_RE.search(text):
+            return False
+        if re.match(r"^\s*[A-H](?:\s*(?:and|,)\s*[A-H])?,\s+", text):
+            return False
+        return True
+
+    raw = str(ocr_text or "").strip()
+    if not raw:
+        return ""
+    lines = [_normalize_media_legend(line, max_chars=OCR_LEGEND_MAX_CHARS) for line in re.split(r"[\r\n]+", raw)]
+    for line in lines:
+        if not line or _is_generic_legend(line):
+            continue
+        words = LEGEND_WORD_RE.findall(line)
+        if len(words) >= 8 and re.search(r"\bfig(?:ure)?\b", line, flags=re.IGNORECASE) and _looks_sentence_like_legend(line):
+            return line
+    for line in lines:
+        if not line or _is_generic_legend(line):
+            continue
+        if _looks_sentence_like_legend(line):
+            return line
+    normalized = _normalize_media_legend(raw, max_chars=OCR_LEGEND_MAX_CHARS)
+    for sentence in LEGEND_SENTENCE_SPLIT_RE.split(normalized):
+        candidate = _normalize_media_legend(sentence, max_chars=OCR_LEGEND_MAX_CHARS)
+        if not candidate or _is_generic_legend(candidate):
+            continue
+        if _looks_sentence_like_legend(candidate):
+            return candidate
+    return ""
+
+
+def _media_legend(chunk: Chunk, meta_obj: dict[str, Any]) -> tuple[str, str]:
+    candidate_fields = (
+        ("legend", "legend"),
+        ("legend_text", "legend"),
+        ("description", "description"),
+        ("alt_text", "alt_text"),
+    )
+    for field_name, source_name in candidate_fields:
+        candidate = _normalize_media_legend(meta_obj.get(field_name))
+        if not candidate:
+            continue
+        if _is_generic_legend(candidate):
+            continue
+        if field_name in {"description", "alt_text"}:
+            words = LEGEND_WORD_RE.findall(candidate)
+            if len(words) < 8 or not LEGEND_VERB_RE.search(candidate):
+                continue
+        return candidate, source_name
+
+    content_candidate = _normalize_media_legend(chunk.content)
+    if content_candidate and not _is_generic_legend(content_candidate):
+        return content_candidate, "content"
+
+    ocr_candidate = _extract_legend_from_ocr(meta_obj.get("ocr_text"))
+    if ocr_candidate:
+        return ocr_candidate, "ocr"
+    return "", "missing"
+
+
+def _normalize_figure_token(value: Any) -> str:
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return ""
+    match = re.search(r"\b(S?)(\d+)([A-Z]?)\b", raw)
+    if not match:
+        return ""
+    prefix = "S" if match.group(1) else ""
+    number = str(int(match.group(2) or "0")) if str(match.group(2) or "").isdigit() else ""
+    suffix = str(match.group(3) or "")
+    if not number:
+        return ""
+    return f"{prefix}{number}{suffix}"
+
+
+def _figure_token_from_chunk(chunk: Chunk, meta_obj: dict[str, Any]) -> str:
+    candidates = [
+        str(meta_obj.get("figure_id") or ""),
+        str(meta_obj.get("caption") or ""),
+        str(chunk.anchor or ""),
+        str(meta_obj.get("source_url") or ""),
+        str(meta_obj.get("path") or ""),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        for pattern in (FIGURE_ORDER_RE, FIGURE_TOKEN_RE):
+            match = pattern.search(candidate)
+            if not match:
+                continue
+            token = _normalize_figure_token(match.group(1) or "")
+            if token:
+                return token
+        tail = Path(candidate).name
+        filename_match = FIGURE_FILENAME_TOKEN_RE.search(tail)
+        if filename_match:
+            token = _normalize_figure_token(filename_match.group(1) or "")
+            if token:
+                return token
+    return ""
+
+
+def _figure_tokens_from_text(value: Any) -> list[str]:
+    text = str(value or "")
+    if not text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in FIGURE_TEXT_REF_RE.finditer(text):
+        base = _normalize_figure_token(match.group(1) or "")
+        suffix = str(match.group(2) or "").upper()
+        token = f"{base}{suffix}" if base else ""
+        if base and base not in seen:
+            seen.add(base)
+            out.append(base)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _legend_duplicates_caption(legend: str, caption: str) -> bool:
+    normalized_legend = _normalize_media_text(legend)
+    normalized_caption = _normalize_media_text(caption)
+    if not normalized_legend or not normalized_caption:
+        return False
+    if normalized_legend == normalized_caption:
+        return True
+    if normalized_legend in normalized_caption or normalized_caption in normalized_legend:
+        return True
+    legend_tokens = set(STATEMENT_TOKEN_RE.findall(normalized_legend))
+    caption_tokens = set(STATEMENT_TOKEN_RE.findall(normalized_caption))
+    if not legend_tokens or not caption_tokens:
+        return False
+    overlap = len(legend_tokens & caption_tokens) / max(1, min(len(legend_tokens), len(caption_tokens)))
+    return overlap >= 0.9
+
+
 def _is_supplement_like_media(chunk: Chunk, meta_obj: dict[str, Any], asset_url: str | None) -> bool:
     source = _normalize_media_text(meta_obj.get("source"))
     caption = _normalize_media_text(meta_obj.get("caption"))
@@ -567,6 +830,15 @@ def _sanitize_summary_payload(parsed: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         return parsed
 
+    paper_meta = parsed.get("paper_meta")
+    if isinstance(paper_meta, dict):
+        authors_raw = paper_meta.get("authors")
+        if isinstance(authors_raw, list):
+            authors_display, authors_extracted_count = sanitize_author_list(authors_raw, max_items=24)
+            paper_meta["authors"] = authors_display
+            paper_meta["authors_extracted_count"] = authors_extracted_count
+            paper_meta["authors_display_count"] = len(authors_display)
+
     if isinstance(parsed.get("key_findings"), list):
         parsed["key_findings"] = _dedupe_statement_lines(parsed.get("key_findings"))
 
@@ -734,6 +1006,45 @@ def _load_analysis_diagnostics(document_id: int) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _load_source_figure_legend_maps(document_id: int) -> tuple[dict[str, str], dict[str, str]]:
+    path = artifacts_dir(document_id) / "source_figure_legends.json"
+    if not path.exists():
+        return {}, {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}, {}
+    if not isinstance(parsed, dict):
+        return {}, {}
+
+    raw_caption = parsed.get("caption_map", {})
+    raw_legend = parsed.get("legend_map", {})
+    caption_map: dict[str, str] = {}
+    legend_map: dict[str, str] = {}
+
+    if isinstance(raw_caption, dict):
+        for key, value in raw_caption.items():
+            token = _normalize_figure_token(key)
+            text = _normalize_media_legend(value)
+            if not token or not text:
+                continue
+            existing = caption_map.get(token, "")
+            if len(text) > len(existing):
+                caption_map[token] = text
+
+    if isinstance(raw_legend, dict):
+        for key, value in raw_legend.items():
+            token = _normalize_figure_token(key)
+            text = _normalize_media_legend(value)
+            if not token or not text:
+                continue
+            existing = legend_map.get(token, "")
+            if len(text) > len(existing):
+                legend_map[token] = text
+
+    return caption_map, legend_map
+
+
 @router.get("/status")
 def get_status():
     processing = job_runner.status()
@@ -767,6 +1078,7 @@ def get_status():
         "last_recovery_at": processing.get("last_recovery_at"),
         "last_error": processing.get("last_error"),
         "orphan_cleanup_last_run": processing.get("orphan_cleanup_last_run"),
+        "runtime_build": _runtime_build_info(),
         "runtime_events": [item.model_dump() for item in _load_runtime_events(limit=10)],
     }
 
@@ -864,6 +1176,7 @@ def desktop_bootstrap(
             vision_mmproj_path=str(vision_mmproj_path),
             vision_mmproj_exists=vision_mmproj_path.exists(),
         ),
+        runtime_build=_runtime_build_info(),
         lifecycle=DesktopLifecycleStatus(
             event_count=len(events),
             latest_event=latest_event,
@@ -992,6 +1305,58 @@ def get_document_media(document_id: int, session: Session = Depends(get_session)
         assets = session.exec(select(Asset).where(Asset.id.in_(asset_ids))).all()
         asset_kind_map = {int(asset.id): str(asset.kind) for asset in assets if asset.id is not None}
 
+    # Some publisher-scraped image files do not carry captions. Re-link by figure
+    # ordinal token so those images can inherit parsed figure captions.
+    figure_caption_lookup: dict[str, str] = {}
+    figure_legend_lookup: dict[str, str] = {}
+    source_caption_lookup, source_legend_lookup = _load_source_figure_legend_maps(document_id)
+    for token, caption in source_caption_lookup.items():
+        existing = figure_caption_lookup.get(token, "")
+        if len(caption) > len(existing):
+            figure_caption_lookup[token] = caption
+    for token, legend in source_legend_lookup.items():
+        existing = figure_legend_lookup.get(token, "")
+        if len(legend) > len(existing):
+            figure_legend_lookup[token] = legend
+
+    for chunk in chunks:
+        if chunk.modality != "figure":
+            continue
+        meta_obj = _parse_chunk_meta(chunk.meta)
+        caption = _normalize_media_legend(meta_obj.get("caption"))
+        if not caption or _is_generic_legend(caption):
+            continue
+        token = _figure_token_from_chunk(chunk, meta_obj)
+        if not token:
+            continue
+        existing = figure_caption_lookup.get(token, "")
+        if len(caption) > len(existing):
+            figure_caption_lookup[token] = caption
+
+    text_chunks = session.exec(
+        select(Chunk)
+        .where(Chunk.document_id == document_id)
+        .where(Chunk.modality == "text")
+        .order_by(Chunk.id)
+    ).all()
+    for text_chunk in text_chunks:
+        sentence_candidates = LEGEND_SENTENCE_SPLIT_RE.split(str(text_chunk.content or ""))
+        for sentence in sentence_candidates:
+            candidate = _normalize_media_legend(sentence, max_chars=OCR_LEGEND_MAX_CHARS)
+            if not candidate or _is_generic_legend(candidate):
+                continue
+            if len(LEGEND_WORD_RE.findall(candidate)) < 8:
+                continue
+            if not LEGEND_LINK_VERB_RE.search(candidate):
+                continue
+            tokens = _figure_tokens_from_text(candidate)
+            if not tokens:
+                continue
+            for token in tokens:
+                existing = figure_legend_lookup.get(token, "")
+                if len(candidate) > len(existing):
+                    figure_legend_lookup[token] = candidate
+
     figures: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
     seen_any_figure: set[str] = set()
@@ -1026,6 +1391,23 @@ def get_document_media(document_id: int, session: Session = Depends(get_session)
         if not isinstance(quality_flags, list):
             quality_flags = []
         signature = _media_signature(chunk, meta_obj)
+        legend_text, legend_source = _media_legend(chunk, meta_obj)
+        caption_text = _normalize_media_legend(meta_obj.get("caption"))
+        figure_token = _figure_token_from_chunk(chunk, meta_obj)
+        linked_caption = figure_caption_lookup.get(figure_token, "") if figure_token else ""
+        source_linked_legend = source_legend_lookup.get(figure_token, "") if figure_token else ""
+        linked_legend = figure_legend_lookup.get(figure_token, "") if figure_token else ""
+        if linked_caption and not caption_text:
+            caption_text = linked_caption
+        if source_linked_legend and (not legend_text or legend_source in {"missing", "ocr"}):
+            legend_text = source_linked_legend
+            legend_source = "linked_source_page"
+        elif linked_legend and (not legend_text or legend_source in {"missing", "ocr"}):
+            legend_text = linked_legend
+            legend_source = "linked_text"
+        if legend_text and caption_text and _legend_duplicates_caption(legend_text, caption_text):
+            legend_text = ""
+            legend_source = "missing"
 
         if chunk.modality == "figure":
             if asset_kind == "supp" and signature in seen_main_figure:
@@ -1039,10 +1421,12 @@ def get_document_media(document_id: int, session: Session = Depends(get_session)
                 {
                     "chunk_id": int(chunk.id),
                     "anchor": chunk.anchor,
-                    "caption": str(meta_obj.get("caption") or ""),
+                    "caption": caption_text,
                     "page": meta_obj.get("page"),
                     "figure_id": str(meta_obj.get("figure_id") or ""),
                     "source": str(meta_obj.get("source") or ""),
+                    "legend": legend_text,
+                    "legend_source": legend_source,
                     "asset_kind": asset_kind,
                     "quality_flags": [str(item) for item in quality_flags],
                     "image_url": image_url,
@@ -1070,10 +1454,12 @@ def get_document_media(document_id: int, session: Session = Depends(get_session)
                 {
                     "chunk_id": int(chunk.id),
                     "anchor": chunk.anchor,
-                    "caption": str(meta_obj.get("caption") or "Supplementary material"),
+                    "caption": caption_text or "Supplementary material",
                     "page": meta_obj.get("page"),
                     "figure_id": str(meta_obj.get("figure_id") or ""),
                     "source": source or "html_link",
+                    "legend": legend_text,
+                    "legend_source": legend_source,
                     "asset_kind": "supp",
                     "quality_flags": [str(item) for item in quality_flags],
                     "image_url": image_url,
@@ -1097,6 +1483,8 @@ def get_document_media(document_id: int, session: Session = Depends(get_session)
                 "caption": str(meta_obj.get("caption") or ""),
                 "page": meta_obj.get("page"),
                 "source": str(meta_obj.get("source") or ""),
+                "legend": legend_text,
+                "legend_source": legend_source,
                 "asset_kind": asset_kind,
                 "quality_flags": [str(item) for item in quality_flags],
                 "image_url": image_url,

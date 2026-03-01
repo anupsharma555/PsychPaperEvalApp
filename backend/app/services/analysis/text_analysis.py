@@ -496,7 +496,7 @@ def _select_fallback_sentences(content: str, *, section: str) -> list[str]:
                 continue
             prefix_lines.append(body)
     if prefix_lines:
-        return [truncate_text(line, 260) for line in prefix_lines[:2]]
+        return [_truncate_sentence_safely(line, max_chars=260) for line in prefix_lines[:2]]
 
     sentences = [part.strip() for part in SENTENCE_SPLIT_RE.split(" ".join(text.split())) if part.strip()]
     picked: list[str] = []
@@ -528,12 +528,28 @@ def _select_fallback_sentences(content: str, *, section: str) -> list[str]:
             break
 
     if picked:
-        return [truncate_text(item, 260) for item in picked]
+        return [_truncate_sentence_safely(item, max_chars=260) for item in picked]
     for sentence in sentences:
         text = " ".join(sentence.split()).strip()
         if len(text) >= 24:
-            return [truncate_text(text, 260)]
+            return [_truncate_sentence_safely(text, max_chars=260)]
     return []
+
+
+def _truncate_sentence_safely(text: str, *, max_chars: int) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean or len(clean) <= max_chars:
+        return clean
+    window = clean[:max_chars]
+    for marker in (". ", "; ", ": ", ", "):
+        idx = window.rfind(marker)
+        if idx >= int(max_chars * 0.65):
+            clipped = window[: idx + (1 if marker.startswith(".") else 0)].rstrip(" ,;:")
+            if clipped:
+                return clipped
+    if " " in window:
+        window = window.rsplit(" ", 1)[0]
+    return window.rstrip(" ,;:")
 
 
 def _parse_chunk_meta(raw_meta: Any) -> dict[str, Any]:
@@ -752,13 +768,17 @@ def _resolve_packet_section(
         vote_sources[key].add(source)
 
     meta_label = str(packet.get("anchor_meta_section_norm", "") or "").strip().lower()
+    effective_meta_confidence = meta_section_confidence
+    if meta_label in votes and effective_meta_confidence <= 0.0 and meta_source not in {"position", "fallback"}:
+        # Many parser-emitted chunks provide trustworthy section_norm labels without explicit confidence.
+        effective_meta_confidence = 0.78
     if meta_label in votes:
-        meta_weight = SECTION_SOURCE_WEIGHTS["meta"] * (0.30 + (0.70 * meta_section_confidence))
+        meta_weight = SECTION_SOURCE_WEIGHTS["meta"] * (0.30 + (0.70 * effective_meta_confidence))
         if meta_source == "position":
             meta_weight *= 0.55
         elif meta_source == "fallback":
             meta_weight *= 0.45
-        elif meta_source not in {"heading", "structured_abstract", "anchor", "meta"} and meta_section_confidence < 0.5:
+        elif meta_source not in {"heading", "structured_abstract", "anchor", "meta"} and effective_meta_confidence < 0.5:
             meta_weight *= 0.70
         if meta_source == "heading":
             meta_weight += (0.06 + (0.12 * meta_heading_style_score))
@@ -822,6 +842,8 @@ def _resolve_packet_section(
         explicit_signal = True
     elif meta_source in {"heading", "structured_abstract"} and meta_label in votes:
         explicit_signal = True
+    elif meta_label in votes and meta_source not in {"position", "fallback"} and effective_meta_confidence >= 0.65:
+        explicit_signal = True
 
     ranked = sorted(
         (
@@ -853,12 +875,18 @@ def _resolve_packet_section(
 
     prev_distance = abs(idx - previous_index) if previous_index >= 0 else total_chunks
     ratio = float(idx) / float(max(1, total_chunks - 1)) if total_chunks > 1 else 0.0
-    if previous_section == "conclusion" and winner != "conclusion" and not explicit_signal:
+    winner_has_meta_support = "meta" in vote_sources.get(winner, set()) and votes.get(winner, 0.0) >= 0.62
+    if previous_section == "conclusion" and winner != "conclusion" and not explicit_signal and not winner_has_meta_support:
         winner = "conclusion"
         winner_score = max(winner_score, votes.get("conclusion", SECTION_SOURCE_WEIGHTS["position"]))
         winner_sources = ["position"]
         flags.append("late_section_lock")
-    elif previous_section == "discussion" and winner in {"introduction", "methods", "results"} and not explicit_signal:
+    elif (
+        previous_section == "discussion"
+        and winner in {"introduction", "methods", "results"}
+        and not explicit_signal
+        and not winner_has_meta_support
+    ):
         winner = "discussion"
         winner_score = max(winner_score, votes.get("discussion", SECTION_SOURCE_WEIGHTS["position"]))
         winner_sources = ["position"]

@@ -621,6 +621,56 @@ def test_text_section_annotation_uses_document_order_not_input_order() -> None:
     assert annotated[1]["section_label"] == "methods"
 
 
+def test_text_section_annotation_meta_results_override_late_conclusion_lock() -> None:
+    chunks = [
+        {
+            "anchor": "section:Conclusions:1",
+            "meta": json.dumps(
+                {
+                    "source": "grobid_tei",
+                    "section_norm": "conclusion",
+                    "section_raw_title": "Conclusions",
+                }
+            ),
+        },
+        {
+            "anchor": "section:Individual Deviations in Topological Properties:2",
+            "meta": json.dumps(
+                {
+                    "source": "grobid_tei",
+                    "section_norm": "results",
+                    "section_raw_title": "Individual Deviations in Topological Properties",
+                }
+            ),
+        },
+    ]
+    packets = text_analysis._hydrate_anchor_metadata(
+        [
+            {
+                "finding_id": "c1",
+                "anchor": "section:Conclusions:1",
+                "statement": "Overall, these findings support translational relevance.",
+                "evidence_refs": ["section:Conclusions:1"],
+                "confidence": 0.85,
+                "category": "conclusion",
+            },
+            {
+                "finding_id": "r1",
+                "anchor": "section:Individual Deviations in Topological Properties:2",
+                "statement": "Children with ADHD showed significantly greater extreme nodal deviations versus controls.",
+                "evidence_refs": ["section:Individual Deviations in Topological Properties:2"],
+                "confidence": 0.82,
+                "category": "results",
+            },
+        ],
+        chunks,
+    )
+    annotated = text_analysis._annotate_text_packet_sections(packets)
+    labels = {item["finding_id"]: item.get("section_label") for item in annotated}
+    assert labels["c1"] == "conclusion"
+    assert labels["r1"] == "results"
+
+
 def test_results_fidelity_gate_rejects_generic_visual_and_method_lines() -> None:
     packets = [
         {
@@ -850,6 +900,251 @@ def test_extract_tei_metadata_author_dedupe_and_source() -> None:
     assert meta["authors"] == ["Ana Smith", "Ben Jones"]
     assert meta["authors_extracted_count"] == 2
     assert meta["authors_display_count"] == 2
+
+
+def test_extract_tei_metadata_filters_affiliation_spillover() -> None:
+    tei = """
+    <TEI xmlns="http://www.tei-c.org/ns/1.0">
+      <teiHeader>
+        <fileDesc>
+          <sourceDesc>
+            <biblStruct>
+              <analytic>
+                <author><persName><forename>Nanfang</forename><surname>Pan</surname></persName></author>
+                <author><persName><forename>Qiyong</forename><surname>Gong</surname></persName></author>
+                <author>Department of Radiology Research JAMA Psychiatry Xiamen Hospital</author>
+              </analytic>
+            </biblStruct>
+          </sourceDesc>
+        </fileDesc>
+      </teiHeader>
+    </TEI>
+    """
+    meta = validated_pipeline._extract_tei_metadata(tei)
+    assert meta["authors"] == ["Nanfang Pan", "Qiyong Gong"]
+    assert meta["authors_extracted_count"] == 2
+    assert meta["authors_display_count"] == 2
+
+
+def test_runner_sanitize_meta_recomputes_author_counts() -> None:
+    meta = {
+        "authors": [
+            "Nanfang Pan",
+            "Qiyong Gong",
+            "Department of Radiology Research JAMA Psychiatry Xiamen Hospital",
+        ],
+        "authors_extracted_count": 23,
+        "authors_display_count": 23,
+        "metadata_source": "tei_analytic",
+    }
+    sanitized = runner._sanitize_meta(meta)
+    assert sanitized["authors"] == ["Nanfang Pan", "Qiyong Gong"]
+    assert sanitized["authors_extracted_count"] == 2
+    assert sanitized["authors_display_count"] == 2
+
+
+def test_section_dedupe_strips_citation_prefixes_and_drops_fragments() -> None:
+    rows = [
+        {
+            "statement": "7 Normative modeling incorporating neuroimaging metrics offers a robust framework.",
+            "anchor": "section:Discussion:1",
+            "evidence_refs": ["section:Discussion:1"],
+            "source_modality": "text",
+            "confidence": 0.8,
+            "section_confidence": 0.8,
+            "flags": [],
+        },
+        {
+            "statement": "4, 5 In contrast, data-driven clustering may offer a superior solution.",
+            "anchor": "section:Discussion:2",
+            "evidence_refs": ["section:Discussion:2"],
+            "source_modality": "text",
+            "confidence": 0.8,
+            "section_confidence": 0.8,
+            "flags": [],
+        },
+        {
+            "statement": "In contrast, biotype 2 demonstrated higher hyperactivity/impulsivity (mean [SD], 0.",
+            "anchor": "section:Discussion:3",
+            "evidence_refs": ["section:Discussion:3"],
+            "source_modality": "text",
+            "confidence": 0.7,
+            "section_confidence": 0.7,
+            "flags": [],
+        },
+    ]
+    deduped = synthesis._dedupe_section_items(rows, max_items=10)
+    statements = [str(item.get("statement", "")) for item in deduped]
+    assert any(statement.startswith("Normative modeling incorporating neuroimaging metrics") for statement in statements)
+    assert any(statement.startswith("In contrast, data-driven clustering") for statement in statements)
+    assert all("4, 5 " not in statement for statement in statements)
+    assert all("7 " not in statement[:3] for statement in statements)
+    assert all("mean [SD], 0." not in statement for statement in statements)
+
+
+def test_filter_result_text_packets_keeps_high_signal_non_numeric_findings() -> None:
+    packets = [
+        {
+            "statement": "Data-driven clustering identified three ADHD biotypes with distinct network patterns.",
+            "anchor": "section:Results:7",
+            "evidence_refs": ["section:Results:7"],
+            "section_label": "results",
+            "confidence": 0.76,
+            "section_confidence": 0.8,
+        }
+    ]
+    filtered = synthesis._filter_result_text_packets(packets)
+    assert len(filtered) == 1
+    assert "identified three adhd biotypes" in filtered[0]["statement"].lower()
+
+
+def test_filter_result_text_packets_drops_visual_annotation_lines() -> None:
+    packets = [
+        {
+            "statement": "Solid dots indicate statistically significant correlations after correction for spatial autocorrelation.",
+            "anchor": "section:Results:27",
+            "evidence_refs": ["section:Results:27"],
+            "section_label": "results",
+            "confidence": 0.56,
+            "section_confidence": 0.56,
+        },
+        {
+            "statement": "Patterns of attention problems in the validation cohort paralleled those of the discovery sample without statistical significance (H = 0.49; P = .78).",
+            "anchor": "section:Results:25",
+            "evidence_refs": ["section:Results:25"],
+            "section_label": "results",
+            "confidence": 0.7,
+            "section_confidence": 0.7,
+        },
+    ]
+    filtered = synthesis._filter_result_text_packets(packets)
+    assert len(filtered) == 1
+    assert "patterns of attention problems" in filtered[0]["statement"].lower()
+
+
+def test_filter_section_items_by_fidelity_prunes_panel_labels_from_results() -> None:
+    items = [
+        {
+            "statement": "C and D, Nodes exhibiting significant case-control differences in extreme deviation patterns.",
+            "anchor": "section:Results:19",
+            "evidence_refs": ["section:Results:19"],
+            "source_modality": "text",
+            "confidence": 0.56,
+            "section_confidence": 0.56,
+            "flags": ["fallback", "raw_chunk"],
+            "result_evidence_type": "text_primary",
+        },
+        {
+            "statement": "The robustness of the identified ADHD biotypes was validated via permutation testing.",
+            "anchor": "section:Results:7",
+            "evidence_refs": ["section:Results:7"],
+            "source_modality": "text",
+            "confidence": 0.82,
+            "section_confidence": 0.82,
+            "flags": [],
+            "result_evidence_type": "text_primary",
+        },
+    ]
+    filtered = synthesis._filter_section_items_by_fidelity("results", items, max_items=10)
+    assert len(filtered) == 1
+    assert "validated via permutation testing" in filtered[0]["statement"].lower()
+
+
+def test_filter_section_items_by_fidelity_prunes_method_like_conclusion_rows() -> None:
+    items = [
+        {
+            "statement": "A multimetric approach that incorporated 3 topological metrics was used to assess each region's MSN hubness.",
+            "anchor": "section:Individual Deviations in Topological Properties:14",
+            "evidence_refs": ["section:Individual Deviations in Topological Properties:14"],
+            "source_modality": "text",
+            "confidence": 0.82,
+            "section_confidence": 0.82,
+            "flags": ["llm_section_extract"],
+        },
+        {
+            "statement": "Overall, these findings support stratification-oriented models for ADHD heterogeneity.",
+            "anchor": "section:Conclusion:1",
+            "evidence_refs": ["section:Conclusion:1"],
+            "source_modality": "text",
+            "confidence": 0.82,
+            "section_confidence": 0.82,
+            "flags": ["llm_section_extract"],
+        },
+    ]
+    filtered = synthesis._filter_section_items_by_fidelity("conclusion", items, max_items=10)
+    assert len(filtered) == 1
+    assert "overall, these findings support" in filtered[0]["statement"].lower()
+
+
+def test_build_presentation_evidence_applies_fidelity_and_anchor_diversity() -> None:
+    evidence = {
+        "results": [
+            {
+                "statement": "C and D, Nodes exhibiting significant case-control differences in extreme deviation patterns.",
+                "anchor": "section:Results:19",
+                "confidence": 0.7,
+                "section_confidence": 0.7,
+                "source_modality": "text",
+                "evidence_refs": ["section:Results:19"],
+                "flags": ["fallback", "raw_chunk"],
+            },
+            {
+                "statement": "Data-driven clustering identified three ADHD biotypes with distinct network patterns.",
+                "anchor": "section:Results:7",
+                "confidence": 0.8,
+                "section_confidence": 0.8,
+                "source_modality": "text",
+                "evidence_refs": ["section:Results:7"],
+                "flags": [],
+            },
+            {
+                "statement": "Split-half cross-validation supported stable biotype assignment in independent folds.",
+                "anchor": "section:Results:7",
+                "confidence": 0.79,
+                "section_confidence": 0.79,
+                "source_modality": "text",
+                "evidence_refs": ["section:Results:7"],
+                "flags": [],
+            },
+            {
+                "statement": "Validation cohort symptom trajectories did not differ significantly by biotype over follow-up.",
+                "anchor": "section:Results:25",
+                "confidence": 0.78,
+                "section_confidence": 0.78,
+                "source_modality": "text",
+                "evidence_refs": ["section:Results:25"],
+                "flags": [],
+            },
+        ],
+        "conclusion": [
+            {
+                "statement": "To examine longitudinal changes, we analyzed follow-up data using linear mixed models.",
+                "anchor": "section:Biotype Identification:9",
+                "confidence": 0.82,
+                "section_confidence": 0.82,
+                "source_modality": "text",
+                "evidence_refs": ["section:Biotype Identification:9"],
+                "flags": ["llm_section_extract"],
+            },
+            {
+                "statement": "Overall, these findings support stratification-oriented models for ADHD heterogeneity.",
+                "anchor": "section:Conclusion:1",
+                "confidence": 0.82,
+                "section_confidence": 0.82,
+                "source_modality": "text",
+                "evidence_refs": ["section:Conclusion:1"],
+                "flags": ["llm_section_extract"],
+            },
+        ],
+    }
+    presentation = synthesis._build_presentation_evidence(extractive_evidence=evidence)
+    results = presentation["results"]
+    conclusion = presentation["conclusion"]
+    assert len(results) == 3
+    assert all("nodes exhibiting" not in str(item.get("statement", "")).lower() for item in results)
+    assert sum(1 for item in results if str(item.get("anchor", "")) == "section:Results:7") <= 2
+    assert len(conclusion) == 1
+    assert "overall, these findings support" in str(conclusion[0].get("statement", "")).lower()
 
 
 def test_structured_abstract_split_emits_section_norms() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from pathlib import Path
@@ -11,6 +12,7 @@ import httpx
 from sqlmodel import Session
 from bs4 import BeautifulSoup
 
+from app.core.config import settings
 from app.db.models import Asset, Document
 from app.services.fetcher import (
     discover_additional_supplement_urls,
@@ -20,7 +22,7 @@ from app.services.fetcher import (
     guess_filename,
     resolve_url,
 )
-from app.services.storage import asset_path, document_dir, ensure_document_dirs
+from app.services.storage import asset_path, artifacts_dir, document_dir, ensure_document_dirs
 
 
 def _looks_like_pdf(path: Path) -> bool:
@@ -42,11 +44,206 @@ def _looks_like_html(path: Path) -> bool:
     return "<html" in lowered or "<!doctype html" in lowered or "<body" in lowered
 
 
+def _looks_like_zip(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(8)
+    except Exception:
+        return False
+    return head.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
+
+
+def _detected_image_extension(path: Path) -> str | None:
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(32)
+    except Exception:
+        return None
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if head.startswith((b"II*\x00", b"MM\x00*")):
+        return ".tiff"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def _sanitize_stem(filename: str, fallback: str) -> str:
+    stem = Path(str(filename or "")).stem.strip()
+    if not stem:
+        stem = fallback
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
+    return cleaned or fallback
+
+
+def _unique_asset_target(document_id: int, stem: str, extension: str) -> tuple[str, Path]:
+    name = f"{stem}{extension}"
+    target = asset_path(document_id, name)
+    suffix = 2
+    while target.exists():
+        name = f"{stem}_{suffix}{extension}"
+        target = asset_path(document_id, name)
+        suffix += 1
+    return name, target
+
+
+def _normalize_downloaded_supplement(
+    document_id: int,
+    filename: str,
+    path: Path,
+) -> tuple[str, Path, str | None]:
+    detected_ext = ""
+    content_type: str | None = None
+    if _looks_like_pdf(path):
+        detected_ext = ".pdf"
+        content_type = "application/pdf"
+    elif _looks_like_html(path):
+        detected_ext = ".html"
+        content_type = "text/html"
+    else:
+        image_ext = _detected_image_extension(path)
+        if image_ext:
+            detected_ext = image_ext
+            content_type = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".tiff": "image/tiff",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+            }.get(image_ext, None)
+        elif _looks_like_zip(path):
+            detected_ext = ".zip"
+            content_type = "application/zip"
+
+    if not detected_ext or path.suffix.lower() == detected_ext:
+        return filename, path, content_type
+
+    stem = _sanitize_stem(filename, "supp")
+    normalized_name, normalized_path = _unique_asset_target(document_id, stem, detected_ext)
+    try:
+        path.rename(normalized_path)
+    except Exception:
+        return filename, path, content_type
+    return normalized_name, normalized_path, content_type
+
+
 def _url_suggests_pdf(url: str) -> bool:
     parsed = urlparse(url or "")
     path = parsed.path.lower()
     query = parsed.query.lower()
     return path.endswith(".pdf") or "/doi/suppl/" in path or "pdf" in query or "suppl_file" in path
+
+
+FIGURE_TITLE_LINE_RE = re.compile(r"^Figure\s+(S?\d+[A-Za-z]?)\.\s*(.+)$", re.IGNORECASE)
+FIGURE_SKIP_LINE_RE = re.compile(
+    r"^(?:view large|download|open in|go to figure in article|related|close)$",
+    re.IGNORECASE,
+)
+FIGURE_STOP_LINE_RE = re.compile(
+    r"^(?:key points|abstract|introduction|methods?|results?|discussion|conclusions?|article information|references?)$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_figure_token(value: str) -> str:
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return ""
+    match = re.search(r"\b(S?)(\d+)([A-Z]?)\b", raw)
+    if not match:
+        return ""
+    prefix = "S" if match.group(1) else ""
+    number = str(int(match.group(2) or "0")) if str(match.group(2) or "").isdigit() else ""
+    suffix = str(match.group(3) or "")
+    if not number:
+        return ""
+    return f"{prefix}{number}{suffix}"
+
+
+def _extract_source_figure_legend_maps(html: str | None) -> dict[str, dict[str, str]]:
+    raw_html = str(html or "")
+    if not raw_html:
+        return {"caption_map": {}, "legend_map": {}}
+
+    soup = BeautifulSoup(raw_html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+    lines = [re.sub(r"\s+", " ", line).strip() for line in soup.get_text("\n").splitlines()]
+    lines = [line for line in lines if line]
+
+    caption_map: dict[str, str] = {}
+    legend_map: dict[str, str] = {}
+    idx = 0
+    total = len(lines)
+    while idx < total:
+        line = lines[idx]
+        match = FIGURE_TITLE_LINE_RE.match(line)
+        if not match:
+            idx += 1
+            continue
+        token = _normalize_figure_token(match.group(1) or "")
+        title_tail = str(match.group(2) or "").strip()
+        title = f"Figure {match.group(1)}. {title_tail}".strip()
+        if token and title:
+            existing_caption = caption_map.get(token, "")
+            if len(title) > len(existing_caption):
+                caption_map[token] = title
+
+        legend_parts: list[str] = []
+        probe = idx + 1
+        while probe < total:
+            candidate = lines[probe]
+            if FIGURE_TITLE_LINE_RE.match(candidate):
+                break
+            if FIGURE_STOP_LINE_RE.match(candidate):
+                break
+            if FIGURE_SKIP_LINE_RE.match(candidate):
+                probe += 1
+                continue
+            # Ignore bare urls and tiny control labels.
+            if re.match(r"^https?://", candidate, flags=re.IGNORECASE) or len(candidate) < 8:
+                probe += 1
+                continue
+            legend_parts.append(candidate)
+            if len(" ".join(legend_parts)) >= int(getattr(settings, "media_legend_max_chars", 6000) or 6000):
+                break
+            probe += 1
+
+        legend_text = re.sub(r"\s+", " ", " ".join(legend_parts)).strip()
+        if token and legend_text:
+            if title and legend_text.lower().startswith(title.lower()):
+                legend_text = legend_text[len(title) :].strip(" .:-")
+            if len(legend_text.split()) >= 8:
+                existing_legend = legend_map.get(token, "")
+                if len(legend_text) > len(existing_legend):
+                    legend_map[token] = legend_text
+        idx = max(idx + 1, probe)
+
+    return {"caption_map": caption_map, "legend_map": legend_map}
+
+
+def _persist_source_figure_legend_maps(document_id: int, html: str | None, *, source_url: str = "") -> None:
+    maps = _extract_source_figure_legend_maps(html)
+    caption_map = maps.get("caption_map", {}) if isinstance(maps, dict) else {}
+    legend_map = maps.get("legend_map", {}) if isinstance(maps, dict) else {}
+    if not isinstance(caption_map, dict):
+        caption_map = {}
+    if not isinstance(legend_map, dict):
+        legend_map = {}
+    if not caption_map and not legend_map:
+        return
+    payload = {
+        "source": "html_text_scan_v1",
+        "source_url": str(source_url or "").strip(),
+        "caption_map": {str(k): str(v) for k, v in caption_map.items() if str(k).strip() and str(v).strip()},
+        "legend_map": {str(k): str(v) for k, v in legend_map.items() if str(k).strip() and str(v).strip()},
+    }
+    path = artifacts_dir(document_id) / "source_figure_legends.json"
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
 def _supplement_url_variants(url: str) -> list[str]:
@@ -228,6 +425,11 @@ def ingest_url(
         fetch_result = fetch_url(resolved, doi=doi)
         if fetch_result.main_url:
             document.source_url = str(fetch_result.main_url)
+        _persist_source_figure_legend_maps(
+            document.id,
+            fetch_result.html,
+            source_url=fetch_result.main_url or resolved,
+        )
 
         pdf_url = fetch_result.resolved_pdf_url
         if pdf_url:
@@ -317,7 +519,7 @@ def ingest_url(
             supp_urls = filter_supp_urls(supp_urls, main_url=fetch_result.main_url)
 
         for idx, supp_url in enumerate(supp_urls):
-            supp_filename = guess_filename(supp_url, f"supp_{idx + 1}")
+            supp_filename = guess_filename(supp_url, f"supp_{idx + 1}.bin")
             supp_path = asset_path(document.id, supp_filename)
             try:
                 downloaded = _download_supplement_with_resolution(
@@ -336,7 +538,11 @@ def ingest_url(
                     except Exception:
                         pass
                     continue
-                content_type = "application/pdf" if is_pdf else ("text/html" if _looks_like_html(supp_path) else None)
+                supp_filename, supp_path, content_type = _normalize_downloaded_supplement(
+                    document.id,
+                    supp_filename,
+                    supp_path,
+                )
                 session.add(
                     Asset(
                         document_id=document.id,

@@ -107,7 +107,9 @@ class Settings(BaseSettings):
     analysis_section_extraction_subprocess_timeout_sec: int = 120
     analysis_exec_summary_second_pass_enabled: bool = False
     analysis_schema_validation_enabled: bool = False
-    sectioned_report_v3_enabled: bool = False
+    sectioned_report_v3_enabled: bool = True
+    media_legend_max_chars: int = 6000
+    media_ocr_legend_max_chars: int = 1800
 
     figure_ocr_enabled: bool = True
     figure_ocr_langs: str = "en"

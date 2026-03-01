@@ -19,6 +19,7 @@ from sqlmodel import Session
 
 from app.core.config import settings
 from app.db.models import Asset, Chunk
+from app.services.author_utils import normalize_author_name, sanitize_author_list
 from app.services.analysis.ocr import ocr_image_text, ocr_image_words
 from app.services.analysis.utils import extract_refs_from_text
 from app.services.storage import artifacts_dir
@@ -334,7 +335,9 @@ def _extract_tei_metadata(tei_xml: str) -> dict[str, Any]:
         if author_nodes:
             metadata_source = "tei_title_stmt"
     for author in author_nodes:
-        pers = author.find(".//tei:persName", ns)
+        pers = author.find("./tei:persName", ns)
+        if pers is None:
+            pers = author.find(".//tei:persName", ns)
         if pers is not None:
             forenames = [n.text for n in pers.findall(".//tei:forename", ns) if n.text]
             surname = pers.find(".//tei:surname", ns)
@@ -343,26 +346,27 @@ def _extract_tei_metadata(tei_xml: str) -> dict[str, Any]:
                 parts.append(" ".join(forenames))
             if surname is not None and surname.text:
                 parts.append(surname.text)
-            name = " ".join(parts).strip()
+            name = normalize_author_name(" ".join(parts))
             if name:
                 authors.append(name)
                 continue
-        name = _text(author)
-        if name:
-            authors.append(name)
-    deduped_authors: list[str] = []
-    seen_authors: set[str] = set()
-    for name in authors:
-        normalized = " ".join(str(name or "").split()).strip()
-        if not normalized:
+        # Prefer direct text/name children before broader descendant text to avoid
+        # affiliation spillover being interpreted as an author.
+        direct_name = normalize_author_name(author.text)
+        if direct_name:
+            authors.append(direct_name)
             continue
-        key = normalized.lower()
-        if key in seen_authors:
-            continue
-        seen_authors.add(key)
-        deduped_authors.append(normalized)
-    authors_extracted_count = len(deduped_authors)
-    authors = deduped_authors[:24]
+        name_node = author.find("./tei:name", ns)
+        if name_node is not None:
+            nested_name = normalize_author_name(_text(name_node))
+            if nested_name:
+                authors.append(nested_name)
+                continue
+        fallback_name = normalize_author_name(_text(author))
+        if fallback_name:
+            authors.append(fallback_name)
+
+    authors, authors_extracted_count = sanitize_author_list(authors, max_items=24)
 
     journal = ""
     journal_node = root.find(".//tei:sourceDesc//tei:monogr//tei:title[@level='j']", ns)

@@ -5,6 +5,7 @@ from functools import lru_cache
 import os
 from pathlib import Path
 import re
+import shutil
 from typing import Any, Optional
 from urllib.parse import urljoin
 import zipfile
@@ -73,6 +74,12 @@ SECTION_HEADING_CANONICAL_MAP: list[tuple[str, str]] = [
     ("references", "unknown"),
 ]
 SECTION_HEADING_CANONICAL_INDEX: dict[str, str] = {alias: label for alias, label in SECTION_HEADING_CANONICAL_MAP}
+
+TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".gif", ".webp"}
+TEXT_EXTS = {".txt"}
+HTML_EXTS = {".html", ".htm", ".xhtml"}
+DOCLING_DIRECT_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".rtf", ".md", ".xml", ".html", ".htm", ".xhtml"}
 
 
 
@@ -424,23 +431,20 @@ def parse_document_assets(session: Session, document_id: int) -> dict[str, int]:
             continue
         if asset.kind == "supp":
             counts["supp"] += 1
-        ext = file_path.suffix.lower()
-        if ext in {".csv", ".tsv", ".xlsx", ".xls"}:
-            counts["table"] += _parse_tabular_file(session, document_id, asset, file_path)
-        elif ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
-            counts["figure"] += _parse_image_file(session, document_id, asset, file_path)
-        elif ext in {".txt"}:
-            counts["text"] += _parse_text_file(session, document_id, asset, file_path)
-        elif ext in {".html", ".htm", ".xhtml"} or _looks_like_html_file(file_path):
-            counts = _parse_html_file(session, document_id, asset, file_path, counts, base_url=base_url)
-        elif ext == ".zip":
-            counts = _parse_zip_file(session, document_id, asset, file_path, counts)
-        else:
-            if file_path.suffix.lower() == ".pdf" and settings.parser_engine == "validated":
-                counts = parse_pdf_validated(session, document_id, asset, file_path, counts)
-            else:
-                # Default to docling for PDF/DOCX/PPTX/HTML and unknowns
-                counts = _parse_with_docling(session, document_id, asset, file_path, counts)
+        try:
+            counts = _parse_asset_file(
+                session,
+                document_id,
+                asset,
+                file_path,
+                counts,
+                base_url=base_url,
+            )
+        except Exception as exc:
+            if asset.kind == "supp":
+                print(f"[parser] skipping supplement asset {asset.filename}: {exc}")
+                continue
+            raise
         if (
             not settings.retain_source_files
             and asset.kind == "main"
@@ -454,13 +458,156 @@ def parse_document_assets(session: Session, document_id: int) -> dict[str, int]:
 
 
 def _looks_like_html_file(path: Path) -> bool:
-    try:
-        head = path.read_bytes()[:4096]
-    except Exception:
+    head = _read_file_head(path, limit=4096)
+    if not head:
         return False
+    return _looks_like_html_bytes(head)
+
+
+def _read_file_head(path: Path, *, limit: int = 4096) -> bytes:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(limit)
+    except Exception:
+        return b""
+
+
+def _looks_like_html_bytes(head: bytes) -> bool:
     text = head.decode("utf-8", errors="ignore").lower()
     html_markers = ("<!doctype html", "<html", "<body", "<article", "<head")
     return any(marker in text for marker in html_markers)
+
+
+def _looks_like_pdf_file(path: Path) -> bool:
+    head = _read_file_head(path, limit=1024)
+    return head.startswith(b"%PDF-")
+
+
+def _looks_like_zip_file(path: Path) -> bool:
+    head = _read_file_head(path, limit=8)
+    return head.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
+
+
+def _looks_like_image_file(path: Path) -> bool:
+    head = _read_file_head(path, limit=32)
+    if not head:
+        return False
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if head.startswith(b"\xff\xd8\xff"):
+        return True
+    if head.startswith((b"II*\x00", b"MM\x00*")):
+        return True
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return True
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return True
+    return False
+
+
+def _looks_like_text_file(path: Path) -> bool:
+    head = _read_file_head(path, limit=4096)
+    if not head:
+        return False
+    if b"\x00" in head:
+        return False
+    decoded = head.decode("utf-8", errors="ignore")
+    if not decoded.strip():
+        return False
+    printable = sum(1 for ch in decoded if ch.isprintable() or ch.isspace())
+    return (printable / max(1, len(decoded))) >= 0.92
+
+
+def _sniff_file_kind(path: Path) -> str:
+    if _looks_like_pdf_file(path):
+        return "pdf"
+    if _looks_like_html_file(path):
+        return "html"
+    if _looks_like_image_file(path):
+        return "image"
+    if _looks_like_zip_file(path):
+        return "zip"
+    if _looks_like_text_file(path):
+        return "text"
+    return "unknown"
+
+
+def _coerce_pdf_path(path: Path) -> tuple[Path, bool]:
+    if path.suffix.lower() == ".pdf":
+        return path, False
+    candidate = path.with_name(f"{path.stem}.detected.pdf")
+    index = 2
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}.detected_{index}.pdf")
+        index += 1
+    shutil.copyfile(path, candidate)
+    return candidate, True
+
+
+def _parse_pdf_asset(
+    session: Session,
+    document_id: int,
+    asset: Asset,
+    path: Path,
+    counts: dict[str, int],
+) -> dict[str, int]:
+    parse_path, cleanup = _coerce_pdf_path(path)
+    try:
+        if settings.parser_engine == "validated":
+            return parse_pdf_validated(session, document_id, asset, parse_path, counts)
+        return _parse_with_docling(session, document_id, asset, parse_path, counts)
+    finally:
+        if cleanup:
+            try:
+                parse_path.unlink()
+            except Exception:
+                pass
+
+
+def _parse_asset_file(
+    session: Session,
+    document_id: int,
+    asset: Asset,
+    file_path: Path,
+    counts: dict[str, int],
+    *,
+    base_url: str = "",
+    anchor_prefix: str = "",
+) -> dict[str, int]:
+    ext = file_path.suffix.lower()
+    if ext in TABULAR_EXTS:
+        counts["table"] += _parse_tabular_file(session, document_id, asset, file_path, anchor_prefix=anchor_prefix)
+        return counts
+    if ext in IMAGE_EXTS:
+        counts["figure"] += _parse_image_file(session, document_id, asset, file_path, anchor_prefix=anchor_prefix)
+        return counts
+    if ext in TEXT_EXTS:
+        counts["text"] += _parse_text_file(session, document_id, asset, file_path, anchor_prefix=anchor_prefix)
+        return counts
+    if ext in HTML_EXTS or _looks_like_html_file(file_path):
+        return _parse_html_file(session, document_id, asset, file_path, counts, base_url=base_url)
+    if ext == ".zip":
+        return _parse_zip_file(session, document_id, asset, file_path, counts)
+    if ext == ".pdf":
+        return _parse_pdf_asset(session, document_id, asset, file_path, counts)
+    if ext in DOCLING_DIRECT_EXTS:
+        return _parse_with_docling(session, document_id, asset, file_path, counts)
+
+    # Unknown extension: classify by content signature before giving up.
+    sniffed = _sniff_file_kind(file_path)
+    if sniffed == "pdf":
+        return _parse_pdf_asset(session, document_id, asset, file_path, counts)
+    if sniffed == "image":
+        counts["figure"] += _parse_image_file(session, document_id, asset, file_path, anchor_prefix=anchor_prefix)
+        return counts
+    if sniffed == "html":
+        return _parse_html_file(session, document_id, asset, file_path, counts, base_url=base_url)
+    if sniffed == "zip":
+        return _parse_zip_file(session, document_id, asset, file_path, counts)
+    if sniffed == "text":
+        counts["text"] += _parse_text_file(session, document_id, asset, file_path, anchor_prefix=anchor_prefix)
+        return counts
+    raise ValueError(f"unsupported file format: {file_path.name}")
 
 
 def _parse_text_file(
@@ -1212,19 +1359,20 @@ def _parse_embedded_asset(
     *,
     anchor_prefix: str,
 ) -> dict[str, int]:
-    ext = file_path.suffix.lower()
-    if ext in {".csv", ".tsv", ".xlsx", ".xls"}:
-        counts["table"] += _parse_tabular_file(session, document_id, asset, file_path, anchor_prefix=anchor_prefix)
-    elif ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
-        counts["figure"] += _parse_image_file(session, document_id, asset, file_path, anchor_prefix=anchor_prefix)
-    elif ext in {".txt"}:
-        counts["text"] += _parse_text_file(session, document_id, asset, file_path, anchor_prefix=anchor_prefix)
-    elif ext == ".pdf":
-        if settings.parser_engine == "validated":
-            counts = parse_pdf_validated(session, document_id, asset, file_path, counts)
-        else:
-            counts = _parse_with_docling(session, document_id, asset, file_path, counts)
-    return counts
+    try:
+        return _parse_asset_file(
+            session,
+            document_id,
+            asset,
+            file_path,
+            counts,
+            anchor_prefix=anchor_prefix,
+        )
+    except Exception as exc:
+        if asset.kind == "supp":
+            print(f"[parser] skipping embedded supplement asset {file_path.name}: {exc}")
+            return counts
+        raise
 
 
 def _safe_zip_name(member_name: str) -> str:
