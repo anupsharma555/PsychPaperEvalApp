@@ -13,6 +13,7 @@ SectionSource = Literal[
     "anchor",
     "statement_prefix",
     "category",
+    "semantic",
     "heading",
     "position",
     "lexical",

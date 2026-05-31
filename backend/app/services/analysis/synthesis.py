@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from app.core.config import settings
 from app.services.author_utils import sanitize_author_list
+from app.services.analysis.guidance import report_guidance
 from app.services.analysis.llm import chat_text_deep
 from app.services.analysis.schemas import StructuredDossierV2
 from app.services.analysis.utils import (
@@ -18,37 +19,128 @@ from app.services.analysis.utils import (
     summarize_packet_statements,
     truncate_text,
 )
+from app.services.timing import utc_timestamp
+
+REPORT_GUIDANCE = report_guidance()
+
+PROSE_QUALITY_RULES = """
+Prose quality rules:
+- Every summary, bullet, salient point, extracted statement, study purpose, hypothesis, and central finding must be a complete sentence with a clear subject and predicate.
+- Do not use ellipses, two-dot markers, Unicode ellipses, placeholders, clipped text, or sentence fragments.
+- Do not copy malformed OCR strings, partial table residue, partial figure captions, or clauses that start or end mid-thought.
+- If the source evidence is fragmentary, write a conservative complete sentence that is supported by the evidence, or omit the item.
+""".strip()
 
 SYNTHESIS_SYSTEM = """
 You are compiling a multimodal peer-review dossier from normalized evidence packets.
-The executive_summary must be one concise paragraph that explicitly includes:
-introduction/objective, methods, key results, discussion/limitations, and conclusion.
+The executive_summary must be concise but sectioned for readability. Use five labeled lines:
+Introduction, Methods, Results, Discussion, and Conclusion. Each line should be 1-2 clear
+sentences and must stay grounded in the provided evidence.
 Return JSON only with this schema:
 {
-  "executive_summary": "single paragraph summary",
+  "executive_summary": "Introduction: complete sentence.\nMethods: complete sentence.\nResults: complete sentence.\nDiscussion: complete sentence.\nConclusion: complete sentence.",
   "methods_strengths": ["bullet"],
   "methods_weaknesses": ["bullet"],
   "reproducibility_ethics": ["bullet"],
   "uncertainty_gaps": ["bullet"]
 }
-""".strip()
+""".strip() + "\n\n" + PROSE_QUALITY_RULES + "\n\n" + REPORT_GUIDANCE
 
 VERIFIER_SYSTEM = """
 You are verifier mode for an executive research report.
 Review the draft narrative against provided evidence summaries and cross-modal checks.
 Correct any unsupported, exaggerated, or internally inconsistent statements.
 Do not invent claims; if evidence is weak, make wording more cautious.
-Ensure executive_summary remains concise and explicitly covers:
-introduction/objective, methods, key results, discussion/limitations, and conclusion.
+Ensure executive_summary remains concise and uses five labeled lines:
+Introduction, Methods, Results, Discussion, and Conclusion.
 Return JSON only with this schema:
 {
-  "executive_summary": "single paragraph summary",
+  "executive_summary": "Introduction: complete sentence.\nMethods: complete sentence.\nResults: complete sentence.\nDiscussion: complete sentence.\nConclusion: complete sentence.",
   "methods_strengths": ["bullet"],
   "methods_weaknesses": ["bullet"],
   "reproducibility_ethics": ["bullet"],
   "uncertainty_gaps": ["bullet"]
 }
-""".strip()
+""".strip() + "\n\n" + PROSE_QUALITY_RULES + "\n\n" + REPORT_GUIDANCE
+
+EXECUTIVE_REPORT_SYNTHESIS_SYSTEM = """
+You are synthesizing the executive summary of a scientific report from section-grounded evidence.
+Use only the provided evidence rows and excerpts. Preserve all numbers, instruments, population
+definitions, and directions of effects exactly when you mention them.
+
+Write concise narrative summaries for Introduction, Methods, Results, Discussion, and Conclusion.
+Do not paste evidence bullets together; synthesize the section's role in the report.
+For Introduction, include the study purpose and study hypothesis when they are explicit or directly
+inferable from the Introduction evidence. If no hypothesis is explicit, leave study_hypothesis empty.
+For Results, lead with the central finding when supported by Results evidence.
+Avoid raw extraction anchor labels in prose.
+All returned strings must be complete sentences, including study_purpose, study_hypothesis,
+and central_finding.
+
+Return JSON only with this schema:
+{
+  "sections": [
+    {
+      "section": "introduction|methods|results|discussion|conclusion",
+      "summary": "1-3 sentences",
+      "study_purpose": "only for introduction, otherwise empty",
+      "study_hypothesis": "only for introduction, otherwise empty",
+      "central_finding": "only for results, otherwise empty"
+    }
+  ]
+}
+""".strip() + "\n\n" + PROSE_QUALITY_RULES + "\n\n" + REPORT_GUIDANCE
+
+SECTION_SYNTHESIS_V2_SYSTEM = """
+You are writing an experimental scientific paper readout from section-extracted evidence and source excerpts.
+Return valid JSON only.
+
+Goals:
+- Make each section explanatory, coherent, and useful for a domain reader.
+- Preserve section boundaries and do not move information across sections.
+- Identify the most salient information instead of listing every extracted sentence.
+- Explain paper-specific terms when they are important to understanding the section.
+- Keep summaries detailed enough to be informative, but not bloated.
+
+Paper-type guidance:
+- laboratory/preclinical: emphasize model system, constructs/cell lines/assays, validation steps, readouts, main biological or technical result, limitations, and why the system matters.
+- clinical/observational: emphasize sample, data source, instruments, exposures/comparators, outcomes, statistical approach, effect direction, limitations, and implications.
+- review/meta-analysis: emphasize search strategy, eligibility, extraction/synthesis method, evidence pattern, heterogeneity, bias/quality concerns, and takeaways.
+- methods/tool: emphasize problem, inputs, workflow, validation, benchmark/comparator, performance, usability, and limits.
+
+Return this schema:
+{
+  "sections": [
+    {
+      "section": "introduction|methods|results|discussion|conclusion",
+      "summary": "2-4 grounded sentences",
+      "salient_points": ["short point"],
+      "key_terms": [{"term": "term", "explanation": "brief explanation"}]
+    }
+  ]
+}
+""".strip() + "\n\n" + PROSE_QUALITY_RULES + "\n\n" + REPORT_GUIDANCE
+
+SECTION_VERIFIER_SYSTEM = """
+You are section fidelity verifier mode for a scientific paper report.
+Review each draft section against the candidate statements and evidence anchors.
+Keep only statements that belong in that exact section.
+Move statements to a better section only when the target is obvious from the statement.
+For Methods, keep only design, data source/sample, measures, protocol, statistical model,
+covariates, missing-data/sensitivity, reproducibility, and explicit method limitations.
+Remove result comparisons, footnote fragments, demographic note-only rows, and incomplete
+sentence fragments from Methods.
+Return JSON only with this schema:
+{
+  "sections": {
+    "introduction": [{"statement": "...", "anchor": "..."}],
+    "methods": [{"statement": "...", "anchor": "..."}],
+    "results": [{"statement": "...", "anchor": "..."}],
+    "discussion": [{"statement": "...", "anchor": "..."}],
+    "conclusion": [{"statement": "...", "anchor": "..."}]
+  }
+}
+""".strip() + "\n\n" + PROSE_QUALITY_RULES + "\n\n" + REPORT_GUIDANCE
 
 SECTION_EXTRACTION_SYSTEM = """
 You are a structured, high-fidelity scientific paper extraction engine.
@@ -69,20 +161,26 @@ Rules:
 - Do not include bullets without evidence refs.
 - If uncertain about section membership, omit the bullet.
 - Do not emit placeholders like "not reported" unless explicitly stated in evidence rows.
-""".strip()
+""".strip() + "\n\n" + PROSE_QUALITY_RULES + "\n\n" + REPORT_GUIDANCE
 
 METHOD_ANCHOR_RE = re.compile(
-    r"\b(method|methods|methodology|materials|protocol|study design|design|participants?)\b",
+    r"\b(method|methods|methodology|materials|protocol|study design|design|participants?|"
+    r"assay|cloning|genomic validation|transfection|quantification|specimens?|"
+    r"pathogen identification|statistical analysis|ethical considerations|irb|informed consent)\b",
     re.IGNORECASE,
 )
 METHOD_SIGNAL_RE = re.compile(
     r"\b("
     r"randomi[sz]ed|cohort|case[- ]control|cross[- ]sectional|pragmatic trial|"
     r"double[- ]blind|single[- ]blind|allocation|sample size|power analys(?:is|es)|"
-    r"inclusion criteria|exclusion criteria|participant|intervention|comparator|control arm|"
+    r"inclusion criteria|exclusion criteria|participant|recruited|enrolled|intervention|comparator|control arm|"
     r"endpoint|outcome measure|instrument|scale|questionnaire|follow[- ]up|"
     r"regression|mixed[- ]effects|bayesian|covariate|confound|imputation|sensitivity analys(?:is|es)|"
-    r"pre[- ]register|preregistration|code availability|data availability"
+    r"pre[- ]register|preregistration|code availability|data availability|"
+    r"assay|cell lines?|cell clones?|cloning|expression vectors?|flp-in|mutagenesis|pcr|"
+    r"primers?|plasmids?|qpcr|sanger|sequencing|selection|transfection|vectors?|"
+    r"specimens?|pathogen identification|serotyp(?:e|ing)|statistical analys(?:is|es)|"
+    r"chi[- ]square|fisher'?s exact|student'?s t|mann[- ]whitney|irb|institutional review|informed consent"
     r")\b",
     re.IGNORECASE,
 )
@@ -98,7 +196,11 @@ RESULTS_ANCHOR_RE = re.compile(r"\b(results?|discussion|conclusion)\b", re.IGNOR
 ACCESS_LIMITED_NOTE_RE = re.compile(r"\b(access[- ]limited|paywall|subscription|publisher)\b", re.IGNORECASE)
 INTRO_SECTION_RE = re.compile(r"\b(intro|introduction|background|rationale|objective|aim|hypothesis)\b", re.IGNORECASE)
 METHODS_SECTION_RE = re.compile(
-    r"\b(method|methods|methodology|materials|protocol|design|participants?|analysis plan|statistics?)\b",
+    r"\b(method|methods|methodology|materials|protocol|design|participants?|analysis plan|statistics?|"
+    r"assay|cell lines?|cell clones?|cloning|construct|expression vectors?|flp-in|genomic validation|"
+    r"mutagenesis|pcr|primers?|plasmids?|qpcr|sanger|sequencing|selection|transfection|vectors?|"
+    r"specimens?|pathogen identification|serotyp(?:e|ing)|ethical considerations|"
+    r"irb|institutional review|informed consent)\b",
     re.IGNORECASE,
 )
 RESULTS_SECTION_RE = re.compile(r"\b(result|results|finding|outcome|effect|association|improvement)\b", re.IGNORECASE)
@@ -112,19 +214,25 @@ CONCLUSION_SECTION_RE = re.compile(
 )
 SECTION_LABELS = {"introduction", "methods", "results", "discussion", "conclusion", "unknown"}
 METHOD_LIKE_RE = re.compile(
-    r"\b(participants?|scanner|acquisition|processing|covariates?|post hoc|seed-based|"
-    r"was used to test|model(?:ing)?|protocol|procedure|inclusion|exclusion|measured using|analysis was conducted)\b",
+    r"\b(participants?|sample|population|respondents?|survey|national survey|data source|source:|"
+    r"scanner|acquisition|processing|covariates?|post hoc|seed-based|"
+    r"was used to test|model(?:ing)?|protocol|procedure|inclusion|exclusion|measured using|analysis was conducted|"
+    r"screen(?:er|ing) tool|diagnostic instrument|gad-7|score(?:d)?|scale|measure(?:d|ment)?|"
+    r"assay|cell lines?|cell clones?|cloning|expression vectors?|mutagenesis|pcr|primers?|"
+    r"plasmids?|qpcr|sanger|sequencing|selection|transfection|vectors?|specimens?|"
+    r"pathogen identification|serotyp(?:e|ing)|statistical analys(?:is|es)|chi[- ]square|fisher'?s exact|"
+    r"student'?s t|mann[- ]whitney|irb|institutional review|informed consent)\b",
     re.IGNORECASE,
 )
 CONCRETE_RESULT_RE = re.compile(
-    r"\b("
+    r"(?<![A-Za-z0-9])("
     r"p\s*[<=>]\s*0?\.\d+|"
     r"t\s*=\s*-?\d+(?:\.\d+)?|f\s*=\s*-?\d+(?:\.\d+)?|z\s*=\s*-?\d+(?:\.\d+)?|"
-    r"\d+(?:\.\d+)?\s*(?:%|ms|mm|sd|ci|or|hr)\b|"
+    r"\d+(?:\.\d+)?\s*%|\d+(?:\.\d+)?\s*(?:ms|mm|sd|ci|or|hr)\b|"
     r"increased|decreased|higher|lower|hyperconnectivity|hypoconnectivity|dysconnectivity|"
     r"associated with|correlated with|significant|found|"
     r"identified\s+(?:foci|clusters|regions|differences)"
-    r")\b",
+    r")(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 HIGH_SIGNAL_RESULT_RE = re.compile(
@@ -188,8 +296,29 @@ NOISE_STATEMENT_RE = re.compile(
 LAYOUT_ARTIFACT_RE = re.compile(
     r"\b("
     r"left right|right left|cortical projection|brain (?:surface|map)|color bar|"
-    r"axial|coronal|sagittal|panel [a-z]|projection displaying|surface rendering"
+    r"axial|coronal|sagittal|panel [a-z]|projection displaying|surface rendering|"
+    r"mean connectivity|reward sensitivity subscale.*nucleus accumbens.*z\s*-?\d"
     r")\b",
+    re.IGNORECASE,
+)
+GENERIC_UNINFORMATIVE_RE = re.compile(
+    r"^\s*(?:however,\s*)?(?:certain\s+)?limitations? of (?:our|the) approach should be noted\.?\s*$|"
+    r"^\s*(?:the\s+)?(?:study|authors?) (?:noted|note|acknowledged|acknowledge) limitations?\.?\s*$|"
+    r"^\s*(?:the\s+)?(?:study|authors?) (?:discussed|discuss) implications?\.?\s*$",
+    re.IGNORECASE,
+)
+LOW_EXPLANATORY_VALUE_RE = re.compile(
+    r"\b("
+    r"endonuclease restriction sites are indicated|lower case letters|"
+    r"cells were cultured at|humidified atmosphere|cell culture medium was replaced|"
+    r"pellet was dissolved|rna was diluted|rnase free|"
+    r"sv40 promoter.*polyA signal|cmv promoter|bgh pA|"
+    r"^\s*\([A-Z0-9;/,\s]+(?:promoter|polyA|signal|pA)[^)]+\)\.?\s*$"
+    r")\b",
+    re.IGNORECASE,
+)
+VISUAL_AXIS_PREFIX_RE = re.compile(
+    r"^\s*(?P<prefix>[A-H](?:\s+[A-H]){1,}\s+.{20,260}?)(?:\ba\s+)?(?P<sentence>(?:The|This|These|Our|We)\b.+)$",
     re.IGNORECASE,
 )
 INTRO_EXCLUDE_RE = re.compile(
@@ -218,7 +347,23 @@ LEADING_CITATION_PREFIX_RE = re.compile(
 )
 CANONICAL_STATEMENT_TOKEN_RE = re.compile(r"[a-z0-9]+(?:\.[0-9]+)?")
 FRAGMENT_START_RE = re.compile(
-    r"^\s*(?:was|were|is|are|been|being|as in|for a list|finally|next\b|and\b|or\b|but\b)\b",
+    r"^\s*(?:was|were|is|are|been|being|as in|for a list|finally|next\b|and\b|or\b|but\b|vs\.?\b|\d+(?:\.\d+)?\s*%?\)|\))\b",
+    re.IGNORECASE,
+)
+METHODS_RESULT_LEAK_RE = re.compile(
+    r"\b("
+    r"did not differ significantly|differed significantly|was lower than|were lower than|was higher than|were higher than|"
+    r"increased from|decreased from|varied by|more likely than|less likely than|had moderate or severe symptoms|"
+    r"engaged in binge|engaged in heavy drinking|misused prescription|misuse of prescription|"
+    r"percentages? (?:were|was|did)|\d+(?:\.\d+)?%\s+vs\.?"
+    r")\b",
+    re.IGNORECASE,
+)
+METHODS_NOTE_ONLY_RE = re.compile(
+    r"\b(?:"
+    r"mutually exclusive|could be of any race|calculated as a percentage of the u\.s\.|"
+    r"source:\s*samhsa|center for behavioral health statistics and quality"
+    r")",
     re.IGNORECASE,
 )
 
@@ -278,13 +423,13 @@ METHODS_COMPACT_SLOTS: list[dict[str, Any]] = [
     {
         "slot_key": "study_design",
         "label": "Study Design",
-        "keywords": ["study design", "randomized", "trial", "cohort", "case-control", "cross-sectional", "cwas"],
+        "keywords": ["study design", "randomized", "trial", "cohort", "case-control", "cross-sectional", "cwas", "survey", "nsduh", "national survey"],
         "category_hints": {"methods", "stats"},
     },
     {
         "slot_key": "sample_population",
         "label": "Sample/Population",
-        "keywords": ["participant", "sample", "subjects", "cohort", "diagnostic groups", "n="],
+        "keywords": ["participant", "sample", "subjects", "cohort", "diagnostic groups", "n=", "adults aged", "noninstitutionalized", "civilian"],
         "category_hints": {"methods", "clinical"},
     },
     {
@@ -308,19 +453,45 @@ METHODS_COMPACT_SLOTS: list[dict[str, Any]] = [
     {
         "slot_key": "outcomes_measures",
         "label": "Outcomes/Measures",
-        "keywords": ["outcome", "endpoint", "measure", "scale", "questionnaire", "bas", "instrument"],
+        "keywords": ["outcome", "endpoint", "measure", "scale", "questionnaire", "bas", "instrument", "gad-7", "screening tool", "score"],
         "category_hints": {"methods", "clinical", "stats"},
     },
     {
         "slot_key": "data_acquisition_protocol",
         "label": "Data Acquisition Protocol",
-        "keywords": ["scanner", "mri", "sequence", "acquisition", "protocol", "imaging"],
+        "keywords": [
+            "scanner",
+            "mri",
+            "sequence",
+            "acquisition",
+            "protocol",
+            "imaging",
+            "data source",
+            "source:",
+            "samhsa",
+            "assay",
+            "cell line",
+            "cell clone",
+            "cloning",
+            "expression vector",
+            "flp-in",
+            "mutagenesis",
+            "pcr",
+            "primer",
+            "plasmid",
+            "qpcr",
+            "sanger",
+            "sequencing",
+            "selection",
+            "transfection",
+            "vector",
+        ],
         "category_hints": {"methods"},
     },
     {
         "slot_key": "statistical_model",
         "label": "Statistical Model",
-        "keywords": ["regression", "model", "mdmr", "mixed-effects", "bayesian", "analysis"],
+        "keywords": ["regression", "model", "mdmr", "mixed-effects", "bayesian", "analysis", "quantification"],
         "category_hints": {"stats", "methods"},
     },
     {
@@ -499,6 +670,7 @@ def synthesize_report(
         "discrepancies": list(reconcile_report.get("discrepancies", [])),
         "text_chunk_records": list(text_chunk_records or []),
     }
+    payload["paper_type"] = _infer_paper_type(payload)
     _trace_synthesis_step("synthesize:payload_ready")
     _emit_synthesis_progress(
         progress_callback,
@@ -592,7 +764,7 @@ def _trace_synthesis_step(step: str) -> None:
         return
     try:
         with open(trace_path, "a", encoding="utf-8") as handle:
-            handle.write(f"{step}\n")
+            handle.write(f"{utc_timestamp()} {step}\n")
     except Exception:
         return
 
@@ -803,7 +975,7 @@ def _llm_section_extraction_worker(payload: dict[str, Any], out_queue: Any) -> N
         out_queue.put({"ok": False, "error": str(exc)})
 
 
-def _section_extraction_safe_payload(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def _section_extraction_safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
     def _clean_packets(raw_packets: Any) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         if not isinstance(raw_packets, list):
@@ -826,6 +998,7 @@ def _section_extraction_safe_payload(payload: dict[str, Any]) -> dict[str, list[
         return out
 
     return {
+        "paper_type": str(payload.get("paper_type") or _infer_paper_type(payload)),
         "text_packets": _clean_packets(payload.get("text_packets", [])),
         "table_packets": _clean_packets(payload.get("table_packets", [])),
         "figure_packets": _clean_packets(payload.get("figure_packets", [])),
@@ -841,6 +1014,83 @@ def _section_extract_has_content(extracted: dict[str, list[dict[str, Any]]]) -> 
         if isinstance(rows, list) and rows:
             return True
     return False
+
+
+def _infer_paper_type(payload: dict[str, Any]) -> str:
+    text_parts: list[str] = []
+
+    def _collect_from_rows(rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for row in rows[:120]:
+            if not isinstance(row, dict):
+                continue
+            text_parts.append(str(row.get("statement", "") or ""))
+            text_parts.append(str(row.get("verbatim_excerpt", "") or ""))
+            text_parts.append(str(row.get("category", "") or ""))
+            text_parts.append(str(row.get("section_label", "") or ""))
+
+    for key in ("text_packets", "table_packets", "figure_packets", "supp_packets"):
+        _collect_from_rows(payload.get(key, []))
+
+    sections = payload.get("sections")
+    if isinstance(sections, dict):
+        for rows in sections.values():
+            _collect_from_rows(rows)
+
+    for row in payload.get("text_chunk_records", []) if isinstance(payload.get("text_chunk_records"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        text_parts.append(str(row.get("content", "") or "")[:1200])
+
+    text = " ".join(text_parts).lower()
+    if not text.strip():
+        return "unknown"
+
+    scored_patterns: list[tuple[str, int, str]] = [
+        ("review", 5, r"\b(systematic review|meta-analysis|meta analysis|scoping review|narrative review)\b"),
+        ("randomized trial", 5, r"\b(randomi[sz]ed|clinical trial|placebo|double[- ]blind|allocation|intervention group)\b"),
+        ("case report/series", 4, r"\b(case report|case series)\b"),
+        ("data brief/report", 4, r"\b(data brief|survey report|national survey|weighted percentage|population estimate)\b"),
+        (
+            "laboratory/preclinical study",
+            4,
+            r"\b(cell lines?|cell clones?|assay|western blot|pcr|qpcr|sanger|plasmids?|"
+            r"transfection|mouse model|fluorescent microscopy|flow cytometry|flp-in|recombination target)\b",
+        ),
+        ("methods/tool paper", 3, r"\b(algorithm|software|tool|pipeline|benchmark|classifier|validation dataset)\b"),
+        (
+            "observational study",
+            3,
+            r"\b(cohort|case[- ]control|cross[- ]sectional|registry|claims database|exposure|adjusted odds|hazard ratio)\b",
+        ),
+        ("qualitative study", 2, r"\b(interviews?|focus groups?|thematic analysis|grounded theory)\b"),
+        ("commentary/editorial", 2, r"\b(commentary|editorial|perspective)\b"),
+    ]
+
+    scores: dict[str, int] = {}
+    for label, weight, pattern in scored_patterns:
+        matches = re.findall(pattern, text, flags=re.IGNORECASE)
+        if matches:
+            scores[label] = scores.get(label, 0) + (weight * len(matches))
+
+    if re.search(r"\bqualitative analysis\b", text) and not scores.get("laboratory/preclinical study"):
+        scores["qualitative study"] = scores.get("qualitative study", 0) + 1
+
+    if scores:
+        priority = {
+            "review": 0,
+            "randomized trial": 1,
+            "laboratory/preclinical study": 2,
+            "data brief/report": 3,
+            "methods/tool paper": 4,
+            "observational study": 5,
+            "case report/series": 6,
+            "qualitative study": 7,
+            "commentary/editorial": 8,
+        }
+        return sorted(scores.items(), key=lambda item: (-item[1], priority.get(item[0], 99)))[0][0]
+    return "unknown"
 
 
 def _section_rows_for_extraction(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -872,6 +1122,21 @@ def _section_rows_for_extraction(payload: dict[str, Any]) -> dict[str, list[dict
                 "anchor": str(packet.get("anchor", "")).strip(),
                 "category": str(packet.get("category", "")).strip(),
                 "confidence": clamp_confidence(packet.get("confidence", 0.0)),
+            }
+        )
+
+    for row in _method_section_chunk_candidates(list(payload.get("text_chunk_records", [])), max_items=24):
+        statement = str(row.get("statement", "")).strip()
+        refs = [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()]
+        if not statement or not refs:
+            continue
+        rows_by_section["methods"].append(
+            {
+                "statement": statement,
+                "evidence_refs": refs,
+                "anchor": str(row.get("anchor", "")).strip(),
+                "category": "methods",
+                "confidence": clamp_confidence(row.get("confidence", 0.66)),
             }
         )
 
@@ -999,7 +1264,10 @@ def _llm_section_extraction_direct(payload: dict[str, Any]) -> dict[str, list[di
 
     rows_by_section = _section_rows_for_extraction(payload)
     fallback_extraction = _fallback_section_extraction_from_rows(rows_by_section)
-    prompt_payload = {"section_rows": rows_by_section}
+    prompt_payload = {
+        "paper_type": str(payload.get("paper_type") or _infer_paper_type(payload)),
+        "section_rows": rows_by_section,
+    }
     prompt = truncate_text(
         "Extract high-fidelity section bullets from these evidence rows.\n\n" + json.dumps(prompt_payload, indent=2),
         max_chars_for_ctx(settings.llm_n_ctx),
@@ -1098,6 +1366,7 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
     discrepancies = list(payload.get("discrepancies", []))
     analysis_notes = _as_str_list(payload.get("analysis_notes"))
     text_chunk_records = list(payload.get("text_chunk_records", []))
+    paper_type = str(payload.get("paper_type") or _infer_paper_type(payload))
 
     methods_compact = _methods_compact(text_packets, analysis_notes=analysis_notes)
     sections_extracted = (
@@ -1143,8 +1412,13 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
         extractive_evidence=extractive_evidence,
         fallback_summary=executive_summary,
     )
+    detailed_sections = _enrich_detailed_sections_with_executive_report(
+        detailed_sections,
+        executive_report,
+        fallback_summary=executive_summary,
+    )
     grounded_overview = str(executive_report.get("overview", "")).strip()
-    if grounded_overview:
+    if grounded_overview and _summary_has_all_components(grounded_overview):
         executive_summary = grounded_overview
     section_diagnostics.update(
         {
@@ -1155,6 +1429,7 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
             "sections_compact_cross_section_dedupe": sections_compact_dedupe,
             "cross_section_rejections": _cross_section_rejections(text_packets),
             "section_extraction_enabled": bool(settings.analysis_section_extraction_enabled),
+            "paper_type": paper_type,
             "section_extraction_counts": {
                 key: len(value) for key, value in sections_extracted.items() if isinstance(value, list)
             },
@@ -1955,6 +2230,8 @@ def _method_candidate(packet: dict[str, Any], *, idx: int) -> dict[str, Any] | N
         return None
     if _is_fragment_like_statement(statement):
         return None
+    if not _is_strict_method_statement(statement, str(packet.get("anchor", "")).strip()):
+        return None
     quality_flags = {str(flag).strip().lower() for flag in packet.get("quality_flags", [])}
     if "missing_evidence" in quality_flags:
         return None
@@ -2006,6 +2283,10 @@ def _method_slot_score(slot: dict[str, Any], candidate: dict[str, Any]) -> int:
     category_hit = bool(category_hints & set(candidate.get("category_tokens", set())))
 
     if slot_key in STRICT_METHOD_SLOT_KEYWORDS and not keyword_hit:
+        return 0
+    if not _is_strict_method_statement(str(candidate.get("statement", "")), str(candidate.get("anchor", ""))):
+        return 0
+    if category_hit and not keyword_hit and not candidate.get("method_signal") and not candidate.get("methods_anchor"):
         return 0
     if not keyword_hit and not category_hit:
         return 0
@@ -2082,6 +2363,7 @@ def _strip_confidence_annotations(text: str) -> str:
     # Drop trailing ellipsis markers that commonly indicate clipped extraction text.
     clean = re.sub(r"(?:\.\s*){3,}\s*$", "", clean).strip()
     clean = re.sub(r"…+\s*$", "", clean).strip()
+    clean = _strip_leading_visual_axis_noise(clean)
     return clean
 
 
@@ -2094,6 +2376,33 @@ def _clean_section_statement(statement: str) -> str:
         clean = trimmed
     if _is_incomplete_statement(clean):
         return ""
+    return clean
+
+
+def _strip_leading_visual_axis_noise(text: str) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean:
+        return ""
+    match = VISUAL_AXIS_PREFIX_RE.match(clean)
+    marker: re.Match[str] | None = match
+    if not marker and re.match(r"^\s*[A-H](?:\s+[A-H]){1,}\b", clean, flags=re.IGNORECASE):
+        for candidate in re.finditer(r"\b(?:a\s+)?(?P<sentence>(?:The|This|These|Our|We)\b.+)$", clean, flags=re.IGNORECASE):
+            if candidate.start() >= 40:
+                marker = candidate
+                break
+    if marker:
+        prefix = str(marker.groupdict().get("prefix") or clean[: marker.start()])
+        sentence = str(marker.groupdict().get("sentence") or marker.group(0)).strip()
+        sentence = re.sub(r"^\s*a\s+(?=The\b)", "", sentence, flags=re.IGNORECASE).strip()
+        prefix_lower = prefix.lower()
+        if (
+            len(prefix.split()) >= 8
+            and (
+                re.search(r"\b(mean connectivity|reward sensitivity|nucleus accumbens|z\s*-?\d|bas)\b", prefix_lower)
+                or len(re.findall(r"\b(left|right|superior|inferior|temporal|frontal|insula|cortex)\b", prefix_lower)) >= 3
+            )
+        ):
+            return sentence
     return clean
 
 
@@ -2395,11 +2704,58 @@ def _unique_strings(items: list[str], max_items: int | None = None) -> list[str]
 
 
 SECTION_MIN_TARGETS = {
-    "methods": 8,
+    "methods": 4,
     "results": 12,
     "discussion": 6,
     "conclusion": 4,
 }
+
+
+def _is_method_result_leak(statement: str) -> bool:
+    text = " ".join(str(statement or "").split()).strip()
+    if not text:
+        return False
+    if METHODS_RESULT_LEAK_RE.search(text):
+        return True
+    if _has_concrete_result_outcome(text) and not re.search(
+        r"\b(score|scale|measure|questionnaire|instrument|screen(?:er|ing) tool|diagnostic instrument|sample|respondents?|survey)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _is_method_note_only(statement: str) -> bool:
+    text = " ".join(str(statement or "").split()).strip()
+    if not text:
+        return False
+    if METHODS_NOTE_ONLY_RE.search(text):
+        return True
+    if re.search(r"\b(?:race|ethnic|hispanic|latino|asian|nhpi|aian)\b", text, re.IGNORECASE) and not re.search(
+        r"\b(covariate|adjust|model|stratif|sample|survey|respondent|classification|category|categories)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _is_strict_method_statement(statement: str, anchor: str = "") -> bool:
+    text = _clean_section_statement(str(statement or "").strip())
+    if not text:
+        return False
+    if _is_noise_statement(text) or _is_layout_artifact_statement(text) or _is_fragment_like_statement(text):
+        return False
+    if _is_method_result_leak(text):
+        return False
+    if _is_method_note_only(text):
+        return False
+    anchor_text = str(anchor or "")
+    has_signal = bool(_is_method_like_statement(text) or _has_method_signal(text) or _is_methods_anchor(anchor_text))
+    if not has_signal:
+        return False
+    return True
 
 
 def _section_item_passes_fidelity(section_key: str, item: dict[str, Any]) -> bool:
@@ -2408,6 +2764,8 @@ def _section_item_passes_fidelity(section_key: str, item: dict[str, Any]) -> boo
     if not statement:
         return False
     if _is_noise_statement(statement) or _is_layout_artifact_statement(statement):
+        return False
+    if _is_low_explanatory_value_statement(statement):
         return False
     if _is_fragment_like_statement(statement):
         return False
@@ -2421,7 +2779,7 @@ def _section_item_passes_fidelity(section_key: str, item: dict[str, Any]) -> boo
         return _is_intro_fidelity_statement(statement)
 
     if section == "methods":
-        return _is_method_like_statement(statement) or _has_method_signal(statement) or _is_methods_anchor(anchor)
+        return _is_strict_method_statement(statement, anchor)
 
     if section == "results":
         has_concrete = _has_concrete_result_outcome(statement)
@@ -2634,6 +2992,27 @@ def _build_detailed_sections(
     )
     methods_items = _filter_section_items_by_fidelity("methods", methods_items, max_items=24)
     methods_fallback_reason = None
+    methods_source_chunk_candidates: list[dict[str, Any]] = []
+    if text_chunk_records:
+        methods_source_chunk_candidates = _method_section_chunk_candidates(text_chunk_records, max_items=12)
+        source_chunk_items = _dedupe_section_items(
+            [
+                {
+                    "statement": item.get("statement", ""),
+                    "anchor": item.get("anchor", ""),
+                    "evidence_refs": [str(ref).strip() for ref in item.get("evidence_refs", []) if str(ref).strip()][:5],
+                    "source_modality": "text",
+                    "confidence": clamp_confidence(item.get("confidence", 0.66)),
+                    "section_confidence": clamp_confidence(item.get("section_confidence", 0.72)),
+                    "flags": ["source_section_reconstruction"],
+                }
+                for item in methods_source_chunk_candidates
+                if _is_strict_method_statement(str(item.get("statement", "")).strip(), str(item.get("anchor", "")))
+            ],
+            max_items=12,
+        )
+        if source_chunk_items and _should_backfill_methods_from_source_chunks(methods_items, source_chunk_items):
+            methods_items = _dedupe_section_items(source_chunk_items + methods_items, max_items=24)
     if len(methods_items) < 6:
         methods_fallback_packets = [packet for packet in text_packets if _is_methods_fallback_candidate(packet)]
         methods_coverage_candidates.extend(methods_fallback_packets)
@@ -2648,11 +3027,13 @@ def _build_detailed_sections(
             )
             _record_fallback_note("Methods", methods_fallback_reason)
     methods_raw_packet_candidates: list[dict[str, Any]] = []
-    if len(methods_items) < 8 and text_chunk_records:
-        raw_methods = _raw_chunk_section_candidates(text_chunk_records, section="methods", max_items=8)
+    if len(methods_items) < 5 and text_chunk_records:
+        raw_methods = _raw_chunk_section_candidates(text_chunk_records, section="methods", max_items=5)
         for item in raw_methods:
             statement = str(item.get("statement", "")).strip()
             if not statement:
+                continue
+            if not _is_strict_method_statement(statement, str(item.get("anchor", ""))):
                 continue
             methods_raw_packet_candidates.append(
                 {
@@ -2675,9 +3056,9 @@ def _build_detailed_sections(
                     "flags": ["fallback", "raw_chunk"],
                 }
                 for item in raw_methods
-                if str(item.get("statement", "")).strip()
+                if _is_strict_method_statement(str(item.get("statement", "")).strip(), str(item.get("anchor", "")))
             ],
-            max_items=10,
+            max_items=5,
         )
         if raw_method_items:
             methods_items = _dedupe_section_items(methods_items + raw_method_items, max_items=24)
@@ -2688,7 +3069,7 @@ def _build_detailed_sections(
                 _record_fallback_note("Methods", methods_fallback_reason)
     methods_min_coverage_items, methods_min_coverage_reason = _enforce_min_section_coverage(
         methods_items,
-        methods_coverage_candidates + methods_raw_packet_candidates,
+        methods_coverage_candidates + methods_raw_packet_candidates + methods_source_chunk_candidates,
         section_key="methods",
         min_items=SECTION_MIN_TARGETS["methods"],
         source_modality="text",
@@ -3049,6 +3430,17 @@ def _build_detailed_sections(
         ),
     }
     sections, cross_section_dedupe = _dedupe_items_across_sections(sections)
+    sections, section_verifier_diagnostics = _verify_section_fidelity_with_llm(
+        sections,
+        payload={
+            "text_packets": text_packets,
+            "table_packets": table_packets,
+            "figure_packets": figure_packets,
+            "supp_packets": supp_packets,
+        },
+    )
+    if section_verifier_diagnostics:
+        diagnostics["section_verifier"] = section_verifier_diagnostics
     if int(cross_section_dedupe.get("removed_count", 0) or 0) > 0:
         diagnostics["cross_section_dedupe"] = cross_section_dedupe
 
@@ -3114,6 +3506,8 @@ def _cross_section_item_score(item: dict[str, Any], section: str) -> float:
     section_source = str(item.get("section_source", "") or "").strip().lower()
     if section_source in {"anchor", "explicit_heading", "heading", "structured_abstract", "meta"}:
         score += 0.12
+    elif section_source == "semantic":
+        score += 0.04
     elif section_source in {"position", "fallback"}:
         score -= 0.10
 
@@ -3255,6 +3649,236 @@ def _dedupe_items_across_sections(sections: dict[str, Any]) -> tuple[dict[str, A
     }
 
 
+def _verify_section_fidelity_with_llm(
+    sections: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not bool(settings.analysis_section_verifier_enabled):
+        return sections, {}
+    if not isinstance(sections, dict):
+        return sections, {}
+
+    section_payload: dict[str, list[dict[str, Any]]] = {}
+    item_lookup: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for section in EXEC_REPORT_SECTION_ORDER:
+        block = sections.get(section)
+        items = block.get("items", []) if isinstance(block, dict) else []
+        rows: list[dict[str, Any]] = []
+        if not isinstance(items, list):
+            continue
+        for idx, item in enumerate(items[:16]):
+            if not isinstance(item, dict):
+                continue
+            statement = _clean_section_statement(str(item.get("statement", "")).strip())
+            anchor = str(item.get("anchor", "")).strip()
+            if not statement:
+                continue
+            rows.append(
+                {
+                    "id": f"{section}:{idx}",
+                    "statement": statement,
+                    "anchor": anchor,
+                    "source_modality": str(item.get("source_modality", "text")),
+                    "flags": [str(flag) for flag in item.get("flags", []) if str(flag).strip()][:4],
+                }
+            )
+            item_lookup[(section, _canonical_statement_text(statement), _canonical_text(anchor))] = item
+        section_payload[section] = rows
+
+    if not any(section_payload.values()):
+        return sections, {}
+
+    prompt = truncate_text(
+        "Verify section membership for this draft report. Return only valid JSON.\n\n"
+        + json.dumps(
+            {
+                "draft_sections": section_payload,
+                "evidence_digest": {
+                    "text_findings": summarize_packet_statements(payload.get("text_packets", []), max_items=12),
+                    "table_findings": summarize_packet_statements(payload.get("table_packets", []), max_items=4),
+                    "figure_findings": summarize_packet_statements(payload.get("figure_packets", []), max_items=4),
+                    "supp_findings": summarize_packet_statements(payload.get("supp_packets", []), max_items=4),
+                },
+            },
+            indent=2,
+        ),
+        max_chars_for_ctx(settings.llm_n_ctx),
+    )
+    try:
+        parsed = _run_deep_json_prompt(
+            prompt=prompt,
+            system_prompt=SECTION_VERIFIER_SYSTEM,
+            timeout_seconds=int(settings.analysis_narrative_overrides_subprocess_timeout_sec or 0),
+            guard_enabled=bool(settings.analysis_narrative_overrides_subprocess_guard_enabled),
+        )
+    except Exception:
+        return sections, {"attempted": True, "applied": False, "error": "section verifier failed"}
+
+    parsed_sections = parsed.get("sections") if isinstance(parsed, dict) else None
+    if not isinstance(parsed_sections, dict):
+        return sections, {"attempted": True, "applied": False, "error": "section verifier returned no sections"}
+
+    next_sections = json.loads(json.dumps(sections))
+    for section in EXEC_REPORT_SECTION_ORDER:
+        block = next_sections.get(section)
+        if isinstance(block, dict):
+            block["items"] = []
+
+    used_source_keys: set[tuple[str, str, str]] = set()
+    moved_total = 0
+    for target_section in EXEC_REPORT_SECTION_ORDER:
+        rows = parsed_sections.get(target_section, [])
+        if not isinstance(rows, list):
+            continue
+        target_block = next_sections.get(target_section)
+        if not isinstance(target_block, dict):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            statement_key = _canonical_statement_text(str(row.get("statement", "")))
+            anchor_key = _canonical_text(str(row.get("anchor", "")))
+            if not statement_key:
+                continue
+            source_item = None
+            source_section = ""
+            for candidate_section in EXEC_REPORT_SECTION_ORDER:
+                lookup_key = (candidate_section, statement_key, anchor_key)
+                if lookup_key in item_lookup:
+                    source_item = item_lookup[lookup_key]
+                    source_section = candidate_section
+                    break
+            if source_item is None:
+                for (candidate_section, candidate_statement, candidate_anchor), item in item_lookup.items():
+                    if candidate_statement == statement_key and (not anchor_key or candidate_anchor == anchor_key):
+                        source_item = item
+                        source_section = candidate_section
+                        break
+            if source_item is None:
+                continue
+            source_key = (
+                source_section,
+                _canonical_statement_text(str(source_item.get("statement", ""))),
+                _canonical_text(str(source_item.get("anchor", ""))),
+            )
+            if source_key in used_source_keys:
+                continue
+            if not _section_item_passes_fidelity(target_section, source_item):
+                continue
+            used_source_keys.add(source_key)
+            if source_section and source_section != target_section:
+                moved_total += 1
+            target_block["items"].append({**source_item})
+
+    original_total = sum(len(rows) for rows in section_payload.values())
+    pre_restore_total = 0
+    original_counts_by_section: dict[str, int] = {}
+    verified_counts_by_section: dict[str, int] = {}
+    for section in EXEC_REPORT_SECTION_ORDER:
+        original_block = sections.get(section)
+        original_items = original_block.get("items", []) if isinstance(original_block, dict) else []
+        original_counts_by_section[section] = len(original_items) if isinstance(original_items, list) else 0
+        block = next_sections.get(section)
+        if not isinstance(block, dict):
+            continue
+        items = _dedupe_section_items(block.get("items", []), max_items=max(1, len(block.get("items", []))))
+        block["items"] = items
+        block["evidence_refs"] = _collect_section_refs(items, max_items=30)
+        verified_counts_by_section[section] = len(items)
+        pre_restore_total += len(items)
+
+    removed_before_restore = max(0, original_total - pre_restore_total)
+    removal_ratio = (removed_before_restore / float(original_total)) if original_total else 0.0
+    emptied_sections = [
+        section
+        for section in ("methods", "results", "discussion")
+        if int(original_counts_by_section.get(section, 0) or 0) > 0
+        and int(verified_counts_by_section.get(section, 0) or 0) == 0
+    ]
+    if removal_ratio > 0.50 or emptied_sections:
+        return sections, {
+            "attempted": True,
+            "applied": False,
+            "rejected": True,
+            "reason": "verifier output was too destructive; kept pre-verifier sections",
+            "removed_before_restore_count": removed_before_restore,
+            "removal_ratio": round(removal_ratio, 3),
+            "emptied_sections": emptied_sections,
+            "original_counts_by_section": original_counts_by_section,
+            "verified_counts_by_section": verified_counts_by_section,
+        }
+
+    restored_by_section: dict[str, int] = {}
+    for section in EXEC_REPORT_SECTION_ORDER:
+        original_block = sections.get(section)
+        target_block = next_sections.get(section)
+        if not isinstance(original_block, dict) or not isinstance(target_block, dict):
+            continue
+        original_items = [item for item in original_block.get("items", []) if isinstance(item, dict)]
+        current_items = [item for item in target_block.get("items", []) if isinstance(item, dict)]
+        if not original_items:
+            continue
+        min_keep = min(
+            len(original_items),
+            max(1, int(EXEC_REPORT_SECTION_LIMITS.get(section, 3) or 3)),
+        )
+        if len(current_items) >= min_keep:
+            continue
+        existing_keys = {
+            (
+                _canonical_statement_text(str(item.get("statement", ""))),
+                _canonical_text(str(item.get("anchor", ""))),
+            )
+            for item in current_items
+        }
+        restored = 0
+        for item in original_items:
+            source_key = (
+                section,
+                _canonical_statement_text(str(item.get("statement", ""))),
+                _canonical_text(str(item.get("anchor", ""))),
+            )
+            item_key = (source_key[1], source_key[2])
+            if source_key in used_source_keys or item_key in existing_keys:
+                continue
+            if not _section_item_passes_fidelity(section, item):
+                continue
+            current_items.append({**item})
+            existing_keys.add(item_key)
+            restored += 1
+            if len(current_items) >= min_keep:
+                break
+        if restored > 0:
+            target_block["items"] = _dedupe_section_items(current_items, max_items=max(1, len(current_items)))
+            target_block["evidence_refs"] = _collect_section_refs(target_block["items"], max_items=30)
+            restored_by_section[section] = restored
+
+    next_total = 0
+    for section in EXEC_REPORT_SECTION_ORDER:
+        block = next_sections.get(section)
+        if not isinstance(block, dict):
+            continue
+        next_total += len(block.get("items", []) if isinstance(block.get("items", []), list) else [])
+
+    removed_total = max(0, original_total - next_total)
+    restored_total = sum(restored_by_section.values())
+    if removed_total <= 0 and moved_total <= 0 and restored_total <= 0:
+        return sections, {"attempted": True, "applied": False}
+
+    diagnostics = {
+        "attempted": True,
+        "applied": True,
+        "removed_count": removed_total,
+        "moved_count": moved_total,
+    }
+    if restored_total > 0:
+        diagnostics["removed_before_restore_count"] = removed_before_restore
+        diagnostics["restored_count"] = restored_total
+        diagnostics["restored_by_section"] = restored_by_section
+    return next_sections, diagnostics
+
+
 def _build_section_block(
     title: str,
     items: list[dict[str, Any]],
@@ -3390,9 +4014,7 @@ def _is_methods_fallback_candidate(packet: dict[str, Any]) -> bool:
     if section_label in {"introduction", "discussion", "conclusion"}:
         return False
     anchor = str(packet.get("anchor", "")).strip()
-    if not (_is_method_like_statement(statement) or _has_method_signal(statement) or _is_methods_anchor(anchor)):
-        return False
-    if _has_concrete_result_outcome(statement) and not _is_methods_anchor(anchor):
+    if not _is_strict_method_statement(statement, anchor):
         return False
     return True
 
@@ -3762,22 +4384,22 @@ EXEC_REPORT_SECTION_HEADERS: dict[str, str] = {
     "conclusion": "Conclusion",
 }
 EXEC_REPORT_SECTION_LIMITS: dict[str, int] = {
-    "introduction": 4,
-    "methods": 6,
-    "results": 9,
-    "discussion": 6,
-    "conclusion": 4,
+    "introduction": 3,
+    "methods": 4,
+    "results": 5,
+    "discussion": 4,
+    "conclusion": 3,
 }
 CROSS_SECTION_DEDUPE_MIN_KEEP: dict[str, int] = {
     "discussion": 4,
     "conclusion": 3,
 }
 EXEC_REPORT_SECTION_SUMMARY_MAX_CHARS: dict[str, int] = {
-    "introduction": 380,
-    "methods": 520,
-    "results": 560,
-    "discussion": 420,
-    "conclusion": 360,
+    "introduction": 300,
+    "methods": 340,
+    "results": 380,
+    "discussion": 320,
+    "conclusion": 260,
 }
 
 
@@ -4079,16 +4701,835 @@ def _build_executive_report(
             overview_parts.append(f"{header}: {summary_text}.")
         total_evidence_items += len(bullets)
 
-    overview = " ".join(overview_parts).strip()
+    overview = "\n".join(overview_parts).strip()
     if not overview:
         overview = _summary_fragment(str(fallback_summary or "").strip(), max_chars=2200)
 
-    return {
+    report = {
         "style": "succinct_grounded_v1",
         "overview": overview,
         "sections": section_rows,
         "total_evidence_items": total_evidence_items,
     }
+    llm_report = _llm_executive_report_synthesis(
+        extractive_evidence=extractive_evidence,
+        fallback_report=report,
+    )
+    if llm_report:
+        return llm_report
+    return report
+
+
+def _executive_report_synthesis_payload(
+    extractive_evidence: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    payload_sections: dict[str, list[dict[str, Any]]] = {}
+    for section in EXEC_REPORT_SECTION_ORDER:
+        rows = extractive_evidence.get(section, []) if isinstance(extractive_evidence, dict) else []
+        ranked = sorted(
+            [row for row in rows if isinstance(row, dict)],
+            key=_extractive_rank_score,
+            reverse=True,
+        )
+        payload_rows: list[dict[str, Any]] = []
+        for row in ranked[: max(4, int(EXEC_REPORT_SECTION_LIMITS.get(section, 4)) * 2)]:
+            statement = _clean_section_statement(str(row.get("statement", "")).strip())
+            if not statement:
+                continue
+            verbatim = _summary_fragment(str(row.get("verbatim_text", "")).strip(), max_chars=520)
+            payload_rows.append(
+                {
+                    "statement": statement,
+                    "verbatim_excerpt": verbatim,
+                    "anchors": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:4],
+                    "confidence": clamp_confidence(row.get("confidence", 0.0)),
+                    "section_confidence": clamp_confidence(row.get("section_confidence", row.get("confidence", 0.0))),
+                    "source_modality": _normalize_modality_name(str(row.get("source_modality", "text"))),
+                }
+            )
+        payload_sections[section] = payload_rows
+    return {
+        "paper_type": _infer_paper_type({"sections": payload_sections}),
+        "sections": payload_sections,
+    }
+
+
+def _normalize_llm_executive_report(
+    raw: Any,
+    *,
+    fallback_report: dict[str, Any],
+    support_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    raw_sections = raw.get("sections")
+    if not isinstance(raw_sections, list):
+        return {}
+
+    fallback_by_section = {
+        str(section.get("section", "")).strip().lower(): section
+        for section in fallback_report.get("sections", [])
+        if isinstance(section, dict)
+    }
+    section_rows: list[dict[str, Any]] = []
+    overview_parts: list[str] = []
+    synthesized_count = 0
+    for section in EXEC_REPORT_SECTION_ORDER:
+        raw_row = next(
+            (
+                item
+                for item in raw_sections
+                if isinstance(item, dict) and str(item.get("section", "")).strip().lower() == section
+            ),
+            None,
+        )
+        fallback_row = fallback_by_section.get(section, {"section": section, "summary": "", "bullets": []})
+        summary = ""
+        raw_summary = ""
+        study_purpose = ""
+        study_hypothesis = ""
+        central_finding = ""
+        if raw_row:
+            raw_summary = _clean_section_statement(str(raw_row.get("summary", "")).strip())
+            summary = raw_summary
+            study_purpose = _clean_section_statement(str(raw_row.get("study_purpose", "")).strip())
+            study_hypothesis = _clean_section_statement(str(raw_row.get("study_hypothesis", "")).strip())
+            central_finding = _clean_section_statement(str(raw_row.get("central_finding", "")).strip())
+        fallback_summary = str(fallback_row.get("summary", "")).strip()
+        if summary and (
+            _executive_section_summary_supported(summary, fallback_row)
+            or _executive_section_payload_supports(section, summary, support_payload or {})
+        ):
+            summary = _summary_fragment(summary, max_chars=EXEC_REPORT_SECTION_SUMMARY_MAX_CHARS.get(section, 320))
+            synthesized_count += 1
+        else:
+            summary = fallback_summary
+        row = {
+            "section": section,
+            "summary": summary,
+            "bullets": list(fallback_row.get("bullets", [])) if isinstance(fallback_row.get("bullets", []), list) else [],
+        }
+        if section == "introduction":
+            if study_purpose and (
+                _executive_section_summary_supported(study_purpose, fallback_row)
+                or _statement_supported_by_text(study_purpose, " ".join([raw_summary, summary]))
+                or _executive_section_payload_supports(section, study_purpose, support_payload or {})
+            ):
+                row["study_purpose"] = _summary_fragment(study_purpose, max_chars=260)
+            if study_hypothesis and (
+                _executive_section_summary_supported(study_hypothesis, fallback_row)
+                or _statement_supported_by_text(study_hypothesis, " ".join([raw_summary, summary]))
+                or _executive_section_payload_supports(section, study_hypothesis, support_payload or {})
+            ):
+                row["study_hypothesis"] = _summary_fragment(study_hypothesis, max_chars=240)
+        elif section == "results":
+            if central_finding and (
+                _executive_section_summary_supported(central_finding, fallback_row)
+                or _statement_supported_by_text(central_finding, " ".join([raw_summary, summary]))
+                or _executive_section_payload_supports(section, central_finding, support_payload or {})
+            ):
+                row["central_finding"] = _summary_fragment(central_finding, max_chars=280)
+        section_rows.append(row)
+        if summary:
+            header = EXEC_REPORT_SECTION_HEADERS.get(section, section.title())
+            overview_parts.append(f"{header}: {summary}.")
+
+    if synthesized_count < 2:
+        return {}
+    overview = "\n".join(overview_parts).strip() or str(fallback_report.get("overview", "")).strip()
+    return {
+        "style": "llm_section_synthesis_v1",
+        "overview": overview,
+        "sections": section_rows,
+        "total_evidence_items": int(fallback_report.get("total_evidence_items", 0) or 0),
+        "synthesis_applied": True,
+    }
+
+
+def _enrich_detailed_sections_with_executive_report(
+    sections: dict[str, Any],
+    executive_report: dict[str, Any],
+    *,
+    fallback_summary: str = "",
+) -> dict[str, Any]:
+    if not isinstance(sections, dict) or not isinstance(executive_report, dict):
+        return sections
+    by_section = {
+        str(row.get("section", "")).strip().lower(): row
+        for row in executive_report.get("sections", [])
+        if isinstance(row, dict)
+    }
+    if not by_section:
+        return sections
+
+    enriched = json.loads(json.dumps(sections))
+    summary_sections = _summary_headed_sections(fallback_summary)
+    for section in EXEC_REPORT_SECTION_ORDER:
+        block = enriched.get(section)
+        report_row = by_section.get(section)
+        if not isinstance(block, dict) or not isinstance(report_row, dict):
+            continue
+
+        narrative_items: list[dict[str, Any]] = []
+        refs = _executive_report_section_refs(report_row)
+        summary = _clean_section_statement(
+            str(summary_sections.get(section) or report_row.get("summary", "") or "").strip()
+        )
+        if summary and not _is_low_explanatory_value_statement(summary):
+            narrative_items.append(
+                {
+                    "statement": summary,
+                    "evidence_refs": refs[:8],
+                    "anchor": refs[0] if refs else "",
+                    "source_modality": "text",
+                    "section_source": "llm_narrative_summary",
+                    "confidence": 0.82,
+                    "section_confidence": 0.82,
+                }
+            )
+            block["summary"] = summary
+
+        if section == "introduction":
+            for key in ("study_purpose", "study_hypothesis"):
+                text = _clean_section_statement(str(report_row.get(key, "") or "").strip())
+                if text and not _is_low_explanatory_value_statement(text):
+                    narrative_items.append(
+                        {
+                            "statement": text,
+                            "evidence_refs": refs[:8],
+                            "anchor": refs[0] if refs else "",
+                            "source_modality": "text",
+                            "section_source": f"llm_narrative_{key}",
+                            "confidence": 0.8,
+                            "section_confidence": 0.8,
+                        }
+                    )
+        elif section == "results":
+            text = _clean_section_statement(str(report_row.get("central_finding", "") or "").strip())
+            if text and not _is_low_explanatory_value_statement(text):
+                narrative_items.append(
+                    {
+                        "statement": text,
+                        "evidence_refs": refs[:8],
+                        "anchor": refs[0] if refs else "",
+                        "source_modality": "text",
+                        "section_source": "llm_narrative_central_finding",
+                        "confidence": 0.8,
+                        "section_confidence": 0.8,
+                    }
+                )
+
+        if narrative_items:
+            block["narrative_items"] = _dedupe_section_items(narrative_items, max_items=4)
+        enriched[section] = block
+    return enriched
+
+
+def _executive_report_section_refs(section_row: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for bullet in section_row.get("bullets", []):
+        if not isinstance(bullet, dict):
+            continue
+        refs.extend(str(ref).strip() for ref in bullet.get("anchors", []) if str(ref).strip())
+        refs.extend(str(ref).strip() for ref in bullet.get("evidence_ids", []) if str(ref).strip())
+    return _unique_strings(refs, max_items=12)
+
+
+def _executive_section_summary_supported(summary: str, fallback_row: dict[str, Any]) -> bool:
+    text = _canonical_statement_text(summary)
+    if not text:
+        return False
+    source_parts: list[str] = []
+    source_parts.append(str(fallback_row.get("summary", "") or ""))
+    for bullet in fallback_row.get("bullets", []):
+        if isinstance(bullet, dict):
+            source_parts.append(str(bullet.get("text", "") or ""))
+    source_text = _canonical_statement_text(" ".join(source_parts))
+    if not source_text:
+        return False
+    summary_numbers = set(re.findall(r"\d+(?:\.\d+)?", summary))
+    source_numbers = set(re.findall(r"\d+(?:\.\d+)?", " ".join(source_parts)))
+    if not summary_numbers.issubset(source_numbers):
+        return False
+    summary_tokens = set(text.split())
+    source_tokens = set(source_text.split())
+    if not summary_tokens:
+        return False
+    overlap = len(summary_tokens & source_tokens) / max(1, len(summary_tokens))
+    return overlap >= 0.45
+
+
+def _statement_supported_by_text(statement: str, source_text: str) -> bool:
+    statement_key = _canonical_statement_text(statement)
+    source_key = _canonical_statement_text(source_text)
+    if not statement_key or not source_key:
+        return False
+    statement_numbers = set(re.findall(r"\d+(?:\.\d+)?", statement))
+    source_numbers = set(re.findall(r"\d+(?:\.\d+)?", source_text))
+    if not statement_numbers.issubset(source_numbers):
+        return False
+    statement_tokens = set(statement_key.split())
+    source_tokens = set(source_key.split())
+    if not statement_tokens:
+        return False
+    overlap = len(statement_tokens & source_tokens) / max(1, len(statement_tokens))
+    return overlap >= 0.65
+
+
+def _executive_section_payload_supports(section: str, statement: str, support_payload: dict[str, Any]) -> bool:
+    sections = support_payload.get("sections") if isinstance(support_payload, dict) else {}
+    rows = sections.get(section, []) if isinstance(sections, dict) else []
+    if not isinstance(rows, list):
+        return False
+    source_parts: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_parts.append(str(row.get("statement", "") or ""))
+        source_parts.append(str(row.get("verbatim_excerpt", "") or ""))
+    return _statement_supported_by_text(statement, " ".join(source_parts))
+
+
+def _llm_executive_report_synthesis(
+    *,
+    extractive_evidence: dict[str, list[dict[str, Any]]],
+    fallback_report: dict[str, Any],
+) -> dict[str, Any]:
+    if not settings.analysis_narrative_overrides_enabled:
+        return {}
+    prompt_payload = _executive_report_synthesis_payload(extractive_evidence)
+    if not any(prompt_payload.get("sections", {}).get(section) for section in EXEC_REPORT_SECTION_ORDER):
+        return {}
+    prompt = truncate_text(
+        "Synthesize a sectioned executive summary from this evidence payload.\n\n"
+        + json.dumps(prompt_payload, indent=2),
+        max_chars_for_ctx(settings.llm_n_ctx),
+    )
+    parsed = _run_deep_json_prompt(
+        prompt=prompt,
+        system_prompt=EXECUTIVE_REPORT_SYNTHESIS_SYSTEM,
+        timeout_seconds=int(settings.analysis_narrative_overrides_subprocess_timeout_sec or 0),
+        guard_enabled=bool(settings.analysis_narrative_overrides_subprocess_guard_enabled),
+    )
+    return _normalize_llm_executive_report(
+        parsed,
+        fallback_report=fallback_report,
+        support_payload=prompt_payload,
+    )
+
+
+def build_section_synthesis_v2(
+    *,
+    summary_json: dict[str, Any],
+    parsed_chunks: list[dict[str, Any]] | None = None,
+    use_llm: bool | None = None,
+) -> dict[str, Any]:
+    """Build an experimental section-first report without mutating the production payload."""
+
+    parsed_chunks = parsed_chunks or []
+    paper_type = _paper_type_from_summary(summary_json)
+    section_inputs = _section_synthesis_v2_inputs(summary_json=summary_json, parsed_chunks=parsed_chunks)
+    fallback_report = _build_section_synthesis_v2_fallback(section_inputs=section_inputs, paper_type=paper_type)
+    should_call_llm = bool(settings.analysis_section_synthesis_v2_llm_enabled if use_llm is None else use_llm)
+    if should_call_llm:
+        llm_report = _llm_section_synthesis_v2(
+            section_inputs=section_inputs,
+            paper_type=paper_type,
+            fallback_report=fallback_report,
+        )
+        if llm_report:
+            return llm_report
+    return fallback_report
+
+
+def apply_section_synthesis_v2_payload(
+    summary_json: dict[str, Any],
+    *,
+    parsed_chunks: list[dict[str, Any]] | None = None,
+    use_llm: bool | None = None,
+) -> dict[str, Any]:
+    next_payload = json.loads(json.dumps(summary_json or {}))
+    v2_report = build_section_synthesis_v2(
+        summary_json=next_payload,
+        parsed_chunks=parsed_chunks or [],
+        use_llm=use_llm,
+    )
+    overview = str(v2_report.get("overview", "") or "").strip()
+    next_payload["section_synthesis_v2_version"] = 1
+    next_payload["section_synthesis_v2"] = v2_report
+    next_payload["executive_report"] = v2_report
+    next_payload["executive_report_version"] = 2
+    if overview:
+        next_payload["executive_summary"] = overview
+    diagnostics = next_payload.get("section_diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    diagnostics["section_synthesis_v2"] = {
+        "enabled": True,
+        "style": str(v2_report.get("style", "")),
+        "synthesis_applied": bool(v2_report.get("synthesis_applied")),
+        "paper_type": str(v2_report.get("paper_type", "")),
+        "section_input_counts": {
+            str(section): int(count)
+            for section, count in (v2_report.get("source_input_counts", {}) or {}).items()
+            if isinstance(count, int)
+        },
+    }
+    next_payload["section_diagnostics"] = diagnostics
+    return next_payload
+
+
+def _paper_type_from_summary(summary_json: dict[str, Any]) -> str:
+    diagnostics = summary_json.get("section_diagnostics", {}) if isinstance(summary_json, dict) else {}
+    if isinstance(diagnostics, dict):
+        paper_type = str(diagnostics.get("paper_type", "") or "").strip()
+        if paper_type:
+            return paper_type
+    return _infer_paper_type(summary_json if isinstance(summary_json, dict) else {})
+
+
+def _section_synthesis_v2_inputs(
+    *,
+    summary_json: dict[str, Any],
+    parsed_chunks: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    anchor_index = _parsed_chunk_anchor_index(parsed_chunks)
+    extracted = summary_json.get("sections_extracted", {}) if isinstance(summary_json, dict) else {}
+    presentation = summary_json.get("presentation_evidence", {}) if isinstance(summary_json, dict) else {}
+    extractive = summary_json.get("extractive_evidence", {}) if isinstance(summary_json, dict) else {}
+    out: dict[str, list[dict[str, Any]]] = {section: [] for section in EXEC_REPORT_SECTION_ORDER}
+    for section in EXEC_REPORT_SECTION_ORDER:
+        primary_rows = _section_synthesis_rows_from_extracted(
+            extracted.get(section, []) if isinstance(extracted, dict) else [],
+            section=section,
+            anchor_index=anchor_index,
+        )
+        rows = primary_rows
+        if len(rows) < _section_synthesis_v2_min_inputs(section):
+            backfill_source = presentation.get(section, []) if isinstance(presentation, dict) else []
+            if not backfill_source:
+                backfill_source = extractive.get(section, []) if isinstance(extractive, dict) else []
+            rows = rows + _section_synthesis_rows_from_backfill(
+                backfill_source,
+                section=section,
+                anchor_index=anchor_index,
+                existing_rows=rows,
+            )
+        if section == "methods" and len(rows) < _section_synthesis_v2_min_inputs(section):
+            rows = rows + _section_synthesis_rows_from_method_chunks(
+                parsed_chunks,
+                anchor_index=anchor_index,
+                existing_rows=rows,
+            )
+        out[section] = _dedupe_section_synthesis_rows(rows, max_items=_section_synthesis_v2_limit(section))
+    return out
+
+
+def _parsed_chunk_anchor_index(parsed_chunks: list[dict[str, Any]]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for chunk in parsed_chunks:
+        if not isinstance(chunk, dict):
+            continue
+        anchor = str(chunk.get("anchor", "") or "").strip()
+        if not anchor or anchor in out:
+            continue
+        content = " ".join(str(chunk.get("content", "") or "").split()).strip()
+        if content:
+            out[anchor] = content
+    return out
+
+
+def _section_synthesis_rows_from_extracted(
+    rows: Any,
+    *,
+    section: str,
+    anchor_index: dict[str, str],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(rows, list):
+        return out
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        statement = _clean_section_statement(str(row.get("statement", "") or "").strip())
+        if not statement or _is_noise_statement(statement) or _is_fragment_like_statement(statement):
+            continue
+        refs = [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()]
+        anchor = refs[0] if refs else str(row.get("anchor", "") or "").strip()
+        source_text = anchor_index.get(anchor, "")
+        excerpt = _best_verbatim_excerpt(statement=statement, source_text=source_text)
+        out.append(
+            {
+                "statement": statement,
+                "anchor": anchor,
+                "evidence_refs": refs[:6] or ([anchor] if anchor else []),
+                "source_excerpt": excerpt,
+                "kind": str(row.get("kind", "") or "finding"),
+                "source": "sections_extracted",
+                "confidence": 0.82,
+                "section_confidence": 0.9,
+            }
+        )
+    return out
+
+
+def _section_synthesis_rows_from_backfill(
+    rows: Any,
+    *,
+    section: str,
+    anchor_index: dict[str, str],
+    existing_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(rows, list):
+        return out
+    seen = {_canonical_statement_text(str(row.get("statement", ""))) for row in existing_rows}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        statement = _clean_section_statement(str(row.get("statement", "") or row.get("text", "") or "").strip())
+        key = _canonical_statement_text(statement)
+        if not statement or not key or key in seen:
+            continue
+        if not _section_item_passes_fidelity(section, {"statement": statement, "anchor": str(row.get("anchor", ""))}):
+            continue
+        seen.add(key)
+        refs = [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()]
+        anchor = str(row.get("anchor", "") or (refs[0] if refs else "")).strip()
+        if anchor and anchor not in refs:
+            refs = [anchor] + refs
+        source_text = anchor_index.get(anchor, "")
+        out.append(
+            {
+                "statement": statement,
+                "anchor": anchor,
+                "evidence_refs": refs[:6],
+                "source_excerpt": str(row.get("verbatim_text", "") or "").strip()
+                or _best_verbatim_excerpt(statement=statement, source_text=source_text),
+                "kind": "backfill",
+                "source": "heuristic_backfill",
+                "confidence": clamp_confidence(row.get("confidence", 0.56)),
+                "section_confidence": clamp_confidence(row.get("section_confidence", row.get("confidence", 0.56))),
+            }
+        )
+    return out
+
+
+def _section_synthesis_rows_from_method_chunks(
+    parsed_chunks: list[dict[str, Any]],
+    *,
+    anchor_index: dict[str, str],
+    existing_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    seen = {_canonical_statement_text(str(row.get("statement", ""))) for row in existing_rows}
+    out: list[dict[str, Any]] = []
+    for item in _method_section_chunk_candidates(parsed_chunks, max_items=12):
+        statement = _clean_section_statement(str(item.get("statement", "") or "").strip())
+        key = _canonical_statement_text(statement)
+        if not statement or not key or key in seen:
+            continue
+        anchor = str(item.get("anchor", "") or "").strip()
+        refs = [str(ref).strip() for ref in item.get("evidence_refs", []) if str(ref).strip()] or ([anchor] if anchor else [])
+        out.append(
+            {
+                "statement": statement,
+                "anchor": anchor,
+                "evidence_refs": refs[:5],
+                "source_excerpt": _best_verbatim_excerpt(statement=statement, source_text=anchor_index.get(anchor, "")),
+                "kind": "source_method_chunk",
+                "source": "source_section_reconstruction",
+                "confidence": clamp_confidence(item.get("confidence", 0.66)),
+                "section_confidence": clamp_confidence(item.get("section_confidence", 0.72)),
+            }
+        )
+        seen.add(key)
+    return out
+
+
+def _dedupe_section_synthesis_rows(rows: list[dict[str, Any]], *, max_items: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    ranked = sorted(rows, key=_section_synthesis_v2_row_score, reverse=True)
+    for row in ranked:
+        statement = _clean_section_statement(str(row.get("statement", "") or ""))
+        key = _canonical_statement_text(statement)
+        if not statement or not key or _is_redundant_statement_key(key, seen):
+            continue
+        seen.add(key)
+        out.append({**row, "statement": statement})
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _section_synthesis_v2_row_score(row: dict[str, Any]) -> float:
+    score = 1.2 * clamp_confidence(row.get("section_confidence", 0.0))
+    score += 0.8 * clamp_confidence(row.get("confidence", 0.0))
+    if str(row.get("source", "")) == "sections_extracted":
+        score += 0.35
+    if str(row.get("source_excerpt", "")).strip():
+        score += 0.15
+    return score
+
+
+def _section_synthesis_v2_min_inputs(section: str) -> int:
+    return {"introduction": 3, "methods": 5, "results": 6, "discussion": 4, "conclusion": 3}.get(section, 4)
+
+
+def _section_synthesis_v2_limit(section: str) -> int:
+    return {"introduction": 8, "methods": 12, "results": 14, "discussion": 10, "conclusion": 7}.get(section, 8)
+
+
+def _build_section_synthesis_v2_fallback(
+    *,
+    section_inputs: dict[str, list[dict[str, Any]]],
+    paper_type: str,
+) -> dict[str, Any]:
+    sections: list[dict[str, Any]] = []
+    overview_parts: list[str] = []
+    input_counts: dict[str, int] = {}
+    for section in EXEC_REPORT_SECTION_ORDER:
+        rows = section_inputs.get(section, []) if isinstance(section_inputs, dict) else []
+        input_counts[section] = len(rows)
+        summary = _deterministic_section_v2_summary(section=section, rows=rows, paper_type=paper_type)
+        bullets = [
+            {
+                "text": _summary_fragment(str(row.get("statement", "")), max_chars=260),
+                "anchors": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:4],
+                "source": str(row.get("source", "")),
+            }
+            for row in rows[: min(8, max(3, _section_synthesis_v2_min_inputs(section)))]
+            if str(row.get("statement", "")).strip()
+        ]
+        key_terms = _section_v2_key_terms(section=section, rows=rows, paper_type=paper_type)
+        sections.append(
+            {
+                "section": section,
+                "summary": summary,
+                "bullets": bullets,
+                "salient_points": [bullet["text"] for bullet in bullets[:4]],
+                "key_terms": key_terms,
+                "source_counts": {
+                    "sections_extracted": sum(1 for row in rows if row.get("source") == "sections_extracted"),
+                    "heuristic_backfill": sum(1 for row in rows if row.get("source") == "heuristic_backfill"),
+                },
+            }
+        )
+        if summary:
+            overview_parts.append(f"{EXEC_REPORT_SECTION_HEADERS.get(section, section.title())}: {summary}")
+    return {
+        "style": "section_synthesis_v2_experimental",
+        "paper_type": paper_type,
+        "overview": "\n".join(overview_parts).strip(),
+        "sections": sections,
+        "total_evidence_items": sum(len(section.get("bullets", [])) for section in sections),
+        "source_input_counts": input_counts,
+        "synthesis_applied": False,
+        "experimental": True,
+    }
+
+
+def _deterministic_section_v2_summary(*, section: str, rows: list[dict[str, Any]], paper_type: str) -> str:
+    statements = [_clean_section_statement(str(row.get("statement", "") or "")) for row in rows]
+    statements = [text for text in statements if text]
+    if not statements:
+        return ""
+    limit = {"introduction": 3, "methods": 4, "results": 4, "discussion": 3, "conclusion": 2}.get(section, 3)
+    selected = statements[:limit]
+    lead = _section_v2_lead_phrase(section, paper_type)
+    body = " ".join(_ensure_sentence(text) for text in selected)
+    return _summary_fragment(f"{lead} {body}".strip(), max_chars={"methods": 760, "results": 820}.get(section, 620))
+
+
+def _section_v2_lead_phrase(section: str, paper_type: str) -> str:
+    kind = str(paper_type or "").lower()
+    if section == "introduction":
+        return "The paper frames the study around the following problem and rationale:"
+    if section == "methods":
+        if "laboratory" in kind or "preclinical" in kind:
+            return "Methodologically, the study centers on the experimental system, validation steps, and measured readouts:"
+        if "review" in kind:
+            return "Methodologically, the review should be read through its search, eligibility, extraction, and synthesis procedures:"
+        return "Methodologically, the study is defined by its design, sample/data source, measures, and analytic approach:"
+    if section == "results":
+        return "The main results emphasize the following supported findings:"
+    if section == "discussion":
+        return "The discussion interprets the findings in terms of implications, limitations, and context:"
+    if section == "conclusion":
+        return "The conclusion-level takeaway is:"
+    return ""
+
+
+def _ensure_sentence(text: str) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean:
+        return ""
+    if clean[-1] not in ".!?":
+        clean += "."
+    return clean
+
+
+def _section_v2_key_terms(*, section: str, rows: list[dict[str, Any]], paper_type: str) -> list[dict[str, str]]:
+    text = " ".join(str(row.get("statement", "")) for row in rows)
+    terms: list[dict[str, str]] = []
+    if re.search(r"\bFlp-?In\b", text, re.IGNORECASE):
+        terms.append({"term": "Flp-In", "explanation": "A recombinase-based system for targeted, stable insertion of transgenes."})
+    if re.search(r"\bFRT\b", text):
+        terms.append({"term": "FRT", "explanation": "A DNA recognition site used by Flp recombinase to insert expression constructs."})
+    if re.search(r"\bMDMR\b|multivariate distance", text, re.IGNORECASE):
+        terms.append({"term": "MDMR", "explanation": "A whole-brain multivariate method for testing whether connectivity patterns vary with clinical or behavioral variables."})
+    if re.search(r"\bBAS\b|Behavioral Activation", text, re.IGNORECASE):
+        terms.append({"term": "BAS reward sensitivity", "explanation": "A questionnaire-derived measure of reward responsiveness used as a dimensional phenotype."})
+    if re.search(r"\banhedonia\b", text, re.IGNORECASE):
+        terms.append({"term": "Anhedonia", "explanation": "Reduced ability to experience or respond to reward."})
+    if section == "methods" and "review" in str(paper_type or "").lower() and re.search(r"\brisk of bias\b", text, re.IGNORECASE):
+        terms.append({"term": "Risk of bias", "explanation": "Assessment of whether study design or conduct may systematically distort evidence."})
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for term in terms:
+        key = str(term.get("term", "")).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(term)
+    return unique[:4]
+
+
+def _llm_section_synthesis_v2(
+    *,
+    section_inputs: dict[str, list[dict[str, Any]]],
+    paper_type: str,
+    fallback_report: dict[str, Any],
+) -> dict[str, Any]:
+    prompt_sections: dict[str, list[dict[str, Any]]] = {}
+    for section in EXEC_REPORT_SECTION_ORDER:
+        rows = section_inputs.get(section, [])
+        prompt_sections[section] = [
+            {
+                "statement": str(row.get("statement", "")),
+                "source_excerpt": _summary_fragment(str(row.get("source_excerpt", "")), max_chars=520),
+                "anchors": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:4],
+                "source": str(row.get("source", "")),
+            }
+            for row in rows[: _section_synthesis_v2_limit(section)]
+        ]
+    if not any(prompt_sections.values()):
+        return {}
+    prompt = truncate_text(
+        "Write an experimental section-first paper readout from this JSON evidence payload.\n"
+        "Return only valid JSON.\n\n"
+        + json.dumps({"paper_type": paper_type, "sections": prompt_sections}, indent=2),
+        max_chars_for_ctx(settings.llm_n_ctx),
+    )
+    try:
+        parsed = _run_deep_json_prompt(
+            prompt=prompt,
+            system_prompt=SECTION_SYNTHESIS_V2_SYSTEM,
+            timeout_seconds=int(settings.analysis_narrative_overrides_subprocess_timeout_sec or 0),
+            guard_enabled=bool(settings.analysis_narrative_overrides_subprocess_guard_enabled),
+        )
+    except Exception:
+        return {}
+    return _normalize_section_synthesis_v2_llm(
+        parsed,
+        fallback_report=fallback_report,
+        section_inputs=section_inputs,
+        paper_type=paper_type,
+    )
+
+
+def _normalize_section_synthesis_v2_llm(
+    raw: Any,
+    *,
+    fallback_report: dict[str, Any],
+    section_inputs: dict[str, list[dict[str, Any]]],
+    paper_type: str,
+) -> dict[str, Any]:
+    if not isinstance(raw, dict) or not isinstance(raw.get("sections"), list):
+        return {}
+    fallback_by_section = {
+        str(row.get("section", "")).strip().lower(): row
+        for row in fallback_report.get("sections", [])
+        if isinstance(row, dict)
+    }
+    section_rows: list[dict[str, Any]] = []
+    overview_parts: list[str] = []
+    synthesized_count = 0
+    for section in EXEC_REPORT_SECTION_ORDER:
+        raw_row = next(
+            (
+                row
+                for row in raw.get("sections", [])
+                if isinstance(row, dict) and str(row.get("section", "")).strip().lower() == section
+            ),
+            {},
+        )
+        fallback = fallback_by_section.get(section, {"section": section, "summary": "", "bullets": []})
+        source_text = " ".join(
+            f"{row.get('statement', '')} {row.get('source_excerpt', '')}"
+            for row in section_inputs.get(section, [])
+            if isinstance(row, dict)
+        )
+        summary = _clean_section_statement(str(raw_row.get("summary", "") if isinstance(raw_row, dict) else "").strip())
+        if summary and _section_v2_summary_supported(summary, source_text):
+            summary = _summary_fragment(summary, max_chars={"methods": 780, "results": 840}.get(section, 640))
+            synthesized_count += 1
+        else:
+            summary = str(fallback.get("summary", "") or "")
+        salient_points = [
+            _summary_fragment(str(item), max_chars=240)
+            for item in (raw_row.get("salient_points", []) if isinstance(raw_row, dict) else [])
+            if str(item).strip() and _section_v2_summary_supported(str(item), source_text, min_overlap=0.28)
+        ][:6]
+        key_terms = []
+        raw_terms = raw_row.get("key_terms", []) if isinstance(raw_row, dict) else []
+        if isinstance(raw_terms, list):
+            for term in raw_terms[:5]:
+                if not isinstance(term, dict):
+                    continue
+                name = _summary_fragment(str(term.get("term", "")).strip(), max_chars=60)
+                explanation = _summary_fragment(str(term.get("explanation", "")).strip(), max_chars=180)
+                if name and explanation:
+                    key_terms.append({"term": name, "explanation": explanation})
+        if not key_terms:
+            key_terms = list(fallback.get("key_terms", [])) if isinstance(fallback.get("key_terms"), list) else []
+        row = {
+            **fallback,
+            "section": section,
+            "summary": summary,
+            "salient_points": salient_points or list(fallback.get("salient_points", [])),
+            "key_terms": key_terms,
+        }
+        section_rows.append(row)
+        if summary:
+            overview_parts.append(f"{EXEC_REPORT_SECTION_HEADERS.get(section, section.title())}: {summary}")
+    if synthesized_count < 2:
+        return {}
+    return {
+        **fallback_report,
+        "style": "section_synthesis_v2_experimental_llm",
+        "paper_type": paper_type,
+        "overview": "\n".join(overview_parts).strip(),
+        "sections": section_rows,
+        "synthesis_applied": True,
+        "experimental": True,
+    }
+
+
+def _section_v2_summary_supported(summary: str, source_text: str, *, min_overlap: float = 0.22) -> bool:
+    summary_key = _canonical_statement_text(summary)
+    source_key = _canonical_statement_text(source_text)
+    if not summary_key or not source_key:
+        return False
+    summary_numbers = set(re.findall(r"\d+(?:\.\d+)?", summary))
+    source_numbers = set(re.findall(r"\d+(?:\.\d+)?", source_text))
+    if not summary_numbers.issubset(source_numbers):
+        return False
+    summary_tokens = set(summary_key.split())
+    source_tokens = set(source_key.split())
+    if not summary_tokens:
+        return False
+    return (len(summary_tokens & source_tokens) / max(1, len(summary_tokens))) >= min_overlap
 
 
 def _filter_result_text_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4181,6 +5622,11 @@ def _is_layout_artifact_statement(value: str) -> bool:
         lowered,
     ):
         return True
+    if re.match(r"^\s*[A-H](?:\s+[A-H]){1,}\b", text, flags=re.IGNORECASE) and re.search(
+        r"\b(mean connectivity|reward sensitivity|nucleus accumbens|z\s*-?\d)\b",
+        lowered,
+    ):
+        return True
     return False
 
 
@@ -4191,6 +5637,8 @@ def _is_noise_statement(value: str) -> bool:
     if text.startswith("$^{"):
         return True
     if _is_layout_artifact_statement(text):
+        return True
+    if GENERIC_UNINFORMATIVE_RE.search(text):
         return True
     if NOISE_STATEMENT_RE.search(text):
         return True
@@ -4209,6 +5657,20 @@ def _is_noise_statement(value: str) -> bool:
             return True
     if re.search(r"(M\.D\.|Ph\.D\.|B\.A\.|B\.S\.)", text) and (text.count(",") >= 2 or len(text.split()) <= 18):
         return True
+    return False
+
+
+def _is_low_explanatory_value_statement(value: str) -> bool:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return True
+    if LOW_EXPLANATORY_VALUE_RE.search(text):
+        return True
+    words = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", text)
+    if len(words) >= 8:
+        function_words = len(re.findall(r"\b(?:the|of|and|to|in|for|with|by|that|this|these|from)\b", text, re.IGNORECASE))
+        if function_words <= 1 and re.search(r"\b(promoter|polyA|signal|primer|amplicon|vector)\b", text, re.IGNORECASE):
+            return True
     return False
 
 
@@ -4286,6 +5748,7 @@ def _coerce_narrative_overrides(parsed: Any) -> dict[str, Any]:
         return {}
     return {
         "executive_summary": _strip_confidence_annotations(str(parsed.get("executive_summary", "")).strip()),
+        "interpretation": _strip_confidence_annotations(str(parsed.get("interpretation", "")).strip()),
         "methods_strengths": _as_str_list(parsed.get("methods_strengths")),
         "methods_weaknesses": _as_str_list(parsed.get("methods_weaknesses")),
         "reproducibility_ethics": _as_str_list(parsed.get("reproducibility_ethics")),
@@ -4295,12 +5758,15 @@ def _coerce_narrative_overrides(parsed: Any) -> dict[str, Any]:
 
 def _apply_narrative_overrides(draft: dict[str, Any], overrides: dict[str, Any]) -> None:
     executive_summary = str(overrides.get("executive_summary") or "").strip()
+    interpretation = str(overrides.get("interpretation") or "").strip()
     methods_strengths = _as_str_list(overrides.get("methods_strengths"))
     methods_weaknesses = _as_str_list(overrides.get("methods_weaknesses"))
     reproducibility_ethics = _as_str_list(overrides.get("reproducibility_ethics"))
     uncertainty_gaps = _as_str_list(overrides.get("uncertainty_gaps"))
-    if executive_summary:
+    if executive_summary and _summary_has_all_components(executive_summary):
         draft["executive_summary"] = executive_summary
+    if interpretation:
+        draft["interpretation"] = interpretation
     if methods_strengths:
         draft["methods_strengths"] = methods_strengths
     if methods_weaknesses:
@@ -4756,6 +6222,250 @@ def _raw_chunk_section_candidates(
     ]
 
 
+METHOD_SOURCE_HEADING_RE = re.compile(
+    r"\b("
+    r"methods?|materials?|study design|sample recruitment|participants?|eligib|criteria|"
+    r"specimens?|pathogen identification|diagnostic|serotyp(?:e|ing)|statistical analys(?:is|es)|"
+    r"ethical considerations|ethics|irb|informed consent|protocol|optimization|transfection|"
+    r"vector|plasmid|construct|cloning|mutagenesis|pcr|qpcr|sanger|sequencing|expression analyses|"
+    r"transport experiments?|lc-ms|mass spectrometry|protein quantification|microscopy|flow cytometry"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _method_section_chunk_candidates(
+    text_chunk_records: list[dict[str, Any]],
+    *,
+    max_items: int = 10,
+) -> list[dict[str, Any]]:
+    if not text_chunk_records:
+        return []
+    ordered = sorted(
+        [(idx, chunk) for idx, chunk in enumerate(text_chunk_records) if isinstance(chunk, dict)],
+        key=lambda pair: _chunk_order_key(pair[1], pair[0]),
+    )
+    ranked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    title_counts: dict[str, int] = {}
+    for pos, (_idx, chunk) in enumerate(ordered):
+        anchor = str(chunk.get("anchor", "")).strip()
+        content = " ".join(str(chunk.get("content", "")).split()).strip()
+        if not anchor or not content:
+            continue
+        meta = _chunk_meta_dict(chunk)
+        title = _chunk_section_title(chunk, meta=meta, anchor=anchor)
+        title_method_signal = bool(METHOD_SOURCE_HEADING_RE.search(title))
+        label = _chunk_section_norm(chunk, meta=meta, anchor=anchor)
+        if label != "methods" and not title_method_signal:
+            continue
+        if re.match(r"^\s*(figure|table)\b", title, flags=re.IGNORECASE) and not title_method_signal:
+            continue
+
+        sentences = [_clean_section_statement(str(sentence).strip()) for sentence in _split_sentences(content)]
+        embedded_title = ""
+        if sentences:
+            first = sentences[0]
+            if 3 <= len(first.split()) <= 9 and METHOD_SOURCE_HEADING_RE.search(first):
+                embedded_title = first
+        for sentence in sentences:
+            statement = _clean_section_statement(str(sentence).strip())
+            if len(statement) < 40:
+                continue
+            if len(statement.split()) < 7:
+                continue
+            if embedded_title and statement == embedded_title:
+                continue
+            if statement[:1].islower():
+                continue
+            if re.search(r"\b(?:Fig|Eq)\.\s*$", statement):
+                continue
+            if re.search(r"\b[A-Z]\.\s*$", statement):
+                continue
+            if re.match(r"^\s*(the\s+)?results?\s+(?:was|were|showed|indicated)\b", statement, flags=re.IGNORECASE):
+                continue
+            if re.search(r"\b(revealed|showed|demonstrated|provided a homogeneous signal)\b", statement, re.IGNORECASE):
+                continue
+            if _is_overly_procedural_recipe_statement(statement):
+                continue
+            if _is_low_explanatory_value_statement(statement):
+                continue
+            if not _is_strict_method_statement(statement, anchor):
+                continue
+            effective_title = embedded_title or title
+            title_key = _canonical_statement_text(effective_title) or _canonical_text(effective_title)
+            key = _canonical_statement_text(statement)
+            if not key or _is_redundant_statement_key(key, seen):
+                continue
+            if title_key and title_counts.get(title_key, 0) >= 5:
+                continue
+            score = _method_source_chunk_score(
+                statement=statement,
+                title=effective_title,
+                anchor=anchor,
+                label=label,
+                title_method_signal=bool(title_method_signal or METHOD_SOURCE_HEADING_RE.search(effective_title)),
+                order=pos,
+                total=max(1, len(ordered)),
+            )
+            if score <= 0:
+                continue
+            seen.add(key)
+            if title_key:
+                title_counts[title_key] = title_counts.get(title_key, 0) + 1
+            ranked.append(
+                {
+                    "statement": _compact_section_statement(statement, max_chars=260),
+                    "anchor": anchor,
+                    "evidence_refs": [anchor],
+                    "confidence": min(0.86, max(0.6, score / 10.0)),
+                    "section_confidence": 0.78 if label == "methods" else 0.68,
+                    "score": score,
+                    "title": effective_title,
+                }
+            )
+
+    ranked.sort(key=lambda item: (_method_chunk_title_rank(str(item.get("title", ""))), -float(item.get("score", 0.0))))
+    selected: list[dict[str, Any]] = []
+    selected_title_counts: dict[str, int] = {}
+    per_title_cap = 2
+    for item in ranked:
+        title_key = _canonical_statement_text(str(item.get("title", ""))) or "body"
+        if selected_title_counts.get(title_key, 0) >= per_title_cap:
+            continue
+        selected.append(item)
+        selected_title_counts[title_key] = selected_title_counts.get(title_key, 0) + 1
+        if len(selected) >= max_items:
+            break
+    return [
+        {
+            key: value
+            for key, value in item.items()
+            if key in {"statement", "anchor", "evidence_refs", "confidence", "section_confidence", "title"}
+        }
+        for item in selected
+    ]
+
+
+def _chunk_meta_dict(chunk: dict[str, Any]) -> dict[str, Any]:
+    meta = chunk.get("meta")
+    if isinstance(meta, dict):
+        return dict(meta)
+    if not isinstance(meta, str) or not meta.strip():
+        return {}
+    try:
+        parsed = json.loads(meta)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _chunk_section_norm(chunk: dict[str, Any], *, meta: dict[str, Any], anchor: str) -> str:
+    for key in ("section_norm", "section_label", "section"):
+        value = str(meta.get(key, "")).strip().lower()
+        if value in SECTION_LABELS and value != "unknown":
+            return value
+    anchor_section = _anchor_section_label(anchor)
+    if anchor_section != "unknown":
+        return anchor_section
+    return "unknown"
+
+
+def _chunk_section_title(chunk: dict[str, Any], *, meta: dict[str, Any], anchor: str) -> str:
+    title = str(meta.get("section_raw_title") or meta.get("section") or "").strip()
+    if title:
+        return " ".join(title.split())
+    if anchor.lower().startswith("section:"):
+        parts = anchor.split(":")
+        if len(parts) > 2:
+            return " ".join(":".join(parts[1:-1]).split())
+        if len(parts) == 2:
+            return " ".join(parts[1].split())
+    return ""
+
+
+def _method_source_chunk_score(
+    *,
+    statement: str,
+    title: str,
+    anchor: str,
+    label: str,
+    title_method_signal: bool,
+    order: int,
+    total: int,
+) -> float:
+    score = 0.0
+    if label == "methods":
+        score += 2.0
+    if title_method_signal:
+        score += 2.4
+    if _has_method_signal(statement):
+        score += 1.7
+    if _is_method_like_statement(statement):
+        score += 1.2
+    lowered_title = title.lower()
+    if re.search(r"\b(study design|sample recruitment|participants?|criteria)\b", lowered_title):
+        score += 1.2
+    if re.search(r"\b(specimen|pathogen|statistical|ethical|irb|consent)\b", lowered_title):
+        score += 1.1
+    if re.search(r"\b(transfection|vector|plasmid|pcr|qpcr|sanger|transport|lc-ms|flow cytometry)\b", lowered_title):
+        score += 1.0
+    if re.match(r"^\s*(figure|table)\b", lowered_title):
+        score -= 2.0
+    if "body" in anchor.lower():
+        score -= 1.1
+    if _has_concrete_result_outcome(statement):
+        score -= 0.8
+    position = float(order) / float(max(1, total - 1))
+    if position <= 0.82:
+        score += 0.4
+    return score
+
+
+def _method_chunk_title_rank(title: str) -> int:
+    lowered = str(title or "").lower()
+    priority = [
+        r"study design|sample recruitment|participants?|patients?",
+        r"criteria|definition",
+        r"specimen|pathogen|serotyp",
+        r"statistical",
+        r"ethical|irb|consent",
+        r"transfection|protocol",
+        r"vector|plasmid|construct|cloning|mutagenesis",
+        r"pcr|qpcr|sanger|sequencing",
+        r"expression|transport|lc-ms|mass spectrometry|flow cytometry|microscopy",
+    ]
+    for idx, pattern in enumerate(priority):
+        if re.search(pattern, lowered):
+            return idx
+    return len(priority)
+
+
+def _is_overly_procedural_recipe_statement(statement: str) -> bool:
+    text = str(statement or "")
+    units = re.findall(r"\b\d+(?:\.\d+)?\s*(?:µl|ul|μl|mm|ng|rpm|°c|min|h)\b", text, flags=re.IGNORECASE)
+    if len(units) < 3:
+        return False
+    return bool(re.search(r"\b(buffer|mixed|incubat|centrifug|diluted|q-solution|dntp|primer)\b", text, re.IGNORECASE))
+
+
+def _should_backfill_methods_from_source_chunks(
+    methods_items: list[dict[str, Any]],
+    source_chunk_items: list[dict[str, Any]],
+) -> bool:
+    if not source_chunk_items:
+        return False
+    if len(methods_items) < 8:
+        return True
+    item_anchors = {str(ref).strip() for item in methods_items for ref in item.get("evidence_refs", []) if str(ref).strip()}
+    novel = 0
+    for item in source_chunk_items:
+        refs = {str(ref).strip() for ref in item.get("evidence_refs", []) if str(ref).strip()}
+        if refs and not refs <= item_anchors:
+            novel += 1
+    return novel >= 3
+
+
 def _raw_chunk_section_score(section: str, statement: str, *, position: float) -> float:
     text = str(statement or "").strip()
     if not text:
@@ -4822,7 +6532,8 @@ def _chunk_order_key(chunk: dict[str, Any], idx: int) -> tuple[int, int]:
 
 
 def _split_sentences(text: str) -> list[str]:
-    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", str(text or "")) if part.strip()]
+    protected = re.sub(r"\b([A-Z])\.\s+([a-z])", r"\1<prd> \2", str(text or ""))
+    return [part.replace("<prd>", ".").strip() for part in re.split(r"(?<=[.!?])\s+", protected) if part.strip()]
 
 
 def _tail_token(value: str) -> str:
@@ -4931,6 +6642,8 @@ def _compact_without_cutoff(text: str, *, max_chars: int) -> str:
         idx = window.rfind(marker)
         if idx >= int(max_chars * 0.65):
             trimmed = window[:idx].rstrip(" ,;:")
+            if _is_incomplete_statement(trimmed):
+                continue
             if trimmed and trimmed[-1] not in ".!?":
                 trimmed += "."
             return trimmed
@@ -4960,6 +6673,12 @@ def _summary_fragment(value: str, *, max_chars: int, sentence: bool = False) -> 
     text = text.rstrip(" \t\r\n.;,:!?")
     if len(text) > max_chars:
         text = _compact_without_cutoff(text, max_chars=max_chars).rstrip(" \t\r\n.;,:!?")
+    if _is_incomplete_statement(text):
+        repaired = _trim_dangling_tail_tokens(text)
+        if repaired and not _is_incomplete_statement(repaired):
+            text = repaired.rstrip(" \t\r\n.;,:!?")
+        else:
+            return ""
     if sentence and text and text[-1] not in ".!?":
         text += "."
     return text

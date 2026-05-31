@@ -21,13 +21,14 @@ from app.core.config import settings
 from app.db.models import Asset, Chunk
 from app.services.author_utils import normalize_author_name, sanitize_author_list
 from app.services.analysis.ocr import ocr_image_text, ocr_image_words
+from app.services.analysis.media_cleaning import clean_figure_caption, clean_figure_ocr_text
 from app.services.analysis.utils import extract_refs_from_text
 from app.services.storage import artifacts_dir
 
 
 @dataclass
 class FigureAsset:
-    path: Path
+    path: Path | None
     caption: str | None
     fig_type: str | None
     page: int | None
@@ -73,6 +74,24 @@ METHODS_HEURISTIC_TOKENS: tuple[str, ...] = (
     "imag",
     "supplementary",
     "covariate",
+    "assay",
+    "cell line",
+    "cell clone",
+    "cell culture",
+    "cloning",
+    "construct",
+    "expression vector",
+    "flp-in",
+    "mutagenesis",
+    "pcr",
+    "primer",
+    "plasmid",
+    "qpcr",
+    "sanger",
+    "sequencing",
+    "selection",
+    "transfection",
+    "vector",
 )
 RESULTS_HEURISTIC_TOKENS: tuple[str, ...] = (
     "result",
@@ -229,7 +248,8 @@ def parse_pdf_validated(
             meta=None,
         )
         session.add(chunk)
-    for idx, text_block in enumerate(_tei_to_text_chunks(tei_xml)):
+    text_blocks = _tei_to_text_chunks(tei_xml)
+    for idx, text_block in enumerate(text_blocks):
         chunk = Chunk(
             document_id=document_id,
             asset_id=asset.id,
@@ -243,9 +263,12 @@ def parse_pdf_validated(
 
     figures = _pdffigures2_extract(path, document_id)
     if not figures:
+        figures = _tei_figure_legend_extract(tei_xml, pdf_path=path, document_id=document_id)
+        figures = _merge_figure_assets(figures, _figure_assets_from_text_chunks(text_blocks))
+    if not figures:
         figures = _fallback_page_images(path, document_id)
     for fig in figures:
-        if fig.fig_type and fig.fig_type.lower() == "table":
+        if fig.path and fig.fig_type and fig.fig_type.lower() == "table":
             table_df = _table_from_image(fig.path)
             if table_df is None:
                 continue
@@ -257,7 +280,7 @@ def parse_pdf_validated(
                 f"table:{fig.path.stem}",
                 extra_meta={
                     "caption": fig.caption,
-                    "source": "pdffigures2",
+                    "source": fig.meta.get("source") or "pdffigures2",
                     "asset_kind": asset.kind,
                     "table_image_path": str(fig.path.resolve()),
                     "page": fig.page,
@@ -268,29 +291,39 @@ def parse_pdf_validated(
             counts["table"] += 1
             continue
 
-        ocr_text = _ocr_text_doctr(fig.path) if settings.figure_ocr_parse_enabled else ""
-        refs = extract_refs_from_text(f"{fig.caption or ''} {ocr_text or ''}")
+        source = str(fig.meta.get("source") or "pdffigures2")
+        ocr_text = clean_figure_ocr_text(_ocr_text_doctr(fig.path)) if fig.path and settings.figure_ocr_parse_enabled else ""
+        clean_caption = clean_figure_caption(fig.caption)
+        refs = extract_refs_from_text(f"{clean_caption or ''} {ocr_text or ''}")
+        figure_id = (
+            _normalize_figure_id(clean_caption or (fig.path.stem if fig.path else ""))
+            or str(fig.meta.get("figure_id") or "").strip()
+            or None
+        )
         meta_obj = {
-            "path": str(fig.path.resolve()),
-            "caption": fig.caption,
+            "caption": clean_caption,
+            "raw_caption": fig.caption,
             "fig_type": fig.fig_type,
             "page": fig.page,
-            "source": "pdffigures2",
+            "source": source,
             "extra": fig.meta,
             "asset_kind": asset.kind,
             "figure_refs": sorted(refs),
-            "figure_id": _normalize_figure_id(fig.caption or fig.path.stem),
+            "figure_id": figure_id,
             "quality_flags": [],
             "ocr_source": "doctr" if ocr_text else None,
         }
+        if fig.path:
+            meta_obj["path"] = str(fig.path.resolve())
         if ocr_text:
             meta_obj["ocr_text"] = ocr_text
+        anchor_suffix = _safe_anchor_suffix(figure_id or (fig.path.stem if fig.path else f"tei_{counts['figure'] + 1}"))
         chunk = Chunk(
             document_id=document_id,
             asset_id=asset.id,
-            anchor=f"figure:{fig.path.stem}",
+            anchor=f"figure:{anchor_suffix}",
             modality="figure",
-            content="",
+            content=clean_caption or "",
             meta=json.dumps(meta_obj),
         )
         session.add(chunk)
@@ -422,6 +455,192 @@ def _fallback_page_images(pdf_path: Path, document_id: int) -> list[FigureAsset]
         except Exception:
             continue
     return figures
+
+
+def _tei_figure_legend_extract(
+    tei_xml: str,
+    *,
+    pdf_path: Path | None = None,
+    document_id: int | None = None,
+) -> list[FigureAsset]:
+    import xml.etree.ElementTree as ET
+
+    def _clean(text: str) -> str:
+        return " ".join(str(text or "").split()).strip()
+
+    try:
+        root = ET.fromstring(tei_xml)
+    except Exception:
+        return []
+
+    ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+    figures: list[FigureAsset] = []
+    seen: set[str] = set()
+    for idx, node in enumerate(root.findall(".//tei:figure", ns), start=1):
+        fig_type = str(node.get("type") or "").strip() or None
+        head = _clean(" ".join(head_node.itertext())) if (head_node := node.find("./tei:head", ns)) is not None else ""
+        label = _clean(" ".join(label_node.itertext())) if (label_node := node.find("./tei:label", ns)) is not None else ""
+        desc = _clean(" ".join(desc_node.itertext())) if (desc_node := node.find("./tei:figDesc", ns)) is not None else ""
+        fallback = _clean(" ".join(node.itertext()))
+
+        parts: list[str] = []
+        if desc and _normalize_figure_id(desc):
+            caption = desc
+        else:
+            for part in (head, desc):
+                if part and part not in parts:
+                    parts.append(part)
+            if not parts and label and not label.isdigit():
+                parts.append(label)
+            caption = " ".join(parts).strip()
+        if not caption:
+            caption = fallback
+        if len(caption) < 20:
+            continue
+
+        figure_id = _normalize_figure_id(caption)
+        key = _safe_anchor_suffix(figure_id or caption[:80])
+        if key in seen:
+            key = f"{key}_{idx}"
+        seen.add(key)
+
+        coords = str(node.get("coords") or "").strip()
+        page = _page_from_tei_coords(coords)
+        image_path = _crop_tei_figure_image(pdf_path, document_id, coords, figure_id or str(idx))
+        figures.append(
+            FigureAsset(
+                path=image_path,
+                caption=caption,
+                fig_type=fig_type,
+                page=page,
+                meta={
+                    "source": "grobid_tei_figure",
+                    "xml_id": node.get("{http://www.w3.org/XML/1998/namespace}id") or node.get("id"),
+                    "coords": coords,
+                    "figure_id": figure_id,
+                },
+            )
+        )
+    return figures
+
+
+def _figure_assets_from_text_chunks(text_blocks: list[dict[str, Any]]) -> list[FigureAsset]:
+    figures: list[FigureAsset] = []
+    for idx, block in enumerate(text_blocks, start=1):
+        text = str(block.get("text") or "").strip()
+        if not text:
+            continue
+        meta_raw = block.get("meta")
+        try:
+            meta_obj = json.loads(meta_raw) if isinstance(meta_raw, str) else {}
+        except Exception:
+            meta_obj = {}
+        raw_title = str(meta_obj.get("section_raw_title") or meta_obj.get("section") or "").strip()
+        figure_id = _normalize_figure_id(raw_title) or _normalize_figure_id(text)
+        if not figure_id:
+            continue
+        if not re.match(r"(?i)^\s*(?:fig(?:ure)?\.?\s*)", raw_title) and not re.match(
+            r"(?i)^\s*(?:fig(?:ure)?\.?\s*)", text
+        ):
+            continue
+        figures.append(
+            FigureAsset(
+                path=None,
+                caption=f"{raw_title} {text}".strip() if raw_title else text,
+                fig_type=None,
+                page=None,
+                meta={
+                    "source": "grobid_text_figure_caption",
+                    "figure_id": figure_id,
+                    "section_anchor": block.get("anchor"),
+                    "section_raw_title": raw_title,
+                    "text_chunk_index": idx,
+                },
+            )
+        )
+    return figures
+
+
+def _merge_figure_assets(primary: list[FigureAsset], secondary: list[FigureAsset]) -> list[FigureAsset]:
+    merged: list[FigureAsset] = []
+    seen: set[str] = set()
+    for fig in [*primary, *secondary]:
+        figure_id = _normalize_figure_id(fig.caption or "") or str(fig.meta.get("figure_id") or "")
+        key = _safe_anchor_suffix(figure_id or fig.caption or str(len(merged) + 1))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(fig)
+    return merged
+
+
+def _crop_tei_figure_image(
+    pdf_path: Path | None,
+    document_id: int | None,
+    coords: str,
+    figure_id: str,
+) -> Path | None:
+    if not pdf_path or document_id is None:
+        return None
+    boxes = _tei_coord_boxes(coords)
+    if not boxes:
+        return None
+    page_num, x, y, width, height = max(boxes, key=lambda item: item[3] * item[4])
+    if width < 40 or height < 40:
+        return None
+    try:
+        import pypdfium2 as pdfium
+    except Exception:
+        return None
+    try:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        page = pdf.get_page(page_num - 1)
+        scale = max(1.0, float(settings.figure_fallback_scale or 1.0))
+        pil = page.render(scale=scale).to_pil()
+        crop_box = (
+            max(0, int(x * scale)),
+            max(0, int(y * scale)),
+            min(pil.width, int((x + width) * scale)),
+            min(pil.height, int((y + height) * scale)),
+        )
+        if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+            return None
+        out_dir = artifacts_dir(document_id) / "figures_tei"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"figure_{_safe_anchor_suffix(figure_id)}_p{page_num}.png"
+        pil.crop(crop_box).save(out_path, "PNG")
+        return out_path
+    except Exception:
+        return None
+
+
+def _tei_coord_boxes(coords: str) -> list[tuple[int, float, float, float, float]]:
+    boxes: list[tuple[int, float, float, float, float]] = []
+    for part in str(coords or "").split(";"):
+        values = [value.strip() for value in part.split(",")]
+        if len(values) != 5:
+            continue
+        try:
+            page = int(float(values[0]))
+            x = float(values[1])
+            y = float(values[2])
+            width = float(values[3])
+            height = float(values[4])
+        except Exception:
+            continue
+        if page > 0 and width > 0 and height > 0:
+            boxes.append((page, x, y, width, height))
+    return boxes
+
+
+def _page_from_tei_coords(coords: str) -> int | None:
+    match = re.search(r"(?:^|;)\s*(\d+)\s*,", str(coords or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
 
 
 def _validate_stack() -> None:
@@ -920,7 +1139,18 @@ def _ocr_text_doctr(image_path: Path) -> str:
 
 
 def _normalize_figure_id(text: str) -> str | None:
+    explicit = re.search(r"(?i)\bfig(?:ure)?\.?\s*([sS]?\d+[A-Za-z]?)\b", str(text or ""))
+    if explicit:
+        value = explicit.group(1).upper()
+        return value if value.startswith("S") else value.lstrip("0") or value
     refs = extract_refs_from_text(text or "")
     if not refs:
         return None
     return sorted(refs)[0]
+
+
+def _safe_anchor_suffix(text: str) -> str:
+    value = str(text or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    value = value.strip("_")
+    return value[:80] or "unknown"

@@ -192,6 +192,7 @@ SECTION_SOURCE_SET = {
     "anchor",
     "statement_prefix",
     "category",
+    "semantic",
     "heading",
     "position",
     "lexical",

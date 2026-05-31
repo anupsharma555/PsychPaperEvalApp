@@ -41,6 +41,12 @@ class DesktopModelReadiness(_SchemaModel):
     mmproj_path: str
     model_exists: bool
     mmproj_exists: bool
+    provider: str = "local"
+    provider_ready: bool = False
+    openai_api_key_configured: bool = False
+    openai_text_model: str = ""
+    openai_deep_model: str = ""
+    openai_vision_model: str = ""
     text_model_path: str = ""
     text_model_exists: bool = False
     deep_model_path: str = ""

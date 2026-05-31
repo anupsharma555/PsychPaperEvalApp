@@ -19,6 +19,11 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = ROOT / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.services.analysis.information_retention import AUDIT_STAGES, build_information_retention_audit
+
 SECTION_KEYS = ["introduction", "methods", "results", "discussion", "conclusion"]
 SECTION_HEADERS = {
     "introduction": "INTRODUCTION",
@@ -954,6 +959,8 @@ def _compute_sentence_inclusion_metrics(
     total_ref_sentences = 0
     total_included_sentences = 0
     total_included_any_section_sentences = 0
+    total_cross_section_only_sentences = 0
+    total_missing_any_section_sentences = 0
     matched_app_indices_global: set[int] = set()
 
     for section in SECTION_KEYS:
@@ -965,8 +972,11 @@ def _compute_sentence_inclusion_metrics(
 
         included_count = 0
         included_any_section_count = 0
+        cross_section_only_count = 0
+        missing_any_section_count = 0
         matched_app_indices_section: set[int] = set()
         missing_samples: list[dict[str, Any]] = []
+        cross_section_samples: list[dict[str, Any]] = []
 
         for ref_idx, ref in enumerate(refs):
             ref_vector = ref_vectors.get(ref_idx)
@@ -1004,24 +1014,53 @@ def _compute_sentence_inclusion_metrics(
                 matched_app_indices_global.add(best_same_idx)
             if any_section_hit:
                 included_any_section_count += 1
-            elif len(missing_samples) < 5:
-                missing_samples.append(
-                    {
-                        "reference": ref,
-                        "best_same_section_score": round(best_same_score, 3),
-                        "best_any_section_score": round(best_any_score, 3),
-                        "best_same_section_components": {
-                            "lexical": round(float(best_same_payload["lexical"]), 3),
-                            "keyword": round(float(best_same_payload["keyword"]), 3),
-                            "embedding": round(float(best_same_payload["embedding"]), 3) if mode == "hybrid" else 0.0,
-                        },
-                        "best_any_section_components": {
-                            "lexical": round(float(best_any_payload["lexical"]), 3),
-                            "keyword": round(float(best_any_payload["keyword"]), 3),
-                            "embedding": round(float(best_any_payload["embedding"]), 3) if mode == "hybrid" else 0.0,
-                        },
-                    }
-                )
+                if not same_section_hit:
+                    cross_section_only_count += 1
+                    if len(cross_section_samples) < 5:
+                        best_section = all_app_pairs[best_any_idx][0] if best_any_idx >= 0 else ""
+                        best_line = all_app_pairs[best_any_idx][1] if best_any_idx >= 0 else ""
+                        same_section_line = all_app_pairs[best_same_idx][1] if best_same_idx >= 0 else ""
+                        cross_section_samples.append(
+                            {
+                                "reference": ref,
+                                "best_any_section": best_section,
+                                "best_any_section_score": round(best_any_score, 3),
+                                "best_any_section_line": _normalize_text(best_line),
+                                "best_same_section_score": round(best_same_score, 3),
+                                "best_same_section_line": _normalize_text(same_section_line),
+                                "best_any_section_components": {
+                                    "lexical": round(float(best_any_payload["lexical"]), 3),
+                                    "keyword": round(float(best_any_payload["keyword"]), 3),
+                                    "embedding": round(float(best_any_payload["embedding"]), 3) if mode == "hybrid" else 0.0,
+                                },
+                            }
+                        )
+            else:
+                missing_any_section_count += 1
+                if len(missing_samples) < 5:
+                    best_any_section = all_app_pairs[best_any_idx][0] if best_any_idx >= 0 else ""
+                    best_any_line = all_app_pairs[best_any_idx][1] if best_any_idx >= 0 else ""
+                    best_same_line = all_app_pairs[best_same_idx][1] if best_same_idx >= 0 else ""
+                    missing_samples.append(
+                        {
+                            "reference": ref,
+                            "best_same_section_score": round(best_same_score, 3),
+                            "best_same_section_line": _normalize_text(best_same_line),
+                            "best_any_section": best_any_section,
+                            "best_any_section_score": round(best_any_score, 3),
+                            "best_any_section_line": _normalize_text(best_any_line),
+                            "best_same_section_components": {
+                                "lexical": round(float(best_same_payload["lexical"]), 3),
+                                "keyword": round(float(best_same_payload["keyword"]), 3),
+                                "embedding": round(float(best_same_payload["embedding"]), 3) if mode == "hybrid" else 0.0,
+                            },
+                            "best_any_section_components": {
+                                "lexical": round(float(best_any_payload["lexical"]), 3),
+                                "keyword": round(float(best_any_payload["keyword"]), 3),
+                                "embedding": round(float(best_any_payload["embedding"]), 3) if mode == "hybrid" else 0.0,
+                            },
+                        }
+                    )
 
         ref_count = len(refs)
         app_count = len(section_app_indices)
@@ -1035,16 +1074,26 @@ def _compute_sentence_inclusion_metrics(
             "app_sentences": app_count,
             "included_sentences": included_count,
             "included_any_section_sentences": included_any_section_count,
+            "cross_section_only_sentences": cross_section_only_count,
+            "missing_any_section_sentences": missing_any_section_count,
+            "cause_counts": {
+                "same_section_match": included_count,
+                "cross_section_only": cross_section_only_count,
+                "missing_any_section": missing_any_section_count,
+            },
             "sentence_inclusion_recall": round(sentence_inclusion_recall, 3),
             "sentence_inclusion_any_section_recall": round(sentence_inclusion_any_section_recall, 3),
             "section_fidelity": round(section_fidelity, 3),
             "inclusion_precision": round(inclusion_precision, 3),
+            "cross_section_top": cross_section_samples,
             "missing_top": missing_samples,
         }
 
         total_ref_sentences += ref_count
         total_included_sentences += included_count
         total_included_any_section_sentences += included_any_section_count
+        total_cross_section_only_sentences += cross_section_only_count
+        total_missing_any_section_sentences += missing_any_section_count
 
     overall_sentence_inclusion_recall = (total_included_sentences / total_ref_sentences) if total_ref_sentences else 1.0
     overall_sentence_inclusion_any_section_recall = (
@@ -1059,6 +1108,13 @@ def _compute_sentence_inclusion_metrics(
         "overall_reference_sentences": total_ref_sentences,
         "overall_included_sentences": total_included_sentences,
         "overall_included_any_section_sentences": total_included_any_section_sentences,
+        "overall_cross_section_only_sentences": total_cross_section_only_sentences,
+        "overall_missing_any_section_sentences": total_missing_any_section_sentences,
+        "overall_cause_counts": {
+            "same_section_match": total_included_sentences,
+            "cross_section_only": total_cross_section_only_sentences,
+            "missing_any_section": total_missing_any_section_sentences,
+        },
         "overall_sentence_inclusion_recall": round(overall_sentence_inclusion_recall, 3),
         "overall_sentence_inclusion_any_section_recall": round(overall_sentence_inclusion_any_section_recall, 3),
         "overall_section_fidelity": round(overall_section_fidelity, 3),
@@ -1202,6 +1258,8 @@ def _compare_sections(
             per_section[key]["sentence_inclusion_any_section_recall"] = section_sentence.get("sentence_inclusion_any_section_recall")
             per_section[key]["section_fidelity"] = section_sentence.get("section_fidelity")
             per_section[key]["inclusion_precision"] = section_sentence.get("inclusion_precision")
+            per_section[key]["cause_counts"] = section_sentence.get("cause_counts", {})
+            per_section[key]["cross_section_top"] = section_sentence.get("cross_section_top", [])
 
     overall_recall = (total_matched / total_ref) if total_ref else 1.0
     return {
@@ -1253,6 +1311,9 @@ def _build_discrepancy_diagnostics(
     section_diag: dict[str, Any] = {}
     low_recall_sections: list[str] = []
     low_sentence_inclusion_sections: list[str] = []
+    cross_section_loss_sections: list[str] = []
+    under_selected_sections: list[str] = []
+    missing_any_section_sections: list[str] = []
     noisy_total = 0
     coverage_total_gap = 0
 
@@ -1272,6 +1333,20 @@ def _build_discrepancy_diagnostics(
             low_sentence_inclusion_sections.append(section)
         gap = max(0, len(ref_lines) - len(app_lines))
         coverage_total_gap += gap
+        sentence_payload = sentence_per_section.get(section, {})
+        if not isinstance(sentence_payload, dict):
+            sentence_payload = {}
+        cause_counts = sentence_payload.get("cause_counts", {})
+        if not isinstance(cause_counts, dict):
+            cause_counts = {}
+        cross_section_only = int(cause_counts.get("cross_section_only", 0) or 0)
+        missing_any_section = int(cause_counts.get("missing_any_section", 0) or 0)
+        if sentence_any_recall - sentence_recall >= 0.25 or section_fidelity < 0.6:
+            cross_section_loss_sections.append(section)
+        if gap >= 4 and len(app_lines) < max(1, int(0.65 * len(ref_lines))):
+            under_selected_sections.append(section)
+        if len(ref_lines) and (missing_any_section / max(1, len(ref_lines))) >= 0.35:
+            missing_any_section_sections.append(section)
 
         noisy_examples: list[dict[str, Any]] = []
         noisy_count = 0
@@ -1299,9 +1374,35 @@ def _build_discrepancy_diagnostics(
             "sentence_inclusion_any_section_recall": round(sentence_any_recall, 3),
             "section_fidelity": round(section_fidelity, 3),
             "inclusion_precision": round(inclusion_precision, 3),
+            "cause_counts": {
+                "same_section_match": int(cause_counts.get("same_section_match", 0) or 0),
+                "cross_section_only": cross_section_only,
+                "missing_any_section": missing_any_section,
+            },
+            "cross_section_top": sentence_payload.get("cross_section_top", [])[:3],
         }
 
     likely_causes: list[str] = []
+    cause_details: dict[str, Any] = {
+        "cross_section_loss_sections": cross_section_loss_sections,
+        "under_selected_sections": under_selected_sections,
+        "missing_any_section_sections": missing_any_section_sections,
+    }
+    if cross_section_loss_sections:
+        likely_causes.append(
+            "Section assignment drift: reference-like sentences are present, but assigned to different sections "
+            f"for {', '.join(cross_section_loss_sections)}."
+        )
+    if under_selected_sections:
+        likely_causes.append(
+            "Section under-selection: app output has substantially fewer section points than the reference "
+            f"for {', '.join(under_selected_sections)}."
+        )
+    if missing_any_section_sections:
+        likely_causes.append(
+            "Content absent from extracted app sections: reference points have no close match in any section "
+            f"for {', '.join(missing_any_section_sections)}."
+        )
     if any(section in low_recall_sections for section in ("discussion", "conclusion")):
         likely_causes.append("Late-section extraction is weak; section boundaries likely drift after methods/results-heavy text.")
     if section_diag.get("methods", {}).get("coverage_gap", 0) >= 10:
@@ -1327,7 +1428,250 @@ def _build_discrepancy_diagnostics(
         "coverage_total_gap": coverage_total_gap,
         "noisy_line_total": noisy_total,
         "section_diagnostics": section_diag,
+        "cause_details": cause_details,
         "likely_causes": likely_causes,
+    }
+
+
+def _walk_values(payload: Any) -> list[Any]:
+    values: list[Any] = []
+    stack = [payload]
+    while stack:
+        current = stack.pop()
+        values.append(current)
+        if isinstance(current, dict):
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return values
+
+
+def _contains_fallback_marker(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    return "fallback" in value.lower()
+
+
+def _sum_numeric_mapping_values(payload: Any) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    total = 0
+    for value in payload.values():
+        try:
+            total += int(value or 0)
+        except Exception:
+            continue
+    return total
+
+
+def _build_fallback_audit(result: dict[str, Any], run_note: str) -> dict[str, Any]:
+    diagnostics = result.get("diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    if isinstance(diagnostics.get("diagnostics"), dict):
+        diagnostics = diagnostics["diagnostics"]
+
+    summary_json = result.get("summary_json", {})
+    if not isinstance(summary_json, dict):
+        summary_json = {}
+
+    section_diagnostics = diagnostics.get("section_diagnostics", {})
+    if not isinstance(section_diagnostics, dict):
+        section_diagnostics = summary_json.get("section_diagnostics", {})
+    if not isinstance(section_diagnostics, dict):
+        section_diagnostics = {}
+
+    fallback_counts = diagnostics.get("fallback_counts_by_reason", {})
+    fallback_count_total = _sum_numeric_mapping_values(fallback_counts)
+    fallback_notes = diagnostics.get("sections_fallback_notes", [])
+    if not fallback_notes:
+        fallback_notes = summary_json.get("sections_fallback_notes", [])
+    if not isinstance(fallback_notes, list):
+        fallback_notes = []
+
+    fallback_sections: list[str] = []
+    for section in SECTION_KEYS:
+        section_payload = section_diagnostics.get(section, {})
+        if isinstance(section_payload, dict) and bool(section_payload.get("fallback_used")):
+            fallback_sections.append(section)
+
+    execution_note = " ".join(
+        str(part or "")
+        for part in (
+            run_note,
+            result.get("fallback_note", ""),
+            diagnostics.get("pipeline_failure", {}).get("reason", "") if isinstance(diagnostics.get("pipeline_failure"), dict) else "",
+        )
+    )
+    execution_fallback_used = _contains_fallback_marker(execution_note)
+
+    diagnostics_fallback_marker = any(_contains_fallback_marker(value) for value in _walk_values(diagnostics))
+    sections_fallback_used = bool(
+        diagnostics.get("sections_fallback_used")
+        or summary_json.get("sections_fallback_used")
+        or fallback_notes
+        or fallback_sections
+        or fallback_count_total
+        or diagnostics_fallback_marker
+    )
+
+    return {
+        "passed": not execution_fallback_used and not sections_fallback_used,
+        "execution_fallback_used": execution_fallback_used,
+        "sections_fallback_used": sections_fallback_used,
+        "fallback_sections": fallback_sections,
+        "fallback_count_total": fallback_count_total,
+        "fallback_counts_by_reason": fallback_counts if isinstance(fallback_counts, dict) else {},
+        "sections_fallback_notes": fallback_notes,
+        "run_note": run_note or result.get("fallback_note", ""),
+    }
+
+
+def _read_nested_int(payload: dict[str, Any], path: list[str]) -> int:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return 0
+        current = current.get(key)
+    try:
+        return int(current or 0)
+    except Exception:
+        return 0
+
+
+def _build_quality_backend_audit(result: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = result.get("diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    if isinstance(diagnostics.get("diagnostics"), dict):
+        diagnostics = diagnostics["diagnostics"]
+
+    summary_json = result.get("summary_json", {})
+    if not isinstance(summary_json, dict):
+        summary_json = {}
+
+    model_usage = diagnostics.get("model_usage", {})
+    if not isinstance(model_usage, dict):
+        model_usage = summary_json.get("model_usage", {})
+    if not isinstance(model_usage, dict):
+        model_usage = {}
+
+    text_calls = int(model_usage.get("text_calls", 0) or 0)
+    if text_calls <= 0:
+        text_calls = _read_nested_int(diagnostics, ["llm_status", "text_llm_calls"])
+
+    section_diagnostics = diagnostics.get("section_diagnostics", {})
+    if not isinstance(section_diagnostics, dict):
+        section_diagnostics = summary_json.get("section_diagnostics", {})
+    if not isinstance(section_diagnostics, dict):
+        section_diagnostics = {}
+
+    section_extraction_enabled = section_diagnostics.get("section_extraction_enabled")
+    if section_extraction_enabled is None:
+        section_extraction_enabled = summary_json.get("section_extraction_enabled")
+    section_extraction_counts = section_diagnostics.get("section_extraction_counts", {})
+    if not isinstance(section_extraction_counts, dict):
+        section_extraction_counts = {}
+
+    blockers = {
+        "text_calls_zero": text_calls <= 0,
+        "section_extraction_disabled": section_extraction_enabled is False,
+    }
+    return {
+        "passed": not any(bool(value) for value in blockers.values()),
+        "text_calls": text_calls,
+        "section_extraction_enabled": section_extraction_enabled,
+        "section_extraction_counts": section_extraction_counts,
+        "blockers": blockers,
+    }
+
+
+def _build_extraction_audit(
+    app_sections: dict[str, list[str]],
+    ref_sections: dict[str, list[str]],
+    comparison: dict[str, Any],
+    result: dict[str, Any],
+    run_note: str,
+) -> dict[str, Any]:
+    diagnostics = comparison.get("discrepancy_diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    section_diag = diagnostics.get("section_diagnostics", {})
+    if not isinstance(section_diag, dict):
+        section_diag = {}
+
+    section_audit: dict[str, Any] = {}
+    empty_relevant_sections: list[str] = []
+    low_sentence_recall_sections: list[str] = []
+    cross_section_loss_sections: list[str] = []
+    high_gap_sections: list[str] = []
+
+    for section in SECTION_KEYS:
+        ref_count = len(_dedupe_lines(ref_sections.get(section, []), max_items=400))
+        app_count = len(_dedupe_lines(app_sections.get(section, []), max_items=400))
+        payload = section_diag.get(section, {})
+        if not isinstance(payload, dict):
+            payload = {}
+        sentence_recall = float(payload.get("sentence_inclusion_recall", 0.0) or 0.0)
+        any_section_recall = float(payload.get("sentence_inclusion_any_section_recall", 0.0) or 0.0)
+        section_fidelity = float(payload.get("section_fidelity", 0.0) or 0.0)
+        coverage_gap = max(0, ref_count - app_count)
+
+        if ref_count > 0 and app_count == 0:
+            empty_relevant_sections.append(section)
+        if ref_count > 0 and sentence_recall < 0.2:
+            low_sentence_recall_sections.append(section)
+        if ref_count > 0 and any_section_recall - sentence_recall >= 0.2:
+            cross_section_loss_sections.append(section)
+        if ref_count > 0 and coverage_gap >= max(3, int(ref_count * 0.5)):
+            high_gap_sections.append(section)
+
+        section_audit[section] = {
+            "reference_points": ref_count,
+            "app_points": app_count,
+            "coverage_gap": coverage_gap,
+            "sentence_inclusion_recall": round(sentence_recall, 3),
+            "sentence_inclusion_any_section_recall": round(any_section_recall, 3),
+            "section_fidelity": round(section_fidelity, 3),
+            "needs_review": section in empty_relevant_sections
+            or section in low_sentence_recall_sections
+            or section in cross_section_loss_sections
+            or section in high_gap_sections,
+        }
+
+    fallback_audit = _build_fallback_audit(result, run_note)
+    quality_backend_audit = _build_quality_backend_audit(result)
+    blockers = {
+        "fallback_present": not bool(fallback_audit.get("passed")),
+        "text_calls_zero": bool(quality_backend_audit.get("blockers", {}).get("text_calls_zero"))
+        if isinstance(quality_backend_audit.get("blockers"), dict)
+        else False,
+        "section_extraction_disabled": bool(
+            quality_backend_audit.get("blockers", {}).get("section_extraction_disabled")
+        )
+        if isinstance(quality_backend_audit.get("blockers"), dict)
+        else False,
+        "empty_relevant_sections": empty_relevant_sections,
+        "low_sentence_recall_sections": low_sentence_recall_sections,
+        "cross_section_loss_sections": cross_section_loss_sections,
+        "high_gap_sections": high_gap_sections,
+    }
+    passed = (
+        not blockers["fallback_present"]
+        and not blockers["text_calls_zero"]
+        and not blockers["section_extraction_disabled"]
+        and not empty_relevant_sections
+        and not low_sentence_recall_sections
+        and not cross_section_loss_sections
+    )
+
+    return {
+        "passed": passed,
+        "purpose": "Track no-fallback extraction completeness and section filtering quality for model comparison runs.",
+        "fallback_audit": fallback_audit,
+        "quality_backend_audit": quality_backend_audit,
+        "section_audit": section_audit,
+        "blockers": blockers,
     }
 
 
@@ -1377,6 +1721,17 @@ def _write_comparison_markdown(path: Path, comparison: dict[str, Any], runtime_m
         lines.append("## Diagnostic Summary")
         lines.append(f"- coverage_total_gap: {diagnostics.get('coverage_total_gap')}")
         lines.append(f"- noisy_line_total: {diagnostics.get('noisy_line_total')}")
+        cause_details = diagnostics.get("cause_details", {})
+        if isinstance(cause_details, dict):
+            cross_section_loss = cause_details.get("cross_section_loss_sections", [])
+            under_selected = cause_details.get("under_selected_sections", [])
+            missing_any = cause_details.get("missing_any_section_sections", [])
+            if cross_section_loss:
+                lines.append(f"- cross_section_loss_sections: {', '.join(str(v) for v in cross_section_loss)}")
+            if under_selected:
+                lines.append(f"- under_selected_sections: {', '.join(str(v) for v in under_selected)}")
+            if missing_any:
+                lines.append(f"- missing_any_section_sections: {', '.join(str(v) for v in missing_any)}")
         low_recall_sections = diagnostics.get("low_recall_sections", [])
         if low_recall_sections:
             lines.append(f"- low_recall_sections: {', '.join(str(v) for v in low_recall_sections)}")
@@ -1388,6 +1743,81 @@ def _write_comparison_markdown(path: Path, comparison: dict[str, Any], runtime_m
             lines.append("- likely_causes:")
             for cause in likely_causes:
                 lines.append(f"  - {cause}")
+        lines.append("")
+    extraction_audit = comparison.get("extraction_audit", {})
+    if isinstance(extraction_audit, dict):
+        fallback_audit = extraction_audit.get("fallback_audit", {})
+        quality_backend_audit = extraction_audit.get("quality_backend_audit", {})
+        blockers = extraction_audit.get("blockers", {})
+        lines.append("## Extraction Audit")
+        lines.append(f"- passed: {extraction_audit.get('passed')}")
+        if isinstance(fallback_audit, dict):
+            lines.append(f"- no_fallback_passed: {fallback_audit.get('passed')}")
+            lines.append(f"- execution_fallback_used: {fallback_audit.get('execution_fallback_used')}")
+            lines.append(f"- sections_fallback_used: {fallback_audit.get('sections_fallback_used')}")
+            fallback_sections = fallback_audit.get("fallback_sections", [])
+            if fallback_sections:
+                lines.append(f"- fallback_sections: {', '.join(str(v) for v in fallback_sections)}")
+        if isinstance(quality_backend_audit, dict):
+            lines.append(f"- quality_backend_passed: {quality_backend_audit.get('passed')}")
+            lines.append(f"- text_calls: {quality_backend_audit.get('text_calls')}")
+            lines.append(f"- section_extraction_enabled: {quality_backend_audit.get('section_extraction_enabled')}")
+        if isinstance(blockers, dict):
+            for key in ("text_calls_zero", "section_extraction_disabled"):
+                if blockers.get(key):
+                    lines.append(f"- {key}: true")
+            for key in (
+                "empty_relevant_sections",
+                "low_sentence_recall_sections",
+                "cross_section_loss_sections",
+                "high_gap_sections",
+            ):
+                values = blockers.get(key, [])
+                if values:
+                    lines.append(f"- {key}: {', '.join(str(v) for v in values)}")
+        lines.append("")
+    retention_summary = comparison.get("information_retention_summary", {})
+    if isinstance(retention_summary, dict) and retention_summary:
+        lines.append("## Information Retention Audit")
+        lines.append(f"- source_basis: {retention_summary.get('source_basis')}")
+        warning = str(retention_summary.get("source_basis_warning") or "").strip()
+        if warning:
+            lines.append(f"- source_basis_warning: {warning}")
+        lines.append(f"- source_sentence_count: {retention_summary.get('source_sentence_count')}")
+        first_loss = retention_summary.get("first_loss_counts", {})
+        if isinstance(first_loss, dict):
+            loss_parts = [
+                f"{stage}={first_loss.get(stage, 0)}"
+                for stage in AUDIT_STAGES
+                if int(first_loss.get(stage, 0) or 0) > 0
+            ]
+            if int(first_loss.get("retained_all_stages", 0) or 0) > 0:
+                loss_parts.append(f"retained_all_stages={first_loss.get('retained_all_stages', 0)}")
+            if loss_parts:
+                lines.append(f"- first_loss_counts: {', '.join(loss_parts)}")
+        stage_metrics = retention_summary.get("stage_metrics", [])
+        if isinstance(stage_metrics, list):
+            lines.append("- stage_retention:")
+            for item in stage_metrics:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    "  - "
+                    f"{item.get('stage')}: retained={item.get('retained_rate')} "
+                    f"lost_here={item.get('lost_here_count')} "
+                    f"wrong_section={item.get('wrong_section_count')}"
+                )
+        worst_sections = retention_summary.get("worst_sections_by_cumulative_loss", [])
+        if isinstance(worst_sections, list) and worst_sections:
+            lines.append("- worst_sections_by_cumulative_loss:")
+            for item in worst_sections[:5]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    "  - "
+                    f"{item.get('section')}: lost={item.get('final_cumulative_lost_count')} "
+                    f"final_retained_rate={item.get('final_retained_rate')}"
+                )
         lines.append("")
     sections = comparison.get("sections", {})
     for section in SECTION_KEYS:
@@ -1402,6 +1832,22 @@ def _write_comparison_markdown(path: Path, comparison: dict[str, Any], runtime_m
         lines.append(f"- sentence_inclusion_any_section_recall: {section_payload.get('sentence_inclusion_any_section_recall')}")
         lines.append(f"- section_fidelity: {section_payload.get('section_fidelity')}")
         lines.append(f"- inclusion_precision: {section_payload.get('inclusion_precision')}")
+        cause_counts = section_payload.get("cause_counts", {})
+        if isinstance(cause_counts, dict):
+            lines.append(
+                "- cause_counts: "
+                f"same_section={cause_counts.get('same_section_match', 0)}, "
+                f"cross_section_only={cause_counts.get('cross_section_only', 0)}, "
+                f"missing_any_section={cause_counts.get('missing_any_section', 0)}"
+            )
+        cross_section_top = section_payload.get("cross_section_top", [])
+        if cross_section_top:
+            lines.append("- cross_section_top:")
+            for item in cross_section_top[:3]:
+                lines.append(
+                    f"  - ({item.get('best_any_section_score')}, {item.get('best_any_section')}) "
+                    f"{item.get('reference')}"
+                )
         missing_top = section_payload.get("missing_top", [])
         if missing_top:
             lines.append("- missing_top:")
@@ -1625,6 +2071,88 @@ def _run_pipeline_for_pdf_isolated(pdf_path: Path) -> tuple[dict[str, Any] | Non
         return payload, None
 
 
+def _load_parsed_chunks_for_document(document_id: int) -> list[dict[str, Any]]:
+    if int(document_id or 0) <= 0:
+        return []
+    try:
+        from sqlmodel import Session, select
+
+        from app.db.models import Asset, Chunk
+        from app.db.session import engine
+    except Exception:
+        return []
+    try:
+        with Session(engine) as session:
+            assets = session.exec(select(Asset).where(Asset.document_id == int(document_id))).all()
+            asset_kind = {asset.id: asset.kind for asset in assets}
+            chunks = session.exec(select(Chunk).where(Chunk.document_id == int(document_id))).all()
+            return [
+                {
+                    "anchor": str(chunk.anchor or ""),
+                    "content": str(chunk.content or ""),
+                    "meta": str(chunk.meta or ""),
+                    "modality": str(chunk.modality or "text"),
+                    "asset_kind": asset_kind.get(chunk.asset_id or -1, "main"),
+                }
+                for chunk in chunks
+            ]
+    except Exception:
+        return []
+
+
+def _parsed_chunks_from_pdf_rows(pdf_path: Path) -> list[dict[str, Any]]:
+    try:
+        rows = _extract_pdf_text_rows_local(pdf_path)
+    except Exception:
+        return []
+    chunks: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        meta = {
+            "section_norm": row.get("section_norm", "unknown"),
+            "section_raw_title": row.get("section_raw_title", ""),
+            "page_index": row.get("page_index"),
+            "paragraph_index": row.get("paragraph_index"),
+            "source": "comparator_pdf_text",
+        }
+        chunks.append(
+            {
+                "anchor": str(row.get("anchor") or f"page:p:{idx}"),
+                "content": str(row.get("text") or ""),
+                "meta": json.dumps(meta),
+                "modality": str(row.get("modality") or "text"),
+                "asset_kind": "main",
+            }
+        )
+    return chunks
+
+
+def _build_comparator_information_retention_audit(
+    *,
+    pdf_path: Path,
+    result: dict[str, Any],
+    summary_json: dict[str, Any],
+) -> dict[str, Any]:
+    document_id = int(result.get("document_id", 0) or 0)
+    parsed_chunks = _load_parsed_chunks_for_document(document_id)
+    if not parsed_chunks:
+        parsed_chunks = _parsed_chunks_from_pdf_rows(pdf_path)
+    return build_information_retention_audit(
+        document_id=document_id,
+        source_assets=[
+            {
+                "kind": "main",
+                "filename": pdf_path.name,
+                "content_type": "application/pdf",
+                "path": str(pdf_path),
+            }
+        ],
+        parsed_chunks=parsed_chunks,
+        summary_json=summary_json,
+    )
+
+
 def _run_parse_probe_isolated(pdf_path: Path) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="paper_eval_parse_probe_") as tmp_dir:
         out_path = Path(tmp_dir) / "parse_probe_result.json"
@@ -1691,7 +2219,8 @@ def _run_analysis_stage_for_document(document_id: int, stage: str) -> dict[str, 
             return
         try:
             with open(trace_path, "a", encoding="utf-8") as handle:
-                handle.write(f"{step}\n")
+                ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                handle.write(f"{ts} {step}\n")
         except Exception:
             return
 
@@ -2161,6 +2690,8 @@ def _apply_backend_profile_env(profile: str) -> None:
         os.environ["ANALYSIS_TEXT_LLM_ENABLED"] = "false"
         os.environ["ANALYSIS_SECTION_EXTRACTION_ENABLED"] = "false"
         os.environ["ANALYSIS_VERIFIER_ENABLED"] = "false"
+        os.environ["ANALYSIS_NONTEXT_LLM_ENABLED"] = "false"
+        os.environ["ANALYSIS_FORCE_NONTEXT_LLM_FOR_OPENAI"] = "false"
         os.environ["ANALYSIS_NARRATIVE_OVERRIDES_ENABLED"] = "false"
         os.environ["ANALYSIS_SUMMARY_POLISH_ENABLED"] = "false"
         os.environ["DOCLING_ENABLE_OCR"] = "false"
@@ -2175,6 +2706,8 @@ def _apply_backend_profile_env(profile: str) -> None:
         os.environ["ANALYSIS_TEXT_LLM_ENABLED"] = "true"
         os.environ["ANALYSIS_SECTION_EXTRACTION_ENABLED"] = "true"
         os.environ["ANALYSIS_VERIFIER_ENABLED"] = "false"
+        os.environ["ANALYSIS_NONTEXT_LLM_ENABLED"] = "false"
+        os.environ["ANALYSIS_FORCE_NONTEXT_LLM_FOR_OPENAI"] = "false"
         os.environ["ANALYSIS_NARRATIVE_OVERRIDES_ENABLED"] = "false"
         os.environ["ANALYSIS_SUMMARY_POLISH_ENABLED"] = "false"
         os.environ["DOCLING_ENABLE_OCR"] = "false"
@@ -2187,6 +2720,8 @@ def _apply_backend_profile_env(profile: str) -> None:
         os.environ["ANALYSIS_TEXT_LLM_ENABLED"] = "true"
         os.environ["ANALYSIS_SECTION_EXTRACTION_ENABLED"] = "true"
         os.environ["ANALYSIS_VERIFIER_ENABLED"] = "false"
+        os.environ["ANALYSIS_NONTEXT_LLM_ENABLED"] = "false"
+        os.environ["ANALYSIS_FORCE_NONTEXT_LLM_FOR_OPENAI"] = "false"
         os.environ["ANALYSIS_NARRATIVE_OVERRIDES_ENABLED"] = "false"
         os.environ["ANALYSIS_SUMMARY_POLISH_ENABLED"] = "false"
         os.environ["DOCLING_ENABLE_OCR"] = "false"
@@ -2199,6 +2734,8 @@ def _apply_backend_profile_env(profile: str) -> None:
         os.environ["ANALYSIS_TEXT_LLM_ENABLED"] = "true"
         os.environ["ANALYSIS_SECTION_EXTRACTION_ENABLED"] = "true"
         os.environ["ANALYSIS_VERIFIER_ENABLED"] = "false"
+        os.environ["ANALYSIS_NONTEXT_LLM_ENABLED"] = "true"
+        os.environ["ANALYSIS_FORCE_NONTEXT_LLM_FOR_OPENAI"] = "true"
         os.environ["ANALYSIS_NARRATIVE_OVERRIDES_ENABLED"] = "false"
         os.environ["ANALYSIS_SUMMARY_POLISH_ENABLED"] = "false"
         os.environ["DOCLING_ENABLE_OCR"] = "true"
@@ -2211,6 +2748,8 @@ def _apply_backend_profile_env(profile: str) -> None:
         os.environ["ANALYSIS_TEXT_LLM_ENABLED"] = "true"
         os.environ["ANALYSIS_SECTION_EXTRACTION_ENABLED"] = "true"
         os.environ["ANALYSIS_VERIFIER_ENABLED"] = "false"
+        os.environ["ANALYSIS_NONTEXT_LLM_ENABLED"] = "true"
+        os.environ["ANALYSIS_FORCE_NONTEXT_LLM_FOR_OPENAI"] = "true"
         os.environ["ANALYSIS_NARRATIVE_OVERRIDES_ENABLED"] = "false"
         os.environ["ANALYSIS_SUMMARY_POLISH_ENABLED"] = "false"
         os.environ["DOCLING_ENABLE_OCR"] = "true"
@@ -2225,7 +2764,7 @@ def _prune_output_artifacts(out_dir: Path, *, stem: str, keep_latest: int) -> in
     if keep_latest <= 0:
         return 0
     removed = 0
-    families = ("app_extraction", "comparison", "run", "model_benchmark")
+    families = ("app_extraction", "comparison", "run", "model_benchmark", "information_retention")
     for family in families:
         family_re = re.compile(rf"^{re.escape(stem)}_{re.escape(family)}_(\d{{8}}_\d{{6}})\..+$")
         stamped: dict[str, list[Path]] = {}
@@ -2295,6 +2834,12 @@ def main() -> None:
         type=int,
         default=1,
         help="Number of timestamped artifact sets to keep per PDF in out-dir (0 keeps all history).",
+    )
+    parser.add_argument(
+        "--allow-fallback-probes",
+        action="store_true",
+        default=os.getenv("ALLOW_FALLBACK_PROBES", "").strip().lower() in {"1", "true", "yes", "on"},
+        help="Allow parser/analysis probe fallback after a pipeline failure. Disabled by default for report-quality benchmarks.",
     )
     parser.add_argument("--internal-run-pipeline", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--internal-run-parse-probe", action="store_true", help=argparse.SUPPRESS)
@@ -2376,6 +2921,13 @@ def main() -> None:
         if pipeline_result is not None:
             result = pipeline_result
         else:
+            if not args.allow_fallback_probes:
+                raise SystemExit(
+                    _pipeline_failure_note(
+                        "Pipeline failed and fallback probes are disabled",
+                        failure_diag or {"reason": "unknown isolated pipeline failure"},
+                    )
+                )
             parse_probe = _run_parse_probe_isolated(pdf_path)
             analysis_probe = _run_analysis_probe_sequence(parse_probe)
             result = _result_from_parse_probe_payload(parse_probe) or _run_lightweight_for_pdf(pdf_path)
@@ -2431,12 +2983,29 @@ def main() -> None:
         matching_mode=_normalize_matching_mode(str(args.matching_mode)),
     )
     comparison["discrepancy_diagnostics"] = _build_discrepancy_diagnostics(app_sections, ref_sections, comparison)
+    comparison["extraction_audit"] = _build_extraction_audit(
+        app_sections,
+        ref_sections,
+        comparison,
+        result,
+        run_note,
+    )
+    information_retention_audit = _build_comparator_information_retention_audit(
+        pdf_path=pdf_path,
+        result=result,
+        summary_json=summary_json,
+    )
+    information_retention_summary = information_retention_audit.get("compact_summary", {})
+    comparison["information_retention_summary"] = (
+        information_retention_summary if isinstance(information_retention_summary, dict) else {}
+    )
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     app_md_path = out_dir / f"{pdf_path.stem}_app_extraction_{stamp}.md"
     cmp_md_path = out_dir / f"{pdf_path.stem}_comparison_{stamp}.md"
     cmp_json_path = out_dir / f"{pdf_path.stem}_comparison_{stamp}.json"
     run_json_path = out_dir / f"{pdf_path.stem}_run_{stamp}.json"
+    info_json_path = out_dir / f"{pdf_path.stem}_information_retention_{stamp}.json"
 
     run_meta = {
         "document_id": result["document_id"],
@@ -2457,6 +3026,7 @@ def main() -> None:
     )
     _write_comparison_markdown(cmp_md_path, comparison, run_meta)
     cmp_json_path.parent.mkdir(parents=True, exist_ok=True)
+    info_json_path.write_text(json.dumps(information_retention_audit, indent=2), encoding="utf-8")
     cmp_json_path.write_text(json.dumps(comparison, indent=2), encoding="utf-8")
     run_json_path.write_text(
         json.dumps(
@@ -2467,7 +3037,10 @@ def main() -> None:
                 "app_extraction_md": str(app_md_path),
                 "comparison_md": str(cmp_md_path),
                 "comparison_json": str(cmp_json_path),
+                "information_retention_json": str(info_json_path),
                 "analysis_diagnostics": result.get("diagnostics", {}),
+                "extraction_audit": comparison.get("extraction_audit", {}),
+                "information_retention_audit": comparison.get("information_retention_summary", {}),
             },
             indent=2,
         ),
@@ -2484,6 +3057,7 @@ def main() -> None:
     print(f"app_extraction_md={app_md_path}")
     print(f"comparison_md={cmp_md_path}")
     print(f"comparison_json={cmp_json_path}")
+    print(f"information_retention_json={info_json_path}")
     print(f"run_json={run_json_path}")
     print(f"artifacts_pruned={pruned_files}")
 

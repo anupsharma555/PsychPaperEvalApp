@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ROOT_DIR = Path(os.getenv("PAPER_EVAL_ROOT", Path(__file__).resolve().parents[3]))
 ENV_FILES = [
     str(ROOT_DIR / "backend" / ".env"),
+    str(ROOT_DIR / "secrets" / "openai.env"),
     str(ROOT_DIR / ".env"),
     ".env",
 ]
@@ -31,8 +32,12 @@ class Settings(BaseSettings):
     analysis_cleanup_orphans: bool = True
     report_retention_enabled: bool = True
     report_retention_limit: int = 10
+    archive_max_members: int = 200
+    archive_max_uncompressed_bytes: int = 250_000_000
 
     parser_engine: str = "validated"
+
+    llm_provider: str = "local"
 
     # Legacy single-model env vars retained for backward compatibility.
     llm_model_path: Path = Field(default=Path("models/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"))
@@ -52,13 +57,36 @@ class Settings(BaseSettings):
     llm_n_threads: int = 8
     llm_n_batch: int = 512
     llm_n_gpu_layers: int = 999
-    llm_text_max_tokens: int = 900
-    llm_deep_max_tokens: int = 700
-    llm_vision_max_tokens: int = 700
+    llm_text_max_tokens: int = 6000
+    llm_deep_max_tokens: int = 3500
+    llm_vision_max_tokens: int = 1200
     llm_image_max_dim: int = 1024
     llm_image_max_pixels: int = 1500000
     llm_image_format: str = "jpeg"
     llm_image_quality: int = 85
+
+    psychpaper_openai_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_text_model: str = "gpt-5-mini"
+    openai_deep_model: str = "gpt-5-mini"
+    openai_vision_model: str = "gpt-5-mini"
+    openai_timeout_sec: int = 120
+    openai_json_mode_enabled: bool = True
+    openai_send_temperature: bool = False
+    openai_reasoning_effort: Optional[str] = "minimal"
+    openai_api_mode: str = "responses"
+    openai_usage_guardrails_enabled: bool = True
+    openai_usage_log_path: Path = Field(default=Path("data/openai_usage_ledger.jsonl"))
+    openai_run_mode: str = "standard"
+    openai_max_cost_per_run_usd: float = 0.15
+    openai_max_cost_per_day_usd: float = 2.00
+    openai_max_calls_per_run: int = 36
+    openai_max_output_tokens_per_run: int = 55000
+    openai_estimated_image_input_tokens: int = 2500
+    openai_cost_fallback_input_per_million: float = 5.0
+    openai_cost_fallback_cached_input_per_million: float = 0.5
+    openai_cost_fallback_output_per_million: float = 22.5
 
     fetch_timeout_sec: int = 60
     fetch_user_agent: str = (
@@ -89,12 +117,17 @@ class Settings(BaseSettings):
     analysis_max_figures: int = 30
     analysis_max_supp_items: int = 50
     analysis_text_llm_enabled: bool = True
+    analysis_text_llm_batch_max_chars: int = 9000
+    analysis_parallel_modalities_enabled: bool = True
+    analysis_parallel_modality_workers: int = 4
     analysis_text_subprocess_guard_enabled: bool = True
-    analysis_text_subprocess_timeout_sec: int = 180
+    analysis_text_subprocess_timeout_sec: int = 600
     analysis_modality_subprocess_guard_enabled: bool = True
     analysis_modality_subprocess_timeout_sec: int = 240
     analysis_nontext_llm_enabled: bool = False
+    analysis_force_nontext_llm_for_openai: bool = True
     analysis_verifier_enabled: bool = True
+    analysis_section_verifier_enabled: bool = True
     analysis_summary_polish_enabled: bool = True
     analysis_summary_polish_subprocess_guard_enabled: bool = True
     analysis_summary_polish_subprocess_timeout_sec: int = 90
@@ -105,6 +138,8 @@ class Settings(BaseSettings):
     analysis_section_extraction_max_points_per_section: int = 8
     analysis_section_extraction_subprocess_guard_enabled: bool = True
     analysis_section_extraction_subprocess_timeout_sec: int = 120
+    analysis_section_synthesis_v2_enabled: bool = False
+    analysis_section_synthesis_v2_llm_enabled: bool = False
     analysis_exec_summary_second_pass_enabled: bool = False
     analysis_schema_validation_enabled: bool = False
     sectioned_report_v3_enabled: bool = True
@@ -153,6 +188,49 @@ class Settings(BaseSettings):
         if self.llm_vision_mmproj_path is not None:
             return self.llm_vision_mmproj_path
         return self.llm_mmproj_path
+
+    @property
+    def llm_provider_normalized(self) -> str:
+        provider = str(self.llm_provider or "local").strip().lower()
+        if provider in {"openai", "api"}:
+            return "openai"
+        return "local"
+
+    @property
+    def openai_configured(self) -> bool:
+        return bool(self.resolved_openai_api_key)
+
+    @property
+    def resolved_openai_api_key(self) -> str:
+        app_key = str(self.psychpaper_openai_api_key or "").strip()
+        if app_key and app_key != "sk-xxxx":
+            return app_key
+        key = str(self.openai_api_key or "").strip()
+        if key and key != "sk-xxxx":
+            return key
+        secrets_path = ROOT_DIR / "secrets" / "openai.env"
+        try:
+            for line in secrets_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("PSYCHPAPER_OPENAI_API_KEY="):
+                    secret_key = line.split("=", 1)[1].strip()
+                    if secret_key and secret_key != "sk-xxxx":
+                        return secret_key
+                    continue
+                if not line.startswith("OPENAI_API_KEY="):
+                    continue
+                secret_key = line.split("=", 1)[1].strip()
+                if secret_key and secret_key != "sk-xxxx":
+                    return secret_key
+        except Exception:
+            return "" if key == "sk-xxxx" else key
+        return "" if key == "sk-xxxx" else key
+
+    @property
+    def effective_analysis_nontext_llm_enabled(self) -> bool:
+        return bool(
+            self.analysis_nontext_llm_enabled
+            or (self.llm_provider_normalized == "openai" and self.analysis_force_nontext_llm_for_openai)
+        )
 
 
 settings = Settings()

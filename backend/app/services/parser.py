@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from functools import lru_cache
 import os
@@ -12,9 +13,12 @@ import zipfile
 
 from bs4 import BeautifulSoup
 import pandas as pd
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from app.db.models import Asset, Chunk, Document
+from app.services.analysis.media_cleaning import clean_figure_caption
+from app.services.analysis.section_ledger import apply_section_boundary_ledger_to_session
 from app.services.analysis.utils import extract_refs_from_text
 from app.services.storage import artifacts_dir
 from app.services.validated_pipeline import parse_pdf_validated
@@ -420,18 +424,58 @@ def _split_structured_abstract(text: str) -> list[tuple[str, str]]:
     return out or [("body", clean)]
 
 
+def _counts_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    keys = sorted(set(before) | set(after))
+    return {key: int(after.get(key, 0) or 0) - int(before.get(key, 0) or 0) for key in keys}
+
+
+def _write_parser_asset_diagnostics(document_id: int, diagnostics: list[dict[str, Any]]) -> None:
+    payload = {
+        "schema_version": 1,
+        "document_id": document_id,
+        "created_at": datetime.utcnow().isoformat(),
+        "assets": diagnostics,
+    }
+    try:
+        path = artifacts_dir(document_id) / "parser_asset_diagnostics.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    except Exception:
+        return
+
+
 def parse_document_assets(session: Session, document_id: int) -> dict[str, int]:
     counts = {"text": 0, "table": 0, "figure": 0, "supp": 0}
     document = session.get(Document, document_id)
     base_url = str(document.source_url or "").strip() if document else ""
     assets = session.exec(select(Asset).where(Asset.document_id == document_id)).all()
+    session.exec(delete(Chunk).where(Chunk.document_id == document_id))
+    session.commit()
+    diagnostics: list[dict[str, Any]] = []
     for asset in assets:
         file_path = Path(asset.path)
+        asset_diag: dict[str, Any] = {
+            "asset_id": asset.id,
+            "kind": asset.kind,
+            "filename": asset.filename,
+            "content_type": asset.content_type,
+            "path": str(file_path),
+            "extension": file_path.suffix.lower(),
+            "status": "pending",
+        }
         if not file_path.exists():
+            asset_diag["status"] = "missing"
+            diagnostics.append(asset_diag)
             continue
         if asset.kind == "supp":
             counts["supp"] += 1
         try:
+            asset_diag["sniffed_kind"] = _sniff_file_kind(file_path)
+            try:
+                asset_diag["bytes"] = file_path.stat().st_size
+            except Exception:
+                pass
+            before_counts = dict(counts)
             counts = _parse_asset_file(
                 session,
                 document_id,
@@ -440,11 +484,20 @@ def parse_document_assets(session: Session, document_id: int) -> dict[str, int]:
                 counts,
                 base_url=base_url,
             )
+            asset_diag["status"] = "parsed"
+            asset_diag["counts_delta"] = _counts_delta(before_counts, counts)
         except Exception as exc:
+            asset_diag["error"] = str(exc)
             if asset.kind == "supp":
+                asset_diag["status"] = "skipped"
                 print(f"[parser] skipping supplement asset {asset.filename}: {exc}")
+                diagnostics.append(asset_diag)
                 continue
+            asset_diag["status"] = "failed"
+            diagnostics.append(asset_diag)
+            _write_parser_asset_diagnostics(document_id, diagnostics)
             raise
+        diagnostics.append(asset_diag)
         if (
             not settings.retain_source_files
             and asset.kind == "main"
@@ -454,6 +507,16 @@ def parse_document_assets(session: Session, document_id: int) -> dict[str, int]:
                 file_path.unlink()
             except Exception:
                 pass
+    ledger_updates = apply_section_boundary_ledger_to_session(session, document_id)
+    if diagnostics:
+        diagnostics.append(
+            {
+                "status": "postprocess",
+                "stage": "section_boundary_ledger",
+                "updated_text_chunks": ledger_updates,
+            }
+        )
+    _write_parser_asset_diagnostics(document_id, diagnostics)
     return counts
 
 
@@ -776,7 +839,9 @@ def _parse_html_file(
     for figure in root.find_all("figure"):
         image = figure.find("img", src=True)
         image_url = _resolve_html_href(image.get("src") if image else "", base_url)
-        caption = _clean_text(figure.find("figcaption").get_text(" ", strip=True) if figure.find("figcaption") else "")
+        caption = clean_figure_caption(
+            _clean_text(figure.find("figcaption").get_text(" ", strip=True) if figure.find("figcaption") else "")
+        )
         figure_id = str(figure.get("id") or "").strip()
         if not image_url and not caption:
             continue
@@ -808,7 +873,7 @@ def _parse_html_file(
         if image.find_parent("figure") is not None:
             continue
         image_url = _resolve_html_href(image.get("src"), base_url)
-        alt_text = _clean_text(image.get("alt") or "")
+        alt_text = clean_figure_caption(_clean_text(image.get("alt") or ""))
         if not image_url or image_url in seen_figure_urls:
             continue
         if not _looks_like_content_image(image_url, alt_text):
@@ -863,7 +928,9 @@ def _parse_html_file(
 
         parent_figure = table.find_parent("figure")
         table_id = str((parent_figure.get("id") if parent_figure else "") or table.get("id") or "").strip()
-        caption = _clean_text(parent_figure.find("figcaption").get_text(" ", strip=True) if parent_figure and parent_figure.find("figcaption") else "")
+        caption = clean_figure_caption(
+            _clean_text(parent_figure.find("figcaption").get_text(" ", strip=True) if parent_figure and parent_figure.find("figcaption") else "")
+        )
         session.add(
             Chunk(
                 document_id=document_id,
@@ -1327,7 +1394,20 @@ def _parse_zip_file(
     extract_root.mkdir(parents=True, exist_ok=True)
     try:
         with zipfile.ZipFile(path) as archive:
-            for member in archive.infolist():
+            members = [member for member in archive.infolist() if not member.is_dir()]
+            max_members = max(1, int(settings.archive_max_members or 1))
+            if len(members) > max_members:
+                raise ValueError(f"archive member count exceeds limit: {len(members)} > {max_members}")
+            max_uncompressed = max(1, int(settings.archive_max_uncompressed_bytes or 1))
+            total_uncompressed = 0
+            for member in members:
+                total_uncompressed += max(0, int(member.file_size or 0))
+                if total_uncompressed > max_uncompressed:
+                    raise ValueError(
+                        f"archive uncompressed size exceeds limit: {total_uncompressed} > {max_uncompressed}"
+                    )
+
+            for member in members:
                 if member.is_dir():
                     continue
                 safe_name = _safe_zip_name(member.filename)
@@ -1345,8 +1425,11 @@ def _parse_zip_file(
                     counts,
                     anchor_prefix=f"zip:{path.stem}:{safe_name}:",
                 )
-    except Exception:
-        return counts
+    except Exception as exc:
+        if asset.kind == "supp":
+            print(f"[parser] skipping supplement archive {asset.filename}: {exc}")
+            return counts
+        raise
     return counts
 
 

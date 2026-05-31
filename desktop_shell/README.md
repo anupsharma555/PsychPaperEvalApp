@@ -6,7 +6,7 @@ This is the primary desktop shell for PaperEval V7.
 
 1. `make desktop-env`
 2. `make desktop-build`
-3. Launch `/Users/anup/gitProjects/language-models-psychiatry/PsychPaperEvalApp/PaperEval.app`
+3. Launch `./PaperEval.app`
 
 ## Notes
 

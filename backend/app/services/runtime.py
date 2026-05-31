@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sys
 import threading
 import time
 from typing import Any
@@ -31,6 +32,23 @@ def _pid_alive(pid: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def _target_alive(pid: int | None, pgid: int | None) -> bool:
+    if isinstance(pgid, int) and pgid > 0:
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except Exception:
+            return False
+    if isinstance(pid, int) and pid > 0:
+        return _pid_alive(pid)
+    return False
+
+
+def _should_stop_current_process() -> bool:
+    argv = " ".join(str(item) for item in sys.argv).lower()
+    return "uvicorn" in argv and "pytest" not in argv
 
 
 def read_pids() -> dict:
@@ -87,6 +105,7 @@ def stop_app(delay_sec: float = 0.5) -> dict:
     frontend_pid = pids.get("frontend_pid")
     backend_pgid = pids.get("backend_pgid")
     frontend_pgid = pids.get("frontend_pgid")
+    has_live_target = _target_alive(frontend_pid, frontend_pgid) or _target_alive(backend_pid, backend_pgid)
     log_runtime_event(
         "stop_requested",
         {
@@ -94,6 +113,7 @@ def stop_app(delay_sec: float = 0.5) -> dict:
             "frontend_pid": frontend_pid,
             "backend_pgid": backend_pgid,
             "frontend_pgid": frontend_pgid,
+            "fallback_self_stop": not has_live_target,
         },
     )
 
@@ -108,7 +128,9 @@ def stop_app(delay_sec: float = 0.5) -> dict:
         except Exception:
             pass
         _clear_pid_file()
-        log_runtime_event("stop_completed", {"status": "ok"})
+        log_runtime_event("stop_completed", {"status": "ok", "fallback_self_stop": not has_live_target})
+        if not has_live_target and _should_stop_current_process():
+            _terminate_target(os.getpid(), None)
 
     threading.Timer(delay_sec, _kill).start()
     return pids

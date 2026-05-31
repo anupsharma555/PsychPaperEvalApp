@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   API_BASE,
   DesktopApiError,
@@ -61,6 +62,12 @@ const ET_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
 
 const SUPPLEMENT_MARKER_RE =
   /\b(supplement(?:ary|al)?|suppl|appendix|extended data|supporting (?:information|info|data)|figure\s*s\d+|fig(?:ure)?\s*s\d+|table\s*s\d+|s\d+\s*(?:fig(?:ure)?|table))\b/i;
+const DETAIL_TEXT_ZOOM_MIN = 0.7;
+const DETAIL_TEXT_ZOOM_MAX = 2;
+const DETAIL_TEXT_ZOOM_STEP = 0.1;
+const DETAIL_MODAL_SIZE_MIN = 0.75;
+const DETAIL_MODAL_SIZE_MAX = 1.7;
+const DETAIL_MODAL_SIZE_STEP = 0.05;
 
 function nowLabel() {
   return ET_DATE_TIME_FORMATTER.format(new Date());
@@ -255,6 +262,22 @@ function formatEvidenceRef(ref) {
   return value;
 }
 
+function formatEvidenceNoteLabel(ref) {
+  const value = String(ref || "").trim();
+  if (!value) return "";
+  if (value.toLowerCase().startsWith("section:")) {
+    const parts = value.split(":").slice(1).filter(Boolean);
+    const maybeIndex = parts.length > 1 ? parts[parts.length - 1] : "";
+    const sectionTitle = (parts.length > 1 ? parts.slice(0, -1) : parts).join(":").trim() || "body";
+    if (/^\d+$/.test(maybeIndex)) {
+      return `${sectionTitle} ¶${Number(maybeIndex) + 1}`;
+    }
+    return sectionTitle;
+  }
+  if (value.toLowerCase() === "abstract") return "Abstract";
+  return formatEvidenceRef(value) || value;
+}
+
 function evidenceContextFromItem(item) {
   const refs = normalizeEvidenceRefs(item);
   const primaryRef = refs[0] || "";
@@ -361,6 +384,7 @@ function assetLabel(item, fallback) {
 function assetLegend(item) {
   const value = String(item?.legend || "").replace(/\s+/g, " ").trim();
   if (!value) return "";
+  if (looksLikeStructuredTableJson(value)) return "";
   const caption = String(item?.caption || "").replace(/\s+/g, " ").trim().toLowerCase();
   const legendLower = value.toLowerCase();
   if (caption) {
@@ -369,6 +393,29 @@ function assetLegend(item) {
   const maxChars = 6000;
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars - 3)}...`;
+}
+
+function looksLikeStructuredTableJson(value) {
+  const text = String(value || "").trim();
+  if (!text.startsWith("{") || !text.includes('"columns"') || !text.includes('"data"')) return false;
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed?.columns) && Array.isArray(parsed?.data);
+  } catch {
+    return false;
+  }
+}
+
+function displayAssetLegend(item, maxChars = 220) {
+  const legend = assetLegend(item);
+  if (!legend) return "";
+  if (legend.length <= maxChars) return legend;
+  const clipped = legend.slice(0, maxChars);
+  const sentenceBreaks = [...clipped.matchAll(/[.!?]\s+/g)].map((match) => match.index + 1);
+  const usableBreak = sentenceBreaks.reverse().find((idx) => idx >= 90);
+  if (usableBreak) return `${clipped.slice(0, usableBreak).trim()}...`;
+  const wordClipped = clipped.replace(/\s+\S*$/, "").trim();
+  return `${wordClipped || clipped.trim()}...`;
 }
 
 function mediaAssetHref(item) {
@@ -526,6 +573,87 @@ function extractLineEvidenceRefs(line) {
   return refs;
 }
 
+function sectionEvidenceNotes(lines, maxItems = 12) {
+  const byLabel = new Map();
+  asArray(lines).forEach((line, idx) => {
+    for (const ref of extractLineEvidenceRefs(line)) {
+      const label = formatEvidenceNoteLabel(ref);
+      if (!label) continue;
+      const key = label.toLowerCase();
+      if (!byLabel.has(key)) {
+        byLabel.set(key, { label, itemNumbers: [] });
+      }
+      const note = byLabel.get(key);
+      const itemNumber = idx + 1;
+      if (!note.itemNumbers.includes(itemNumber)) {
+        note.itemNumbers.push(itemNumber);
+      }
+    }
+  });
+  return Array.from(byLabel.values()).slice(0, maxItems);
+}
+
+function itemRangeLabel(values) {
+  const numbers = asArray(values).filter((value) => Number.isFinite(value));
+  if (numbers.length === 0) return "";
+  if (numbers.length === 1) return `Item ${numbers[0]}`;
+  return `Items ${numbers.slice(0, 4).join(", ")}${numbers.length > 4 ? `, +${numbers.length - 4}` : ""}`;
+}
+
+function SectionEvidenceNotes({ lines }) {
+  const notes = sectionEvidenceNotes(lines, 8);
+  if (notes.length === 0) return null;
+  return (
+    <details className="detail-section-notes">
+      <summary>Evidence sources ({notes.length})</summary>
+      <ul>
+        {notes.map((note) => (
+          <li key={`${note.label}-${note.itemNumbers.join("-")}`}>
+            <span>{itemRangeLabel(note.itemNumbers)}:</span> {note.label}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function SectionAnchorNotes({ notes }) {
+  const normalized = asArray(notes)
+    .map((note) => ({
+      label: formatEvidenceNoteLabel(note?.ref || note),
+      itemNumbers: asArray(note?.itemNumbers),
+    }))
+    .filter((note) => note.label);
+  if (normalized.length === 0) return null;
+  return (
+    <details className="detail-section-notes">
+      <summary>Evidence sources ({normalized.length})</summary>
+      <ul>
+        {normalized.map((note) => (
+          <li key={`${note.label}-${note.itemNumbers.join("-")}`}>
+            {note.itemNumbers.length > 0 ? <><span>{itemRangeLabel(note.itemNumbers)}:</span> </> : null}
+            {note.label}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function notesFromExecutiveBullets(bullets, maxItems = 8) {
+  const byRef = new Map();
+  asArray(bullets).forEach((bullet, idx) => {
+    asArray(bullet?.anchors).forEach((anchor) => {
+      const ref = String(anchor || "").trim();
+      if (!ref) return;
+      const key = ref.toLowerCase();
+      if (!byRef.has(key)) byRef.set(key, { ref, itemNumbers: [] });
+      byRef.get(key).itemNumbers.push(idx + 1);
+    });
+  });
+  return Array.from(byRef.values()).slice(0, maxItems);
+}
+
 function lineSourceSummary(line, maxItems = 2) {
   const labels = [];
   const seen = new Set();
@@ -577,7 +705,13 @@ function sectionBlockItems(block) {
   return asArray(block.items).filter((item) => item && typeof item === "object");
 }
 
+function sectionBlockNarrativeItems(block) {
+  if (!block || typeof block !== "object") return [];
+  return asArray(block.narrative_items).filter((item) => item && typeof item === "object");
+}
+
 function sectionBlockDisplayLines(block, { maxItems = 20, resultsMode = false } = {}) {
+  const narrativeLines = sectionBlockNarrativeItems(block).map((item) => toDisplayLine(item)).filter(Boolean);
   const items = sectionBlockItems(block).slice();
   if (resultsMode) {
     items.sort((left, right) => {
@@ -589,8 +723,12 @@ function sectionBlockDisplayLines(block, { maxItems = 20, resultsMode = false } 
       return 0;
     });
   }
-  const lines = items.map((item) => toDisplayLine(item)).filter(Boolean);
-  return orderLinesForFlow(keepUniqueByCanonical(lines, Math.max(maxItems * 2, maxItems)), maxItems);
+  const detailLines = items.map((item) => toDisplayLine(item)).filter(Boolean);
+  const orderedDetailLines = orderLinesForFlow(
+    keepUniqueByCanonical(detailLines, Math.max(maxItems * 2, maxItems)),
+    Math.max(maxItems * 2, maxItems)
+  );
+  return keepUniqueByCanonical(narrativeLines.concat(orderedDetailLines), maxItems);
 }
 
 function mergeCompactWithDetailLines(
@@ -807,6 +945,303 @@ function splitParagraphs(text) {
     .split(/\n{2,}/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+const EXECUTIVE_SECTION_ORDER = ["introduction", "methods", "results", "discussion", "conclusion"];
+const EXECUTIVE_SECTION_LABELS = {
+  introduction: "Introduction",
+  methods: "Methods",
+  results: "Results",
+  discussion: "Discussion",
+  conclusion: "Conclusion",
+};
+
+function normalizeExecutiveSectionKey(value) {
+  const key = String(value || "").trim().toLowerCase();
+  if (key.startsWith("intro")) return "introduction";
+  if (key.startsWith("method")) return "methods";
+  if (key.startsWith("result")) return "results";
+  if (key.startsWith("discuss")) return "discussion";
+  if (key.startsWith("conclu") || key.startsWith("summary")) return "conclusion";
+  return "";
+}
+
+function cleanExecutiveText(value) {
+  return stripConfidenceTag(value)
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .trim()
+    .replace(/[.;:\s]+$/, "");
+}
+
+function splitExecutiveClauses(value, maxItems = 3) {
+  const clauses = String(value || "")
+    .split(/\s*;\s*/)
+    .map((item) => cleanExecutiveText(item))
+    .filter(Boolean)
+    .filter((item) => !/^(n\/a|not available|not extracted)$/i.test(item));
+  return keepUniqueByNearDuplicate(clauses, maxItems);
+}
+
+function compactExecutiveSummary(value, maxChars = 520) {
+  const clauses = splitExecutiveClauses(value, 4);
+  const source = clauses.length > 0 ? clauses.join("; ") : cleanExecutiveText(value);
+  if (source.length <= maxChars) return source;
+  const clipped = source.slice(0, maxChars).replace(/\s+\S*$/, "").trim();
+  return `${clipped}...`;
+}
+
+function sanitizeExecutiveSectionSummary(section, value) {
+  const key = normalizeExecutiveSectionKey(section);
+  const maxItems = key === "methods" ? 4 : 4;
+  let clauses = splitExecutiveClauses(value, maxItems);
+  if (key === "methods") {
+    clauses = clauses.filter(isStrictMethodDisplayLine);
+  }
+  return compactExecutiveSummary(clauses.length > 0 ? clauses.join("; ") : value);
+}
+
+function parseSectionedExecutiveSummary(value) {
+  const text = cleanExecutiveText(value);
+  if (!text) return [];
+  const pattern = /\b(Introduction|Methods?|Results?|Discussion|Conclusion|Summary)\s*:/gi;
+  const matches = [...text.matchAll(pattern)];
+  if (matches.length === 0) {
+    return [{ section: "overview", label: "Overview", summary: text, bullets: [] }];
+  }
+  const rows = [];
+  for (let idx = 0; idx < matches.length; idx += 1) {
+    const match = matches[idx];
+    const next = matches[idx + 1];
+    const key = normalizeExecutiveSectionKey(match[1]);
+    if (!key) continue;
+    const start = Number(match.index || 0) + match[0].length;
+    const end = next ? Number(next.index || text.length) : text.length;
+    const summary = sanitizeExecutiveSectionSummary(key, text.slice(start, end));
+    if (!summary) continue;
+    rows.push({
+      section: key,
+      label: EXECUTIVE_SECTION_LABELS[key] || humanizeKey(key),
+      summary,
+      bullets: splitExecutiveClauses(summary, 3).map((item) => ({ text: item, anchors: [] })),
+    });
+  }
+  return rows;
+}
+
+function executiveSectionsFromSummary(summaryJson, fallbackSummary) {
+  const executiveReport =
+    summaryJson?.executive_report && typeof summaryJson.executive_report === "object"
+      ? summaryJson.executive_report
+      : null;
+  const reportSections = asArray(executiveReport?.sections)
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const key = normalizeExecutiveSectionKey(item.section);
+      const summary = sanitizeExecutiveSectionSummary(key, item.summary || "");
+      const bullets = asArray(item.bullets)
+        .map((bullet) => {
+          if (bullet && typeof bullet === "object") {
+            return {
+              text: cleanExecutiveText(bullet.text || bullet.summary || bullet.statement || ""),
+              anchors: asArray(bullet.anchors).map((anchor) => String(anchor || "").trim()).filter(Boolean),
+            };
+          }
+          return { text: cleanExecutiveText(bullet), anchors: [] };
+        })
+        .filter((bullet) => bullet.text);
+      return {
+        section: key,
+        label: EXECUTIVE_SECTION_LABELS[key] || humanizeKey(item.section || "Section"),
+        summary: summary || bullets.map((bullet) => bullet.text).join("; "),
+        bullets,
+        studyPurpose: cleanExecutiveText(item.study_purpose || ""),
+        studyHypothesis: cleanExecutiveText(item.study_hypothesis || ""),
+        centralFinding: cleanExecutiveText(item.central_finding || ""),
+      };
+    })
+    .filter((item) => item.section && (item.summary || item.bullets.length > 0));
+
+  const ordered = [];
+  for (const sectionKey of EXECUTIVE_SECTION_ORDER) {
+    const found = reportSections.find((item) => item.section === sectionKey);
+    if (found) ordered.push(found);
+  }
+  for (const item of reportSections) {
+    if (!ordered.some((existing) => existing.section === item.section)) ordered.push(item);
+  }
+  if (ordered.length > 0) return ordered;
+  return parseSectionedExecutiveSummary(fallbackSummary);
+}
+
+function ExecutiveSectionSummary({ card }) {
+  if (!card) return null;
+  const focusRows = [];
+  if (card.section === "introduction") {
+    if (card.studyPurpose) focusRows.push({ label: "Purpose", text: card.studyPurpose, muted: false });
+    if (card.studyHypothesis) focusRows.push({ label: "Hypothesis", text: card.studyHypothesis, muted: Boolean(card.studyHypothesisMuted) });
+  }
+  if (card.section === "results" && card.centralFinding) {
+    focusRows.push({ label: "Central finding", text: card.centralFinding, muted: false });
+  }
+  return (
+    <article className="executive-section">
+      <h4>{card.label}</h4>
+      {card.summary && <p>{card.summary}</p>}
+      {focusRows.length > 0 && (
+        <dl className="executive-section-focus">
+          {focusRows.map((row) => (
+            <div key={`${card.section}-${row.label}`} className={row.muted ? "muted" : ""}>
+              <dt>{row.label}</dt>
+              <dd>{row.text}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </article>
+  );
+}
+
+function firstUsefulLine(lines, matcher = null) {
+  for (const line of asArray(lines)) {
+    const cleaned = cleanSectionLine(line);
+    if (!cleaned) continue;
+    if (matcher && !matcher(cleaned)) continue;
+    return cleaned;
+  }
+  return "";
+}
+
+function buildExecutiveBriefRows({ structuredSummary, executiveSectionCards, keyFindingLines }) {
+  const explicitPurpose = firstUsefulLine([
+    structuredSummary?.study_purpose,
+    structuredSummary?.purpose,
+    structuredSummary?.objective,
+    structuredSummary?.research_question,
+    structuredSummary?.aim,
+  ]);
+  const explicitHypothesis = firstUsefulLine([
+    structuredSummary?.study_hypothesis,
+    structuredSummary?.hypothesis,
+    structuredSummary?.central_hypothesis,
+  ]);
+  const explicitCentralFinding = firstUsefulLine([
+    structuredSummary?.central_finding,
+    structuredSummary?.main_finding,
+    structuredSummary?.primary_finding,
+  ]);
+  const introductionCard = executiveSectionCards.find((item) => item.section === "introduction");
+  const resultsCard = executiveSectionCards.find((item) => item.section === "results");
+  const purposeFallback = firstUsefulLine(
+    [
+      ...(introductionCard?.bullets || []).map((item) => item.text),
+      introductionCard?.summary,
+      ...(resultsCard?.bullets || []).map((item) => item.text),
+    ],
+    (line) => /\b(aim|objective|purpose|investigat|examined|presents findings|study|data brief)\b/i.test(line)
+  );
+  const hypothesisFallback = firstUsefulLine(
+    [
+      ...(introductionCard?.bullets || []).map((item) => item.text),
+      introductionCard?.summary,
+      ...keyFindingLines,
+    ],
+    (line) => /\b(hypothes|expected|predicted|tested whether|we test|we examined whether)\b/i.test(line)
+  );
+  const centralFindingFallback = firstUsefulLine(
+    [
+      ...keyFindingLines,
+      ...(resultsCard?.bullets || []).map((item) => item.text),
+      resultsCard?.summary,
+    ],
+    (line) => /%|\b(increased|decreased|higher|lower|associated|found|showed|significant)\b/i.test(line)
+  );
+  return [
+    {
+      label: "Study Purpose",
+      text: explicitPurpose || purposeFallback || "No explicit study purpose was extracted.",
+      muted: !(explicitPurpose || purposeFallback),
+    },
+    {
+      label: "Study Hypothesis",
+      text: explicitHypothesis || hypothesisFallback || "No explicit study hypothesis was extracted.",
+      muted: !(explicitHypothesis || hypothesisFallback),
+    },
+    {
+      label: "Central Finding",
+      text: explicitCentralFinding || centralFindingFallback || "No central finding was extracted.",
+      muted: !(explicitCentralFinding || centralFindingFallback),
+    },
+  ];
+}
+
+function executiveBriefRowMap(rows) {
+  const out = new Map();
+  asArray(rows).forEach((row) => {
+    const key = String(row?.label || "").trim().toLowerCase();
+    const text = cleanExecutiveText(row?.text || "");
+    if (!key || !text) return;
+    out.set(key, { text, muted: Boolean(row?.muted) });
+  });
+  return out;
+}
+
+function addFocusRowsToExecutiveCards(cards, briefRows) {
+  if (!Array.isArray(cards) || cards.length === 0) return [];
+  const focus = executiveBriefRowMap(briefRows);
+  const purpose = focus.get("study purpose");
+  const hypothesis = focus.get("study hypothesis");
+  const centralFinding = focus.get("central finding");
+  return cards.map((card) => {
+    if (!card || typeof card !== "object") return card;
+    if (card.section === "introduction") {
+      return {
+        ...card,
+        studyPurpose: card.studyPurpose || purpose?.text || "",
+        studyHypothesis: card.studyHypothesis || hypothesis?.text || "",
+        studyHypothesisMuted: !card.studyHypothesis && Boolean(hypothesis?.muted),
+      };
+    }
+    if (card.section === "results") {
+      return {
+        ...card,
+        centralFinding: card.centralFinding || centralFinding?.text || "",
+      };
+    }
+    return card;
+  });
+}
+
+function sourceBadgeLabels(anchors, maxItems = 2) {
+  return asArray(anchors)
+    .map((anchor) => formatEvidenceRef(anchor) || String(anchor || "").trim())
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function groupPrefixedSectionLines(lines) {
+  const groups = new Map();
+  for (const rawLine of asArray(lines)) {
+    const line = cleanSectionLine(rawLine);
+    if (!line) continue;
+    const match = line.match(/^\s*(Introduction|Methods?|Results?|Discussion|Conclusion|Summary)\s*:\s*(.+)$/i);
+    const key = normalizeExecutiveSectionKey(match?.[1] || "overview") || "overview";
+    const label = EXECUTIVE_SECTION_LABELS[key] || "Overview";
+    const text = cleanExecutiveText(match?.[2] || line);
+    if (!text) continue;
+    if (!groups.has(key)) groups.set(key, { section: key, label, lines: [] });
+    groups.get(key).lines.push(text);
+  }
+  const ordered = EXECUTIVE_SECTION_ORDER
+    .map((key) => groups.get(key))
+    .filter(Boolean);
+  for (const [key, group] of groups.entries()) {
+    if (!EXECUTIVE_SECTION_ORDER.includes(key)) ordered.push(group);
+  }
+  return ordered.map((group) => ({
+    ...group,
+    lines: keepUniqueByNearDuplicate(group.lines, 5),
+  }));
 }
 
 function humanizeKey(key) {
@@ -1061,6 +1496,26 @@ function orderMethodLines(lines, maxItems = 24) {
   return enriched.map((item) => item.line).slice(0, maxItems);
 }
 
+const METHOD_DISPLAY_SIGNAL_RE =
+  /\b(method|methods|survey|respondents?|sample|population|adults aged|noninstitutionalized|civilian|data source|source:|samhsa|nsduh|national survey|gad-7|screening tool|score|scale|instrument|measure|questionnaire|protocol|statistical|model|covariate|adjusted|weighted|confidence interval|fpl|federal poverty level)\b/i;
+const METHOD_DISPLAY_LEAK_RE =
+  /\b(did not differ significantly|differed significantly|was lower than|were lower than|was higher than|were higher than|increased from|decreased from|varied by|more likely than|less likely than|had moderate or severe symptoms|engaged in binge|engaged in heavy drinking|misused prescription|misuse of prescription|percentages? (?:were|was|did)|\d+(?:\.\d+)?%\s+vs\.?)\b/i;
+const METHOD_DISPLAY_NOTE_ONLY_RE =
+  /\b(?:mutually exclusive|could be of any race|calculated as a percentage of the u\.s\.?|center for behavioral health statistics and quality)/i;
+const METHOD_DISPLAY_FRAGMENT_RE = /^\s*(?:was|were|is|are|been|being|and|or|but|vs\.?|\d+(?:\.\d+)?\s*%?\)|\))/i;
+
+function isStrictMethodDisplayLine(line) {
+  const text = cleanSectionLine(line);
+  if (!text) return false;
+  if (METHOD_DISPLAY_FRAGMENT_RE.test(text)) return false;
+  if (METHOD_DISPLAY_LEAK_RE.test(text)) return false;
+  if (METHOD_DISPLAY_NOTE_ONLY_RE.test(text)) return false;
+  if (/\b(?:race|ethnic|hispanic|latino|asian|nhpi|aian)\b/i.test(text) && !/\b(covariate|adjust|model|stratif|sample|survey|respondent|classification|categor)/i.test(text)) {
+    return false;
+  }
+  return METHOD_DISPLAY_SIGNAL_RE.test(text);
+}
+
 function buildSectionOverview(title, lines) {
   const count = asArray(lines).length;
   if (count === 0) return "";
@@ -1139,6 +1594,25 @@ function clampViewerZoom(value) {
   return Math.max(0.25, Math.min(4, numeric));
 }
 
+function failureNextStep(job) {
+  const message = String(job?.message || "").toLowerCase();
+  if (message.includes("openai") || message.includes("usage guardrail") || message.includes("budget")) {
+    return "Review the OpenAI budget/token settings or rerun after the current backend fixes; this was not a source-fetch problem.";
+  }
+  if (message.includes("grobid")) {
+    return "Check that GROBID/Docker is ready, then submit a new run.";
+  }
+  if (
+    message.includes("publisher blocked")
+    || message.includes("could not resolve a pdf")
+    || message.includes("rate-limited")
+    || job?.source_kind === "url"
+  ) {
+    return "If this DOI/URL is publisher-blocked, switch to From Upload and choose the main PDF.";
+  }
+  return "Review the failure reason, then submit a new run.";
+}
+
 export default function App() {
   const [workflowStep, setWorkflowStep] = useState("select_source");
   const [nextStepText, setNextStepText] = useState(
@@ -1176,6 +1650,10 @@ export default function App() {
   const [documentMedia, setDocumentMedia] = useState({ figures: [], tables: [] });
   const [mediaError, setMediaError] = useState("");
   const [detailViewOpen, setDetailViewOpen] = useState(false);
+  const [detailViewExpanded, setDetailViewExpanded] = useState(false);
+  const [detailTextZoom, setDetailTextZoom] = useState(1);
+  const [detailModalSize, setDetailModalSize] = useState(1);
+  const [detailModalOffset, setDetailModalOffset] = useState({ x: 0, y: 0 });
   const [assetViewer, setAssetViewer] = useState(null);
 
   const [submitBusy, setSubmitBusy] = useState(false);
@@ -1243,7 +1721,20 @@ export default function App() {
   const executiveParagraphs = splitParagraphs(
     stripConfidenceTag(structuredSummary?.executive_summary || reportPayload?.summary || "")
   );
+  const executiveSectionCards = executiveSectionsFromSummary(
+    structuredSummary,
+    structuredSummary?.executive_summary || reportPayload?.summary || ""
+  );
+  const executiveOverviewText = executiveSectionCards.length > 0
+    ? `${executiveSectionCards.length} section${executiveSectionCards.length === 1 ? "" : "s"} summarized from extracted evidence.`
+    : "";
   const keyFindingLines = orderLinesForFlow(listLines(structuredSummary?.key_findings), 20);
+  const executiveBriefRows = buildExecutiveBriefRows({
+    structuredSummary,
+    executiveSectionCards,
+    keyFindingLines,
+  });
+  const displayExecutiveSectionCards = addFocusRowsToExecutiveCards(executiveSectionCards, executiveBriefRows);
   const methodsCardLines = orderLinesForFlow(
     keepUniqueByNearDuplicate(listLines(reportSummary?.methods_card).map((line) => cleanSectionLine(line)), 16),
     8
@@ -1252,6 +1743,8 @@ export default function App() {
     keepUniqueByNearDuplicate(listLines(reportSummary?.sections_card).map((line) => cleanSectionLine(line)), 24),
     12
   );
+  const sectionSnapshotGroups = groupPrefixedSectionLines(sectionsCardLines);
+  const reportFailed = reportSummary?.report_status === "failed";
   const rerunRecommended = Boolean(reportSummary?.rerun_recommended);
   const reportCapabilities = reportSummary?.report_capabilities && typeof reportSummary.report_capabilities === "object"
     ? reportSummary.report_capabilities
@@ -1260,6 +1753,11 @@ export default function App() {
     reportPayload?.analysis_diagnostics?.diagnostics?.model_usage &&
     typeof reportPayload.analysis_diagnostics.diagnostics.model_usage === "object"
       ? reportPayload.analysis_diagnostics.diagnostics.model_usage
+      : null;
+  const reportOpenAiUsage =
+    reportPayload?.analysis_diagnostics?.diagnostics?.openai_usage &&
+    typeof reportPayload.analysis_diagnostics.diagnostics.openai_usage === "object"
+      ? reportPayload.analysis_diagnostics.diagnostics.openai_usage
       : null;
   const modalityEntries =
     structuredSummary?.modalities && typeof structuredSummary.modalities === "object"
@@ -1593,7 +2091,8 @@ export default function App() {
   const methodsDisplayLinesRaw = hasBackendSections
     ? methodsDetailLines
     : methodsSectionLines;
-  const methodsDisplayLines = orderMethodLines(keepUniqueByNearDuplicate(methodsDisplayLinesRaw, 24), 24);
+  const methodsDisplayLinesFiltered = methodsDisplayLinesRaw.filter(isStrictMethodDisplayLine);
+  const methodsDisplayLines = orderMethodLines(keepUniqueByNearDuplicate(methodsDisplayLinesFiltered, 8), 8);
   const resultsDisplayLines = useCompactSections
     ? mergeCompactWithDetailLines(resultsSectionLines, resultsDetailLines, { maxItems: 24, extraLimit: 20 })
     : hasBackendSections
@@ -1842,8 +2341,8 @@ export default function App() {
         setStatusPayload({
           backend_ready: payload.backend_ready,
           processing: payload.processing,
-          model_exists: payload.models?.model_exists,
-          mmproj_exists: payload.models?.mmproj_exists,
+          ...(payload.models || {}),
+          grobid: payload.grobid || null,
           runtime_build:
             payload?.runtime_build && typeof payload.runtime_build === "object"
               ? payload.runtime_build
@@ -1919,7 +2418,7 @@ export default function App() {
     }
     if (selectedJob.status === "failed") {
       setWorkflowStep("monitoring");
-      setNextStepText("Selected job failed. Fix source input and submit a new run.");
+      setNextStepText(failureNextStep(selectedJob));
       return;
     }
     if (selectedJob.status === "running") {
@@ -2019,6 +2518,20 @@ export default function App() {
       ]);
       const media = mediaResult?.ok ? mediaResult.payload : { figures: [], tables: [] };
       setReportSummary(summary);
+      if (summary?.report_status !== "ready") {
+        setReportPayload(null);
+        setReportSaved(false);
+        setDocumentMedia({ figures: [], tables: [] });
+        setMediaError("");
+        setWorkflowStep("review");
+        setNextStepText("Report failed validation. Fix the configured model/API issue and rerun analysis.");
+        pushEvent(
+          summary?.executive_summary || "Report failed validation and was not loaded.",
+          "error",
+          `load-report-invalid-${targetJob.job_id}`
+        );
+        return;
+      }
       setReportPayload(full);
       setReportSaved(Boolean(saveStatus?.saved));
       setDocumentMedia({
@@ -2133,6 +2646,80 @@ export default function App() {
     setDetailViewOpen(false);
   };
 
+  const adjustDetailTextZoom = (delta) => {
+    setDetailTextZoom((prev) => {
+      const next = Math.round((prev + delta) * 100) / 100;
+      return Math.min(DETAIL_TEXT_ZOOM_MAX, Math.max(DETAIL_TEXT_ZOOM_MIN, next));
+    });
+  };
+
+  const resetDetailTextZoom = () => {
+    setDetailTextZoom(1);
+  };
+
+  const adjustDetailModalSize = (delta) => {
+    setDetailModalSize((prev) => {
+      const next = Math.round((prev + delta) * 100) / 100;
+      return Math.min(DETAIL_MODAL_SIZE_MAX, Math.max(DETAIL_MODAL_SIZE_MIN, next));
+    });
+  };
+
+  const resetDetailModalLayout = () => {
+    setDetailViewExpanded(false);
+    setDetailModalSize(1);
+    setDetailModalOffset({ x: 0, y: 0 });
+  };
+
+  const maximizeDetailHostWindow = async () => {
+    if (typeof window === "undefined" || !window.__TAURI_INTERNALS__) return;
+    try {
+      const appWindow = getCurrentWindow();
+      const maximized = await appWindow.isMaximized();
+      if (!maximized) await appWindow.maximize();
+    } catch {
+      // Browser preview and older shells can ignore native window sizing.
+    }
+  };
+
+  const handleDetailExpandedToggle = () => {
+    if (detailViewExpanded) {
+      setDetailViewExpanded(false);
+      return;
+    }
+    setDetailModalOffset({ x: 0, y: 0 });
+    setDetailModalSize((prev) => Math.max(prev, 1.15));
+    setDetailViewExpanded(true);
+    void maximizeDetailHostWindow();
+  };
+
+  const handleDetailModalDragStart = (event) => {
+    if (detailViewExpanded || event.button !== 0) return;
+    if (event.target?.closest?.("button,a,input,summary")) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const origin = detailModalOffset;
+    const clampOffset = (value, axis) => {
+      if (typeof window === "undefined") return value;
+      const limit = axis === "x"
+        ? Math.max(120, window.innerWidth / 2 - 140)
+        : Math.max(80, window.innerHeight / 2 - 120);
+      return Math.min(limit, Math.max(-limit, value));
+    };
+    const onPointerMove = (moveEvent) => {
+      setDetailModalOffset({
+        x: clampOffset(origin.x + moveEvent.clientX - startX, "x"),
+        y: clampOffset(origin.y + moveEvent.clientY - startY, "y"),
+      });
+    };
+    const onPointerUp = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
   const openAssetViewer = (src, title, kindHint = "") => {
     if (!src) return;
     const kind = String(kindHint || "").trim() || mediaViewerKind(src);
@@ -2201,6 +2788,16 @@ export default function App() {
     }
   };
 
+  const modelReady = statusPayload?.provider
+    ? Boolean(statusPayload?.provider_ready)
+    : Boolean(statusPayload?.model_exists && statusPayload?.mmproj_exists);
+  const modelLabel = statusPayload?.provider === "openai"
+    ? `OpenAI ${statusPayload?.openai_deep_model || "Ready"}`
+    : modelReady
+      ? "Ready"
+      : "Missing";
+  const grobidReady = Boolean(statusPayload?.grobid?.ready);
+
   return (
     <div className="app-shell">
       <header className="top-bar">
@@ -2224,8 +2821,14 @@ export default function App() {
         </div>
         <div className="health-item">
           <label>Models</label>
-          <strong className={statusPayload?.model_exists && statusPayload?.mmproj_exists ? "ok" : "bad"}>
-            {statusPayload?.model_exists && statusPayload?.mmproj_exists ? "Ready" : "Missing"}
+          <strong className={modelReady ? "ok" : "bad"}>
+            {modelLabel}
+          </strong>
+        </div>
+        <div className="health-item">
+          <label>GROBID</label>
+          <strong className={grobidReady ? "ok" : "bad"}>
+            {grobidReady ? "Ready" : "Unavailable"}
           </strong>
         </div>
         <div className="health-item">
@@ -2442,9 +3045,7 @@ export default function App() {
                   <div className="failure-callout">
                     <strong>Failure Reason</strong>
                     <p>{selectedJob.message || "No error details were provided by backend."}</p>
-                    <p className="hint">
-                      Next step: if this DOI/URL is publisher-blocked, switch to From Upload and choose the main PDF.
-                    </p>
+                    <p className="hint">Next step: {failureNextStep(selectedJob)}</p>
                   </div>
                 )}
               </>
@@ -2467,11 +3068,18 @@ export default function App() {
             </div>
 
             <div className="report-status">
-              Report: {reportSummary?.report_status === "ready" ? "Ready" : selectedJob?.status === "failed" ? "Failed" : "Not Ready"}
+              Report: {reportSummary?.report_status === "ready" ? "Ready" : reportFailed || selectedJob?.status === "failed" ? "Failed" : "Not Ready"}
             </div>
+            {reportFailed && (
+              <div className="failure-inline">
+                {reportSummary?.executive_summary || "Report failed validation and was not loaded."}
+              </div>
+            )}
             {rerunRecommended && (
               <div className="failure-inline">
-                Legacy report detected. Re-run analysis to enable deterministic section-fidelity compact outputs.
+                {reportFailed
+                  ? "Fix the configured OpenAI key/model access and rerun analysis."
+                  : "Legacy report detected. Re-run analysis to enable deterministic section-fidelity compact outputs."}
               </div>
             )}
             {mediaError && <div className="failure-inline">{mediaError}</div>}
@@ -2481,66 +3089,118 @@ export default function App() {
               </div>
             )}
 
+            <div className="subsection report-executive">
+              <h3>Executive Summary</h3>
+              {!reportPayload && <p className="empty">{reportFailed ? "No valid report available." : "No report loaded yet."}</p>}
+              {reportPayload && displayExecutiveSectionCards.length === 0 && executiveParagraphs.length === 0 && (
+                <p className="empty">No executive summary available.</p>
+              )}
+              {reportPayload && displayExecutiveSectionCards.length > 0 && (
+                <div className="executive-section-grid">
+                  {displayExecutiveSectionCards.map((card) => (
+                    <ExecutiveSectionSummary key={`exec-${card.section}`} card={card} />
+                  ))}
+                </div>
+              )}
+              {reportPayload && displayExecutiveSectionCards.length === 0 && executiveBriefRows.length > 0 && (
+                <div className="executive-brief">
+                  {executiveBriefRows.map((row) => (
+                    <article key={row.label} className={row.muted ? "muted" : ""}>
+                      <h4>{row.label}</h4>
+                      <p>{row.text}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+              {displayExecutiveSectionCards.length === 0 && executiveParagraphs.map((paragraph, idx) => (
+                <p key={`exec-inline-${idx}`}>{paragraph}</p>
+              ))}
+            </div>
+
             <div className="subsection">
-              <h3>Key Findings Snapshot</h3>
+              <h3>Key Findings</h3>
               {keyFindingLines.length === 0 && <p className="empty">No key findings available.</p>}
               {keyFindingLines.length > 0 && (
                 <ol className="detail-list detail-list-ordered">
                   {keyFindingLines.slice(0, 6).map((line, idx) => (
-                    <li key={`kfs-${idx}`}>{line}</li>
+                    <li key={`kfs-${idx}`}>{cleanSectionLine(line)}</li>
                   ))}
                 </ol>
               )}
+              <SectionEvidenceNotes lines={keyFindingLines.slice(0, 6)} />
             </div>
 
             <div className="subsection">
-              <h3>Summary Cards</h3>
+              <h3>Section Snapshot</h3>
               {!reportSummary && <p className="empty">No report loaded yet.</p>}
               {methodsCardLines.length > 0 && (
-                <div className="modality-card" style={{ marginBottom: 8 }}>
-                  <h4>METHODS AT A GLANCE</h4>
+                <div className="report-callout" style={{ marginBottom: 8 }}>
+                  <h4>Methods at a glance</h4>
                   {methodsCardLines.map((line, idx) => (
                     <p key={`methods-card-${idx}`}>{line}</p>
                   ))}
                 </div>
               )}
-              {sectionsCardLines.length > 0 && (
-                <div className="modality-card" style={{ marginBottom: 8 }}>
-                  <h4>SECTION SNAPSHOT</h4>
-                  {sectionsCardLines.map((line, idx) => (
-                    <p key={`sections-card-${idx}`}>{line}</p>
+              {sectionSnapshotGroups.length > 0 && (
+                <div className="section-snapshot-grid">
+                  {sectionSnapshotGroups.map((group) => (
+                    <article key={`snapshot-${group.section}`} className="section-snapshot-group">
+                      <h4>{group.label}</h4>
+                      <ul>
+                        {group.lines.slice(0, 4).map((line, idx) => (
+                          <li key={`${group.section}-line-${idx}`}>{line}</li>
+                        ))}
+                      </ul>
+                    </article>
                   ))}
                 </div>
               )}
               {reportSummary?.modality_cards?.length > 0 && (
-                <div className="summary-cards-scroll">
+                <details className="report-inline-details">
+                  <summary>Modality Evidence</summary>
+                  <div className="summary-cards-scroll">
                   <div className="modality-grid">
                     {reportSummary.modality_cards.map((card) => (
                       <div key={card.modality} className="modality-card">
                         <h4>{String(card.modality || "modality").toUpperCase()}</h4>
                         <div>{card.finding_count || 0} findings</div>
-                        {(card.highlights || []).slice(0, 3).map((item, idx) => (
-                          <p key={`${card.modality}-h-${idx}`}>{item}</p>
-                        ))}
+                        {(card.highlights || []).slice(0, 3).map((item, idx) => {
+                          const labels = sourceBadgeLabels(extractLineEvidenceRefs(item), 2);
+                          return (
+                            <p key={`${card.modality}-h-${idx}`}>
+                              <span>{cleanSectionLine(item)}</span>
+                              {labels.length > 0 && (
+                                <span className="source-badges">
+                                  {labels.map((label) => (
+                                    <span key={`${card.modality}-h-${idx}-${label}`} className="source-badge">
+                                      {label}
+                                    </span>
+                                  ))}
+                                </span>
+                              )}
+                            </p>
+                          );
+                        })}
                         {(card.coverage_gaps || []).slice(0, 2).map((item, idx) => (
                           <p key={`${card.modality}-g-${idx}`} className="coverage-gap">{item}</p>
                         ))}
                       </div>
                     ))}
                   </div>
-                </div>
+                  </div>
+                </details>
               )}
             </div>
 
             {Object.keys(reportCapabilities).length > 0 && (
-              <div className="subsection">
-                <h3>Report Capabilities</h3>
+              <details className="subsection">
+                <summary>Report Capabilities</summary>
                 <div className="detail-grid">
                   <div>Methods compact</div><div>{String(Boolean(reportCapabilities.methods_compact))}</div>
                   <div>Sections compact</div><div>{String(Boolean(reportCapabilities.sections_compact))}</div>
                   <div>Coverage snapshot line</div><div>{String(Boolean(reportCapabilities.coverage_snapshot_line))}</div>
                 </div>
-              </div>
+              </details>
             )}
 
             <div className="subsection">
@@ -2548,8 +3208,8 @@ export default function App() {
               <div>{reportSummary ? reportSummary.discrepancy_count : 0} flagged discrepancies</div>
             </div>
 
-            <div className="subsection">
-              <h3>Diagnostics</h3>
+            <details className="subsection">
+              <summary>Diagnostics</summary>
               <div className="button-row">
                 <button onClick={refreshRuntimeInfo}>Refresh Runtime</button>
                 <button onClick={handleDiagnosticsExport}>Export Diagnostics</button>
@@ -2568,12 +3228,21 @@ export default function App() {
                     <div>Vision model calls: {reportModelUsage.vision_calls ?? 0}</div>
                   </>
                 )}
+                {reportOpenAiUsage && (
+                  <>
+                    <div>
+                      OpenAI estimated cost: $
+                      {Number(reportOpenAiUsage.estimated_cost_usd || 0).toFixed(4)}
+                    </div>
+                    <div>OpenAI tokens: {Number(reportOpenAiUsage.total_tokens || 0).toLocaleString()}</div>
+                  </>
+                )}
                 {lastError && <div className="error-text">Last error: {lastError}</div>}
               </div>
-            </div>
+            </details>
 
-            <div className="subsection">
-              <h3>Recent Events (ET)</h3>
+            <details className="subsection">
+              <summary>Recent Events (ET)</summary>
               <ul className="events-list">
                 {eventHistory.slice(0, 6).map((event, idx) => (
                   <li key={`${event.ts}-${idx}`} className={event.level}>
@@ -2582,13 +3251,13 @@ export default function App() {
                   </li>
                 ))}
               </ul>
-            </div>
+            </details>
 
             {reportPayload?.summary_json && (
-              <div className="subsection">
-                <h3>Summary JSON Preview</h3>
+              <details className="subsection">
+                <summary>Summary JSON Preview</summary>
                 <pre>{JSON.stringify(reportPayload.summary_json, null, 2).slice(0, 2000)}</pre>
-              </div>
+              </details>
             )}
           </div>
         </section>
@@ -2596,10 +3265,90 @@ export default function App() {
 
       {detailViewOpen && (
         <div className="detail-modal-backdrop" onClick={closeDetailView}>
-          <section className="detail-modal card" onClick={(event) => event.stopPropagation()}>
-            <header className="detail-modal-header">
-              <h3>Detailed Analysis</h3>
-              <button onClick={closeDetailView}>Close</button>
+          <section
+            className={`detail-modal card${detailViewExpanded ? " is-expanded" : ""}`}
+            style={{
+              "--detail-text-zoom": detailTextZoom,
+              "--detail-modal-size": detailModalSize,
+              "--detail-modal-x": `${detailViewExpanded ? 0 : detailModalOffset.x}px`,
+              "--detail-modal-y": `${detailViewExpanded ? 0 : detailModalOffset.y}px`,
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header
+              className="detail-modal-header"
+              onPointerDown={handleDetailModalDragStart}
+              title={detailViewExpanded ? "Restore size before moving this report window." : "Drag this header to move the report window."}
+            >
+              <div className="detail-modal-title">
+                <h3>Detailed Analysis</h3>
+                <span>{detailViewExpanded ? "Expanded reader view" : "Drag header to move"}</span>
+              </div>
+              <div className="detail-modal-controls" aria-label="Detailed analysis controls">
+                <button
+                  type="button"
+                  onClick={handleDetailExpandedToggle}
+                >
+                  {detailViewExpanded ? "Restore Size" : "Expand Window"}
+                </button>
+                <div className="detail-window-controls" aria-label="Window size controls">
+                  <span className="detail-control-label">Window</span>
+                  <button
+                    type="button"
+                    onClick={() => adjustDetailModalSize(-DETAIL_MODAL_SIZE_STEP)}
+                    disabled={detailModalSize <= DETAIL_MODAL_SIZE_MIN}
+                    aria-label="Make detailed analysis window smaller"
+                  >
+                    Box-
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => adjustDetailModalSize(DETAIL_MODAL_SIZE_STEP)}
+                    disabled={detailModalSize >= DETAIL_MODAL_SIZE_MAX}
+                    aria-label="Make detailed analysis window larger"
+                  >
+                    Box+
+                  </button>
+                  <button type="button" onClick={resetDetailModalLayout}>
+                    Reset Box
+                  </button>
+                </div>
+                <div className="detail-zoom-controls" aria-label="Text zoom controls">
+                  <span className="detail-control-label">
+                    Text size {Math.round(detailTextZoom * 100)}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => adjustDetailTextZoom(-DETAIL_TEXT_ZOOM_STEP)}
+                    disabled={detailTextZoom <= DETAIL_TEXT_ZOOM_MIN}
+                    aria-label={`Zoom text out, minimum ${Math.round(DETAIL_TEXT_ZOOM_MIN * 100)} percent`}
+                    title={`Minimum ${Math.round(DETAIL_TEXT_ZOOM_MIN * 100)}%`}
+                  >
+                    A-
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetDetailTextZoom}
+                    aria-label={`Reset text zoom. Range ${Math.round(DETAIL_TEXT_ZOOM_MIN * 100)} to ${Math.round(DETAIL_TEXT_ZOOM_MAX * 100)} percent`}
+                    title={`Text zoom range ${Math.round(DETAIL_TEXT_ZOOM_MIN * 100)}%-${Math.round(DETAIL_TEXT_ZOOM_MAX * 100)}%`}
+                  >
+                    {Math.round(detailTextZoom * 100)}%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => adjustDetailTextZoom(DETAIL_TEXT_ZOOM_STEP)}
+                    disabled={detailTextZoom >= DETAIL_TEXT_ZOOM_MAX}
+                    aria-label={`Zoom text in, maximum ${Math.round(DETAIL_TEXT_ZOOM_MAX * 100)} percent`}
+                    title={`Maximum ${Math.round(DETAIL_TEXT_ZOOM_MAX * 100)}%`}
+                  >
+                    A+
+                  </button>
+                  <span className="detail-control-range">
+                    {Math.round(DETAIL_TEXT_ZOOM_MIN * 100)}%-{Math.round(DETAIL_TEXT_ZOOM_MAX * 100)}%
+                  </span>
+                </div>
+                <button type="button" onClick={closeDetailView}>Close</button>
+              </div>
             </header>
             <div className="detail-modal-body">
               {!reportPayload && <p className="empty">No report loaded yet.</p>}
@@ -2612,8 +3361,25 @@ export default function App() {
                   )}
                   <div className="subsection">
                     <h3>Executive Summary</h3>
-                    {executiveParagraphs.length === 0 && <p className="empty">No executive summary available.</p>}
-                    {executiveParagraphs.map((paragraph, idx) => (
+                    {displayExecutiveSectionCards.length === 0 && executiveParagraphs.length === 0 && <p className="empty">No executive summary available.</p>}
+                    {displayExecutiveSectionCards.length > 0 && (
+                      <div className="executive-section-grid detailed">
+                        {displayExecutiveSectionCards.map((card) => (
+                          <ExecutiveSectionSummary key={`detail-exec-${card.section}`} card={card} />
+                        ))}
+                      </div>
+                    )}
+                    {displayExecutiveSectionCards.length === 0 && executiveBriefRows.length > 0 && (
+                      <div className="executive-brief">
+                        {executiveBriefRows.map((row) => (
+                          <article key={`detail-${row.label}`} className={row.muted ? "muted" : ""}>
+                            <h4>{row.label}</h4>
+                            <p>{row.text}</p>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                    {displayExecutiveSectionCards.length === 0 && executiveParagraphs.map((paragraph, idx) => (
                       <p key={`exec-${idx}`}>{paragraph}</p>
                     ))}
                   </div>
@@ -2657,17 +3423,12 @@ export default function App() {
                     {introductionDisplayLines.length === 0 && <p className="empty">{introductionDisplayEmptyMessage}</p>}
                     {introductionDisplayLines.length > 0 && (
                       <ol className="detail-list detail-list-ordered">
-                        {introductionDisplayLines.map((line, idx) => {
-                          const sourceSummary = lineSourceSummary(line);
-                          return (
-                            <li key={`intro-${idx}`}>
-                              {cleanSectionLine(line)}
-                              {sourceSummary ? <span className="detail-inline-source"> (source: {sourceSummary})</span> : null}
-                            </li>
-                          );
-                        })}
+                        {introductionDisplayLines.map((line, idx) => (
+                          <li key={`intro-${idx}`}>{cleanSectionLine(line)}</li>
+                        ))}
                       </ol>
                     )}
+                    <SectionEvidenceNotes lines={introductionDisplayLines} />
                     {introductionDisplayEvidenceLabels.length > 0 && (
                       <details className="detail-evidence-footnote">
                         <summary>Evidence refs ({introductionDisplayEvidenceLabels.length})</summary>
@@ -2703,17 +3464,12 @@ export default function App() {
                     {methodsDisplayLines.length === 0 && <p className="empty">{methodsFallbackReason || "No methods evidence extracted."}</p>}
                     {methodsDisplayLines.length > 0 && (
                       <ol className="detail-list detail-list-ordered">
-                        {methodsDisplayLines.map((line, idx) => {
-                          const sourceSummary = lineSourceSummary(line);
-                          return (
-                            <li key={`methods-${idx}`}>
-                              {cleanSectionLine(line)}
-                              {sourceSummary ? <span className="detail-inline-source"> (source: {sourceSummary})</span> : null}
-                            </li>
-                          );
-                        })}
+                        {methodsDisplayLines.map((line, idx) => (
+                          <li key={`methods-${idx}`}>{cleanSectionLine(line)}</li>
+                        ))}
                       </ol>
                     )}
+                    <SectionEvidenceNotes lines={methodsDisplayLines} />
                     {methodsDisplayEvidenceLabels.length > 0 && (
                       <details className="detail-evidence-footnote">
                         <summary>Evidence refs ({methodsDisplayEvidenceLabels.length})</summary>
@@ -2733,17 +3489,12 @@ export default function App() {
                     {resultsDisplayLines.length === 0 && totalMediaAssets === 0 && <p className="empty">{resultsFallbackReason || "No results evidence extracted."}</p>}
                     {resultsDisplayLines.length > 0 && (
                       <ol className="detail-list detail-list-ordered">
-                        {resultsDisplayLines.map((line, idx) => {
-                          const sourceSummary = lineSourceSummary(line);
-                          return (
-                            <li key={`results-${idx}`}>
-                              {cleanSectionLine(line)}
-                              {sourceSummary ? <span className="detail-inline-source"> (source: {sourceSummary})</span> : null}
-                            </li>
-                          );
-                        })}
+                        {resultsDisplayLines.map((line, idx) => (
+                          <li key={`results-${idx}`}>{cleanSectionLine(line)}</li>
+                        ))}
                       </ol>
                     )}
+                    <SectionEvidenceNotes lines={resultsDisplayLines} />
                     {resultsDisplayEvidenceLabels.length > 0 && (
                       <details className="detail-evidence-footnote">
                         <summary>Evidence refs ({resultsDisplayEvidenceLabels.length})</summary>
@@ -2782,6 +3533,7 @@ export default function App() {
                                       const compactPreview = compactTablePreview(item.table_preview, 8, 8);
                                       const label = assetLabel(item, `asset ${idx + 1}`);
                                       const legend = assetLegend(item);
+                                      const displayLegend = displayAssetLegend(item);
                                       const viewerTitle = legend || item.caption || item.anchor || title;
                                       return (
                                         <li key={`${title}-${item.chunk_id || idx}`} className="detail-asset-card">
@@ -2789,11 +3541,17 @@ export default function App() {
                                             {label}
                                           </div>
                                           <div
-                                            className={`detail-asset-legend ${legend ? "" : "missing"}`.trim()}
+                                            className={`detail-asset-legend ${displayLegend ? "" : "missing"}`.trim()}
                                             title={legend || "Legend unavailable from source extraction."}
                                           >
-                                            {legend || "Legend unavailable from source extraction."}
+                                            {displayLegend || "Legend unavailable from source extraction."}
                                           </div>
+                                          {legend && legend !== displayLegend ? (
+                                            <details className="detail-full-legend">
+                                              <summary>Full extracted legend</summary>
+                                              <p>{legend}</p>
+                                            </details>
+                                          ) : null}
                                           <div className="detail-asset-meta">
                                             <span>{item.anchor || "anchor:n/a"}</span>
                                             {item.page ? <span>Page {item.page}</span> : null}
@@ -2918,17 +3676,12 @@ export default function App() {
                     {conclusionDisplayLines.length === 0 && <p className="empty">{conclusionDisplayEmptyMessage}</p>}
                     {conclusionDisplayLines.length > 0 && (
                       <ol className="detail-list detail-list-ordered">
-                        {conclusionDisplayLines.map((line, idx) => {
-                          const sourceSummary = lineSourceSummary(line);
-                          return (
-                            <li key={`conclusion-${idx}`}>
-                              {cleanSectionLine(line)}
-                              {sourceSummary ? <span className="detail-inline-source"> (source: {sourceSummary})</span> : null}
-                            </li>
-                          );
-                        })}
+                        {conclusionDisplayLines.map((line, idx) => (
+                          <li key={`conclusion-${idx}`}>{cleanSectionLine(line)}</li>
+                        ))}
                       </ol>
                     )}
+                    <SectionEvidenceNotes lines={conclusionDisplayLines} />
                     {conclusionDisplayEvidenceLabels.length > 0 && (
                       <details className="detail-evidence-footnote">
                         <summary>Evidence refs ({conclusionDisplayEvidenceLabels.length})</summary>
@@ -2948,17 +3701,12 @@ export default function App() {
                     {discussionDisplayLines.length === 0 && <p className="empty">{discussionFallbackReason || "No discussion evidence extracted."}</p>}
                     {discussionDisplayLines.length > 0 && (
                       <ol className="detail-list detail-list-ordered">
-                        {discussionDisplayLines.map((line, idx) => {
-                          const sourceSummary = lineSourceSummary(line);
-                          return (
-                            <li key={`discussion-${idx}`}>
-                              {cleanSectionLine(line)}
-                              {sourceSummary ? <span className="detail-inline-source"> (source: {sourceSummary})</span> : null}
-                            </li>
-                          );
-                        })}
+                        {discussionDisplayLines.map((line, idx) => (
+                          <li key={`discussion-${idx}`}>{cleanSectionLine(line)}</li>
+                        ))}
                       </ol>
                     )}
+                    <SectionEvidenceNotes lines={discussionDisplayLines} />
                     {discussionDisplayEvidenceLabels.length > 0 && (
                       <details className="detail-evidence-footnote">
                         <summary>Evidence refs ({discussionDisplayEvidenceLabels.length})</summary>
@@ -3003,6 +3751,11 @@ export default function App() {
                 </>
               )}
             </div>
+            <footer className="detail-modal-footer">
+              Drag the title bar to move. Use Box+ / Box- or the lower-right corner to resize. Text zoom range:{" "}
+              {Math.round(DETAIL_TEXT_ZOOM_MIN * 100)}%-{Math.round(DETAIL_TEXT_ZOOM_MAX * 100)}%.
+            </footer>
+            <span className="detail-resize-cue" aria-hidden="true" />
           </section>
         </div>
       )}

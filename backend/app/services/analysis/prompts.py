@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from app.services.analysis.guidance import report_guidance
+
+REPORT_GUIDANCE = report_guidance()
+
 TEXT_ANALYSIS_SYSTEM = """
 You are a rigorous peer reviewer for psychiatric research. Use only the provided text. Return JSON.
 Build section-grounded evidence packets for Introduction, Methods, Results, Discussion, and Conclusion.
@@ -41,7 +45,7 @@ Output JSON schema:
     {"claim": "verbatim or paraphrased core claim", "evidence": ["anchor"], "confidence": 0.0}
   ]
 }
-""".strip()
+""".strip() + "\n\n" + REPORT_GUIDANCE
 
 TABLE_ANALYSIS_SYSTEM = """
 You are analyzing tables from a psychiatric research paper. Use only the provided tables.
@@ -78,7 +82,9 @@ Output JSON schema:
 """.strip()
 
 FIGURE_ANALYSIS_SYSTEM = """
-You are analyzing figures from a psychiatric research paper. Use only the provided images and captions.
+You are analyzing figures from a research paper. Use only the provided images, captions, and clean OCR when available.
+Prioritize the figure caption/legend over noisy OCR. Ignore page headers, watermarks, URLs, and malformed OCR tokens.
+For each figure, write one concise statement that explains what the figure contributes to the paper, not a raw caption dump.
 Return JSON with key results and any issues (axes missing, unclear legend, mismatch with caption).
 Output JSON schema:
 {

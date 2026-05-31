@@ -671,6 +671,87 @@ def test_text_section_annotation_meta_results_override_late_conclusion_lock() ->
     assert labels["r1"] == "results"
 
 
+def test_unlabeled_methods_position_chunk_with_observed_outcome_partitions_as_results() -> None:
+    chunks = [
+        {
+            "anchor": "section:Body:7",
+            "meta": json.dumps(
+                {
+                    "source": "docling",
+                    "section_source": "position",
+                    "section_norm": "methods",
+                    "section_confidence": 0.24,
+                    "paragraph_index": 7,
+                }
+            ),
+        }
+    ]
+    packets = text_analysis._hydrate_anchor_metadata(
+        [
+            {
+                "finding_id": "r1",
+                "anchor": "section:Body:7",
+                "statement": (
+                    "The MDMR analysis identified two significant connectivity clusters associated "
+                    "with lower reward responsiveness (p<0.01)."
+                ),
+                "evidence_refs": ["section:Body:7"],
+                "confidence": 0.82,
+                "category": "other",
+            }
+        ],
+        chunks,
+    )
+    annotated = text_analysis._annotate_text_packet_sections(packets)
+    assert annotated[0]["section_label"] == "results"
+    assert annotated[0]["section_source"] in {"semantic", "lexical"}
+
+
+def test_unlabeled_result_media_context_partitions_as_results() -> None:
+    chunks = [
+        {
+            "anchor": "section:Body:22",
+            "meta": json.dumps(
+                {
+                    "source": "docling",
+                    "section_source": "position",
+                    "section_norm": "discussion",
+                    "section_confidence": 0.24,
+                    "paragraph_index": 22,
+                }
+            ),
+        }
+    ]
+    packets = text_analysis._hydrate_anchor_metadata(
+        [
+            {
+                "finding_id": "r1",
+                "anchor": "section:Body:22",
+                "statement": "Table 2 showed higher symptom severity in the low-reward group than controls.",
+                "evidence_refs": ["section:Body:22"],
+                "confidence": 0.8,
+                "category": "other",
+            }
+        ],
+        chunks,
+    )
+    annotated = text_analysis._annotate_text_packet_sections(packets)
+    assert annotated[0]["section_label"] == "results"
+
+
+def test_unlabeled_procedural_analysis_sentence_stays_methods() -> None:
+    section = text_analysis._infer_chunk_section(
+        {
+            "anchor": "section:Body:4",
+            "content": "We used MDMR analysis to identify clusters while adjusting for age, sex, and scanner site.",
+            "meta": json.dumps({"section_source": "position", "section_norm": "unknown"}),
+        },
+        idx=4,
+        total_chunks=20,
+    )
+    assert section == "methods"
+
+
 def test_results_fidelity_gate_rejects_generic_visual_and_method_lines() -> None:
     packets = [
         {
@@ -982,6 +1063,78 @@ def test_section_dedupe_strips_citation_prefixes_and_drops_fragments() -> None:
     assert all("mean [SD], 0." not in statement for statement in statements)
 
 
+def test_section_cleaner_drops_truncated_visual_and_generic_fragments() -> None:
+    truncated = (
+        "Connectome-wide analysis relating a dimensional reward responsivity measure to resting-state "
+        "functional connectivity was conducted in 225 adults across five diagnostic groups "
+        "(major depressive disorder, N=32"
+    )
+    assert synthesis._clean_section_statement(truncated) == ""
+    assert synthesis._summary_fragment(truncated, max_chars=180) == ""
+
+    visual_axis_soup = (
+        "A B C r Mean connectivity BAS reward sensitivity subscale Nucleus accumbens Right inferior "
+        "temporal cortex Right temporoparietal junction Left temporoparietal junction Left orbitofrontal "
+        "cortex Right insula Dorsomedial frontal cortex -0.1 0.1 -0.4 0.4 z -1.64 1.64 -4.0 4.0 "
+        "Left superior temporal cortex a The multivariate results of the connectome-wide association "
+        "study identified the nucleus accumbens, default mode network regions, and cingulo-opercular "
+        "network regions where connectivity was related to reward responsivity."
+    )
+    cleaned = synthesis._clean_section_statement(visual_axis_soup)
+    assert cleaned.startswith("The multivariate results")
+    assert "Mean connectivity BAS" not in cleaned
+
+    assert synthesis._is_noise_statement("However, certain limitations of our approach should be noted.")
+
+
+def test_detailed_sections_are_enriched_with_executive_narrative() -> None:
+    sections = {
+        "methods": {
+            "items": [
+                {
+                    "statement": "Cells were cultured at 37 °C in a humidified atmosphere.",
+                    "anchor": "section:Methods:4",
+                    "evidence_refs": ["section:Methods:4"],
+                    "confidence": 0.7,
+                    "section_confidence": 0.7,
+                }
+            ],
+            "evidence_refs": ["section:Methods:4"],
+        }
+    }
+    executive_report = {
+        "sections": [
+            {
+                "section": "methods",
+                "summary": (
+                    "The method uses a two-vector Double-Flp-In strategy in which complementary frameshift "
+                    "edits restore antibiotic resistance only after correct sequential integration."
+                ),
+                "bullets": [{"anchors": ["section:Methods:1"]}],
+            }
+        ]
+    }
+    enriched = synthesis._enrich_detailed_sections_with_executive_report(
+        sections,
+        executive_report,
+        fallback_summary=(
+            "Introduction: The paper introduces the Double-Flp-In system as a way to co-express two genes from "
+            "a defined genomic locus. Methods: The authors engineered two complementary vectors that restore "
+            "antibiotic resistance only after correct sequential integration. Results: The method enabled "
+            "selection and validation of double-integrated cells. Discussion: The authors frame the system as "
+            "adaptable while noting selection pressure as a limitation. Conclusion: The method may help study "
+            "gene-gene interactions."
+        ),
+    )
+    narrative = enriched["methods"]["narrative_items"]
+    assert narrative[0]["statement"].startswith("The authors engineered two complementary vectors")
+    assert narrative[0]["evidence_refs"] == ["section:Methods:1"]
+    assert synthesis._section_item_passes_fidelity(
+        "results",
+        {"statement": "Cells were cultured at 37 °C in a humidified atmosphere.", "anchor": "section:Results:9"},
+    ) is False
+
+
 def test_filter_result_text_packets_keeps_high_signal_non_numeric_findings() -> None:
     packets = [
         {
@@ -1166,6 +1319,37 @@ def test_structured_abstract_split_emits_section_norms() -> None:
         meta = json.loads(chunk["meta"])
         norms.append(meta.get("section_norm"))
     assert norms[:4] == ["introduction", "methods", "results", "conclusion"]
+
+
+def test_tei_figure_legend_extracts_caption_only_figures() -> None:
+    tei = """
+    <TEI xmlns="http://www.tei-c.org/ns/1.0">
+      <text>
+        <body>
+          <figure type="figure" coords="5,100,100,300,200">
+            <head>Figure 4.</head>
+            <figDesc>Multiplex and single PCR confirmed vector integration in the intended order.</figDesc>
+          </figure>
+        </body>
+      </text>
+    </TEI>
+    """
+    figures = validated_pipeline._tei_figure_legend_extract(tei)
+
+    assert len(figures) == 1
+    assert figures[0].path is None
+    assert figures[0].page == 5
+    assert figures[0].meta["source"] == "grobid_tei_figure"
+    assert "Multiplex and single PCR" in str(figures[0].caption)
+
+
+def test_wet_lab_method_heading_is_classified_as_methods() -> None:
+    text = (
+        "The second vector was built to include the same promoter and FRT site. "
+        "Fragments were generated by PCR using hybrid primers and recombined into plasmids."
+    )
+
+    assert validated_pipeline._infer_section_from_text(text, idx=20, total_chunks=32) == "methods"
 
 
 def test_text_section_conflict_override_prefers_statement_prefix() -> None:
@@ -1466,6 +1650,85 @@ def test_cross_section_dedupe_preserves_conclusion_min_keep_when_dense() -> None
     deduped, diagnostics = synthesis._dedupe_items_across_sections(sections)
     assert diagnostics["removed_count"] >= 1
     assert len(deduped["conclusion"]["items"]) >= 3
+
+
+def test_section_verifier_rejects_destructive_empty_output(monkeypatch) -> None:
+    def _item(section: str, idx: int, statement: str) -> dict:
+        anchor_section = section.title()
+        return {
+            "statement": statement,
+            "anchor": f"section:{anchor_section}:{idx}",
+            "evidence_refs": [f"section:{anchor_section}:{idx}"],
+            "confidence": 0.82,
+            "section_confidence": 0.86,
+            "section_source": "anchor",
+            "flags": [],
+        }
+
+    sections = {
+        "introduction": {"items": [], "evidence_refs": [], "fallback_used": False, "fallback_reason": None},
+        "methods": {
+            "items": [
+                _item("methods", 1, "Cells were transfected with expression vectors using a Flp-In protocol."),
+                _item("methods", 2, "Stable clones were selected with hygromycin and puromycin before validation."),
+                _item("methods", 3, "Expression was quantified by quantitative PCR after vector integration."),
+                _item("methods", 4, "Transport experiments were performed in engineered cell lines."),
+            ],
+            "evidence_refs": [],
+            "fallback_used": False,
+            "fallback_reason": None,
+        },
+        "results": {
+            "items": [
+                _item("results", 1, "Transport activity increased by 40% in the double-transfected cells."),
+                _item("results", 2, "Vector-order validation found the expected integration pattern in selected clones."),
+                _item("results", 3, "Gene expression was higher and remained stable over repeated culture passages."),
+                _item("results", 4, "Drug conversion was significantly higher between engineered cell lines."),
+                _item("results", 5, "Figure assays showed higher metabolite formation in CYP2C19-expressing cells."),
+            ],
+            "evidence_refs": [],
+            "fallback_used": False,
+            "fallback_reason": None,
+        },
+        "discussion": {
+            "items": [
+                _item("discussion", 1, "These findings suggest the double-Flp-In strategy can support paired gene studies."),
+                _item("discussion", 2, "The authors note important limitations for multiplex PCR screening."),
+                _item("discussion", 3, "The work may help interpret transporter and enzyme interactions."),
+                _item("discussion", 4, "Further validation is needed before broader pharmacogenomic use."),
+            ],
+            "evidence_refs": [],
+            "fallback_used": False,
+            "fallback_reason": None,
+        },
+        "conclusion": {
+            "items": [
+                _item("conclusion", 1, "Overall, the findings support a durable platform for studying dual gene effects."),
+                _item("conclusion", 2, "Taken together, these findings indicate the approach can clarify gene interactions."),
+                _item("conclusion", 3, "In conclusion, the platform provides a basis for future transport studies."),
+            ],
+            "evidence_refs": [],
+            "fallback_used": False,
+            "fallback_reason": None,
+        },
+    }
+
+    monkeypatch.setattr(synthesis.settings, "analysis_section_verifier_enabled", True)
+    monkeypatch.setattr(
+        synthesis,
+        "_run_deep_json_prompt",
+        lambda **_kwargs: {"sections": {section: [] for section in synthesis.EXEC_REPORT_SECTION_ORDER}},
+    )
+
+    verified, diagnostics = synthesis._verify_section_fidelity_with_llm(sections, payload={})
+
+    assert diagnostics["applied"] is False
+    assert diagnostics["rejected"] is True
+    assert diagnostics["emptied_sections"] == ["methods", "results", "discussion"]
+    assert len(verified["methods"]["items"]) == 4
+    assert len(verified["results"]["items"]) == 5
+    assert len(verified["discussion"]["items"]) == 4
+    assert len(verified["conclusion"]["items"]) == 3
 
 
 def test_llm_section_extraction_falls_back_to_rows_when_llm_errors(monkeypatch) -> None:
@@ -1931,6 +2194,296 @@ def test_section_extraction_drives_executive_summary_when_enabled(monkeypatch) -
     assert summary["sections_extracted_version"] == 1
     assert "Background framing emphasized transdiagnostic reward impairment" in summary["executive_summary"]
     assert "Methods used a covariate-adjusted randomized cohort design" in summary["executive_summary"]
+
+
+def test_executive_report_synthesis_keeps_focus_fields_inside_sections(monkeypatch) -> None:
+    def _fake_chat(prompt: str, system: str | None = None, temperature: float = 0.2) -> str:
+        if system == synthesis.EXECUTIVE_REPORT_SYNTHESIS_SYSTEM:
+            assert "section:Introduction:1" in prompt
+            return json.dumps(
+                {
+                    "sections": [
+                        {
+                            "section": "introduction",
+                            "summary": "This data brief presents findings from the 2024 NSDUH on GAD symptoms among adults.",
+                            "study_purpose": "This data brief presents findings from the 2024 NSDUH on GAD symptoms among adults.",
+                            "study_hypothesis": "",
+                            "central_finding": "",
+                        },
+                        {
+                            "section": "methods",
+                            "summary": "Responses to the GAD-7 questions were compiled into a score ranging from 0 to 21.",
+                            "study_purpose": "",
+                            "study_hypothesis": "",
+                            "central_finding": "",
+                        },
+                        {
+                            "section": "results",
+                            "summary": "In 2024, 7.4% of adults had moderate or severe symptoms of GAD in the past 2 weeks.",
+                            "study_purpose": "",
+                            "study_hypothesis": "",
+                            "central_finding": "In 2024, 7.4% of adults had moderate or severe symptoms of GAD in the past 2 weeks.",
+                        },
+                        {
+                            "section": "discussion",
+                            "summary": "The brief advises caution in interpreting the high percentage.",
+                            "study_purpose": "",
+                            "study_hypothesis": "",
+                            "central_finding": "",
+                        },
+                        {
+                            "section": "conclusion",
+                            "summary": "The brief noted sociodemographic and geographic differences in moderate or severe GAD symptoms.",
+                            "study_purpose": "",
+                            "study_hypothesis": "",
+                            "central_finding": "",
+                        },
+                    ]
+                }
+            )
+        return "{}"
+
+    monkeypatch.setattr(synthesis, "chat_text_deep", _fake_chat)
+    monkeypatch.setattr(synthesis.settings, "analysis_narrative_overrides_enabled", True)
+    monkeypatch.setattr(synthesis.settings, "analysis_narrative_overrides_subprocess_guard_enabled", False)
+    monkeypatch.setattr(synthesis.settings, "analysis_section_extraction_enabled", False)
+    monkeypatch.setattr(synthesis.settings, "analysis_verifier_enabled", False)
+
+    summary = synthesize_report(
+        {
+            "evidence_packets": [
+                {
+                    "finding_id": "i1",
+                    "modality": "text",
+                    "anchor": "section:Introduction:1",
+                    "statement": "This data brief presents findings from the 2024 NSDUH on GAD symptoms among adults.",
+                    "evidence_refs": ["section:Introduction:1"],
+                    "confidence": 0.9,
+                    "quality_flags": [],
+                    "category": "introduction",
+                    "section_label": "introduction",
+                    "section_confidence": 0.95,
+                    "section_source": "anchor",
+                },
+                {
+                    "finding_id": "m1",
+                    "modality": "text",
+                    "anchor": "section:Methods:1",
+                    "statement": "Responses to the GAD-7 questions were compiled into a score ranging from 0 to 21.",
+                    "evidence_refs": ["section:Methods:1"],
+                    "confidence": 0.9,
+                    "quality_flags": [],
+                    "category": "methods",
+                    "section_label": "methods",
+                    "section_confidence": 0.95,
+                    "section_source": "anchor",
+                },
+                {
+                    "finding_id": "r1",
+                    "modality": "text",
+                    "anchor": "section:Results:1",
+                    "statement": "In 2024, 7.4% of adults had moderate or severe symptoms of GAD in the past 2 weeks.",
+                    "evidence_refs": ["section:Results:1"],
+                    "confidence": 0.9,
+                    "quality_flags": [],
+                    "category": "results",
+                    "section_label": "results",
+                    "section_confidence": 0.95,
+                    "section_source": "anchor",
+                },
+                {
+                    "finding_id": "d1",
+                    "modality": "text",
+                    "anchor": "section:Discussion:1",
+                    "statement": "The brief advises caution in interpreting the high percentage.",
+                    "evidence_refs": ["section:Discussion:1"],
+                    "confidence": 0.9,
+                    "quality_flags": [],
+                    "category": "discussion",
+                    "section_label": "discussion",
+                    "section_confidence": 0.95,
+                    "section_source": "anchor",
+                },
+                {
+                    "finding_id": "c1",
+                    "modality": "text",
+                    "anchor": "section:Conclusion:1",
+                    "statement": "The brief noted sociodemographic and geographic differences in moderate or severe GAD symptoms.",
+                    "evidence_refs": ["section:Conclusion:1"],
+                    "confidence": 0.9,
+                    "quality_flags": [],
+                    "category": "conclusion",
+                    "section_label": "conclusion",
+                    "section_confidence": 0.95,
+                    "section_source": "anchor",
+                },
+            ]
+        },
+        {"evidence_packets": []},
+        {"evidence_packets": []},
+        {"evidence_packets": []},
+        {"cross_modal_claims": [], "discrepancies": []},
+        paper_meta={},
+        coverage={"figures": {}, "tables": {}, "supp_figures": {}, "supp_tables": {}},
+    )
+
+    executive_report = summary["executive_report"]
+    assert executive_report["style"] == "llm_section_synthesis_v1"
+    intro = next(row for row in executive_report["sections"] if row["section"] == "introduction")
+    results = next(row for row in executive_report["sections"] if row["section"] == "results")
+    assert intro["study_purpose"].startswith("This data brief presents findings")
+    assert "study_hypothesis" not in intro
+    assert results["central_finding"].startswith("In 2024, 7.4%")
+    assert "Study Purpose:" not in summary["executive_summary"]
+
+
+def test_section_synthesis_v2_uses_extracted_sections_before_backfill() -> None:
+    summary = {
+        "section_diagnostics": {"paper_type": "laboratory/preclinical study"},
+        "sections_extracted": {
+            "methods": [
+                {
+                    "statement": "Cells were engineered with a Flp-In strategy using FRT sites.",
+                    "evidence_refs": ["section:Methods:1"],
+                },
+                {
+                    "statement": "Stable clones were selected and validated by PCR.",
+                    "evidence_refs": ["section:Methods:2"],
+                },
+                {
+                    "statement": "Gene expression was quantified before transport experiments.",
+                    "evidence_refs": ["section:Methods:3"],
+                },
+                {
+                    "statement": "Transport experiments used engineered cell lines to assess substrate handling.",
+                    "evidence_refs": ["section:Methods:4"],
+                },
+                {
+                    "statement": "Vector integration order was evaluated with genomic validation assays.",
+                    "evidence_refs": ["section:Methods:5"],
+                },
+            ]
+        },
+        "presentation_evidence": {
+            "methods": [
+                {
+                    "statement": "This fallback method row should not replace primary extracted methods evidence.",
+                    "anchor": "section:Methods:6",
+                    "evidence_refs": ["section:Methods:6"],
+                }
+            ]
+        },
+    }
+    parsed_chunks = [
+        {
+            "anchor": "section:Methods:1",
+            "content": "Cells were engineered with a Flp-In strategy using FRT sites.",
+            "modality": "text",
+        }
+    ]
+
+    report = synthesis.build_section_synthesis_v2(summary_json=summary, parsed_chunks=parsed_chunks, use_llm=False)
+    methods = next(row for row in report["sections"] if row["section"] == "methods")
+
+    assert report["style"] == "section_synthesis_v2_experimental"
+    assert methods["source_counts"]["sections_extracted"] == 5
+    assert methods["source_counts"]["heuristic_backfill"] == 0
+    assert any(term["term"] == "Flp-In" for term in methods["key_terms"])
+
+
+def test_detailed_methods_reconstructs_from_source_method_chunks() -> None:
+    early_packets = [
+        {
+            "finding_id": "m1",
+            "anchor": "section:Figure 2.:3",
+            "statement": "The illustration shows the construct and frame shift used for double transfection.",
+            "evidence_refs": ["section:Figure 2.:3"],
+            "confidence": 0.72,
+            "category": "methods",
+            "section_label": "methods",
+        }
+    ]
+    chunk_records = [
+        {
+            "anchor": "section:Transfection protocol optimization.:7",
+            "content": "Cells were transfected with two expression plasmids and selected with hygromycin and puromycin.",
+            "modality": "text",
+            "meta": json.dumps({"section_raw_title": "Transfection protocol optimization.", "section_norm": "methods"}),
+        },
+        {
+            "anchor": "section:Generation of second vector:32",
+            "content": "The stable genomic integration of both plasmids was validated by PCR using genomic DNA isolated from cells.",
+            "modality": "text",
+            "meta": json.dumps({"section_raw_title": "Generation of second vector", "section_norm": "methods"}),
+        },
+        {
+            "anchor": "section:Generation of second vector:36",
+            "content": "Expression analyses used RNA isolation, cDNA synthesis, and real-time qPCR to quantify gene expression.",
+            "modality": "text",
+            "meta": json.dumps({"section_raw_title": "Generation of second vector", "section_norm": "methods"}),
+        },
+        {
+            "anchor": "section:Generation of second vector:39",
+            "content": "Functional validation was performed with transport experiments measuring proguanil transport and metabolism.",
+            "modality": "text",
+            "meta": json.dumps({"section_raw_title": "Generation of second vector", "section_norm": "methods"}),
+        },
+    ]
+
+    sections, diagnostics, _notes = synthesis._build_detailed_sections(
+        text_packets=early_packets,
+        table_packets=[],
+        figure_packets=[],
+        supp_packets=[],
+        methods_compact=[],
+        analysis_notes=[],
+        text_chunk_records=chunk_records,
+        sections_extracted={"methods": []},
+    )
+
+    methods_text = " ".join(item["statement"] for item in sections["methods"]["items"])
+    assert "selected with hygromycin and puromycin" in methods_text
+    assert "validated by PCR" in methods_text
+    assert "real-time qPCR" in methods_text
+    assert diagnostics["methods"]["final_item_count"] >= 4
+
+
+def test_section_synthesis_v2_backfills_sparse_extracted_sections() -> None:
+    summary = {
+        "sections_extracted": {
+            "discussion": [
+                {
+                    "statement": "The findings suggest the approach can clarify gene interactions.",
+                    "evidence_refs": ["section:Discussion:1"],
+                }
+            ]
+        },
+        "presentation_evidence": {
+            "discussion": [
+                {
+                    "statement": "The authors note important limitations for multiplex PCR screening.",
+                    "anchor": "section:Discussion:2",
+                    "evidence_refs": ["section:Discussion:2"],
+                },
+                {
+                    "statement": "Further validation is needed before broader pharmacogenomic use.",
+                    "anchor": "section:Discussion:3",
+                    "evidence_refs": ["section:Discussion:3"],
+                },
+                {
+                    "statement": "These findings may help interpret transporter and enzyme interactions.",
+                    "anchor": "section:Discussion:4",
+                    "evidence_refs": ["section:Discussion:4"],
+                },
+            ]
+        },
+    }
+
+    report = synthesis.build_section_synthesis_v2(summary_json=summary, parsed_chunks=[], use_llm=False)
+    discussion = next(row for row in report["sections"] if row["section"] == "discussion")
+
+    assert discussion["source_counts"]["sections_extracted"] == 1
+    assert discussion["source_counts"]["heuristic_backfill"] >= 1
 
 
 def test_section_extraction_rejects_invalid_or_cross_section_refs(monkeypatch) -> None:

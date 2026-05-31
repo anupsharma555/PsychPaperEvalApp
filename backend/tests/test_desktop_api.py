@@ -342,6 +342,8 @@ def test_desktop_bootstrap_contract(client: TestClient) -> None:
     assert "deep_model_path" in payload["models"]
     assert "vision_model_path" in payload["models"]
     assert "vision_mmproj_path" in payload["models"]
+    assert "provider" in payload["models"]
+    assert "provider_ready" in payload["models"]
     assert isinstance(payload.get("runtime_build"), dict)
     assert "git_commit" in payload["runtime_build"]
     assert "build_marker" in payload["runtime_build"]
@@ -361,6 +363,9 @@ def test_status_exposes_split_model_fields(client: TestClient) -> None:
     assert "vision_model_exists" in payload
     assert "vision_mmproj_path" in payload
     assert "vision_mmproj_exists" in payload
+    assert "provider" in payload
+    assert "provider_ready" in payload
+    assert "grobid" in payload
     assert isinstance(payload.get("runtime_build"), dict)
     assert "git_commit" in payload["runtime_build"]
     assert "build_marker" in payload["runtime_build"]
@@ -509,10 +514,14 @@ def test_media_endpoint_sorts_assets_by_ordinal_number(client: TestClient) -> No
     figures = payload.get("figures", [])
     figure_anchors = [str(item.get("anchor", "")) for item in payload.get("figures", [])]
     table_anchors = [str(item.get("anchor", "")) for item in payload.get("tables", [])]
+    tables = payload.get("tables", [])
     assert "figure:2" in figure_anchors
     assert "figure:10" in figure_anchors
     assert figure_anchors.index("figure:2") < figure_anchors.index("figure:10")
     assert table_anchors[:2] == ["table:1", "table:9"]
+    assert all(not str(item.get("legend", "")).lstrip().startswith('{"columns"') for item in tables)
+    assert tables[0]["legend_source"] == "missing"
+    assert tables[0]["table_preview"]["columns"] == ["c1"]
     assert figures[0]["legend_source"] == "linked_text"
     assert "ventral striatal coupling" in str(figures[0]["legend"]).lower()
     assert str(figures[0]["legend"]).strip().lower() != str(figures[0]["caption"]).strip().lower()
@@ -576,3 +585,32 @@ def test_load_source_figure_legend_maps_normalizes_tokens(tmp_path, monkeypatch)
     caption_map, legend_map = api_routes._load_source_figure_legend_maps(99)
     assert caption_map.get("2") == "Figure 2. Nodal map"
     assert "frontostriatal dysconnectivity" in legend_map.get("2A", "").lower()
+
+
+def test_openai_report_invalid_reason_detects_model_errors(monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "openai")
+    summary = {
+        "analysis_diagnostics": {
+            "diagnostics": {
+                "model_usage": {"text_calls": 1, "text_errors": 1, "vision_calls": 0, "vision_errors": 0}
+            }
+        }
+    }
+
+    reason = api_routes._openai_report_invalid_reason(summary)
+
+    assert "OpenAI model calls failed" in reason
+
+
+def test_openai_report_invalid_reason_detects_invalid_key_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "openai")
+    summary = {
+        "uncertainty_gaps": [
+            "Text LLM stage failed in isolated subprocess; used deterministic section extraction fallback "
+            "(OpenAI request failed with HTTP 401: Incorrect API key provided)."
+        ]
+    }
+
+    reason = api_routes._openai_report_invalid_reason(summary)
+
+    assert "deterministic fallback" in reason

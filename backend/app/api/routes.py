@@ -232,6 +232,113 @@ def _load_runtime_events(*, limit: int, since: str | None = None) -> list[Deskto
     return desktop_events
 
 
+def _grobid_health() -> dict[str, Any]:
+    url = settings.grobid_url.rstrip("/") + "/api/isalive"
+    try:
+        response = httpx.get(url, timeout=2)
+    except Exception as exc:
+        return {
+            "url": settings.grobid_url,
+            "ready": False,
+            "status_code": None,
+            "error": exc.__class__.__name__,
+        }
+    return {
+        "url": settings.grobid_url,
+        "ready": response.status_code == 200,
+        "status_code": response.status_code,
+        "error": "",
+    }
+
+
+def _openai_report_invalid_reason(summary_json: dict[str, Any]) -> str:
+    if settings.llm_provider_normalized != "openai" or not isinstance(summary_json, dict):
+        return ""
+
+    def _numeric(value: Any) -> float:
+        try:
+            return float(value or 0)
+        except Exception:
+            return 0.0
+
+    model_usage = summary_json.get("analysis_diagnostics", {})
+    if isinstance(model_usage, dict):
+        model_usage = model_usage.get("diagnostics", {}).get("model_usage", {})
+    if not isinstance(model_usage, dict):
+        model_usage = summary_json.get("model_usage", {})
+    if isinstance(model_usage, dict):
+        error_total = sum(_numeric(model_usage.get(key)) for key in ("text_errors", "deep_errors", "vision_errors"))
+        if error_total > 0:
+            return "OpenAI model calls failed during analysis."
+
+    diagnostics = summary_json.get("analysis_diagnostics", {})
+    if isinstance(diagnostics, dict):
+        diagnostics = diagnostics.get("diagnostics", {})
+    if isinstance(diagnostics, dict):
+        fallback_counts = diagnostics.get("fallback_counts_by_reason", {})
+        if isinstance(fallback_counts, dict):
+            for key in fallback_counts:
+                normalized = str(key).lower()
+                if "openai_request_failed" in normalized or "text_subprocess_fallback" in normalized:
+                    return "OpenAI analysis failed and a deterministic fallback was used."
+        stage_usage = diagnostics.get("stage_model_usage", {})
+        if isinstance(stage_usage, dict):
+            for usage in stage_usage.values():
+                if not isinstance(usage, dict):
+                    continue
+                error_total = sum(_numeric(usage.get(key)) for key in ("text_errors", "deep_errors", "vision_errors"))
+                if error_total > 0:
+                    return "OpenAI model calls failed during analysis."
+
+    uncertainty_gaps = summary_json.get("uncertainty_gaps", [])
+    if isinstance(uncertainty_gaps, list):
+        for item in uncertainty_gaps:
+            normalized = str(item).lower()
+            if "openai request failed" in normalized or "incorrect api key" in normalized:
+                return "OpenAI analysis failed and a deterministic fallback was used."
+
+    return ""
+
+
+def _model_readiness_payload() -> dict[str, Any]:
+    text_model_path = settings.resolved_llm_text_model_path
+    deep_model_path = settings.resolved_llm_deep_model_path
+    vision_model_path = settings.resolved_llm_vision_model_path
+    vision_mmproj_path = settings.resolved_llm_vision_mmproj_path
+    provider = settings.llm_provider_normalized
+    provider_ready = settings.openai_configured if provider == "openai" else (
+        text_model_path.exists() and deep_model_path.exists() and vision_model_path.exists() and vision_mmproj_path.exists()
+    )
+    legacy_model_exists = bool(provider_ready) if provider == "openai" else vision_model_path.exists()
+    legacy_mmproj_exists = bool(provider_ready) if provider == "openai" else vision_mmproj_path.exists()
+    text_label = f"openai:{settings.openai_text_model}" if provider == "openai" else str(text_model_path)
+    deep_label = f"openai:{settings.openai_deep_model}" if provider == "openai" else str(deep_model_path)
+    vision_label = f"openai:{settings.openai_vision_model}" if provider == "openai" else str(vision_model_path)
+    return {
+        # Legacy fields retained for compatibility with existing frontends.
+        "model_path": vision_label,
+        "mmproj_path": "" if provider == "openai" else str(vision_mmproj_path),
+        "model_exists": legacy_model_exists,
+        "mmproj_exists": legacy_mmproj_exists,
+        "provider": provider,
+        "provider_ready": bool(provider_ready),
+        "openai_api_key_configured": settings.openai_configured,
+        "openai_text_model": settings.openai_text_model if provider == "openai" else "",
+        "openai_deep_model": settings.openai_deep_model if provider == "openai" else "",
+        "openai_vision_model": settings.openai_vision_model if provider == "openai" else "",
+        # Explicit multi-model readiness fields.
+        "text_model_path": text_label,
+        "text_model_exists": bool(provider_ready) if provider == "openai" else text_model_path.exists(),
+        "deep_model_path": deep_label,
+        "deep_model_exists": bool(provider_ready) if provider == "openai" else deep_model_path.exists(),
+        "vision_model_path": vision_label,
+        "vision_model_exists": bool(provider_ready) if provider == "openai" else vision_model_path.exists(),
+        "vision_mmproj_path": "" if provider == "openai" else str(vision_mmproj_path),
+        "vision_mmproj_exists": bool(provider_ready) if provider == "openai" else vision_mmproj_path.exists(),
+        "models_dir": str(settings.models_dir),
+    }
+
+
 def _job_sort_clause(sort: str):
     value = (sort or "updated_at:desc").strip()
     if not value:
@@ -451,9 +558,24 @@ def _normalize_media_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
+def _looks_like_structured_table_json(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text or not text.startswith("{"):
+        return False
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    return isinstance(parsed.get("columns"), list) and isinstance(parsed.get("data"), list)
+
+
 def _normalize_media_legend(value: Any, *, max_chars: int = MEDIA_LEGEND_MAX_CHARS) -> str:
     text = str(value or "").replace("\x00", " ").strip()
     if not text:
+        return ""
+    if _looks_like_structured_table_json(text):
         return ""
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(FALLBACK_ID_CONTEXT_RE, " ", text)
@@ -474,6 +596,8 @@ def _normalize_media_legend(value: Any, *, max_chars: int = MEDIA_LEGEND_MAX_CHA
 def _is_generic_legend(value: str) -> bool:
     text = _normalize_media_text(value)
     if not text:
+        return True
+    if _looks_like_structured_table_json(value):
         return True
     if GENERIC_LEGEND_RE.match(text):
         return True
@@ -544,9 +668,10 @@ def _media_legend(chunk: Chunk, meta_obj: dict[str, Any]) -> tuple[str, str]:
                 continue
         return candidate, source_name
 
-    content_candidate = _normalize_media_legend(chunk.content)
-    if content_candidate and not _is_generic_legend(content_candidate):
-        return content_candidate, "content"
+    if chunk.modality != "table":
+        content_candidate = _normalize_media_legend(chunk.content)
+        if content_candidate and not _is_generic_legend(content_candidate):
+            return content_candidate, "content"
 
     ocr_candidate = _extract_legend_from_ocr(meta_obj.get("ocr_text"))
     if ocr_candidate:
@@ -1049,29 +1174,13 @@ def _load_source_figure_legend_maps(document_id: int) -> tuple[dict[str, str], d
 def get_status():
     processing = job_runner.status()
     pids = read_pids()
-    text_model_path = settings.resolved_llm_text_model_path
-    deep_model_path = settings.resolved_llm_deep_model_path
-    vision_model_path = settings.resolved_llm_vision_model_path
-    vision_mmproj_path = settings.resolved_llm_vision_mmproj_path
+    models = _model_readiness_payload()
     return {
-        # Legacy fields retained for compatibility with existing frontends.
-        "model_path": str(vision_model_path),
-        "mmproj_path": str(vision_mmproj_path),
-        "model_exists": vision_model_path.exists(),
-        "mmproj_exists": vision_mmproj_path.exists(),
-        # Explicit multi-model readiness fields.
-        "text_model_path": str(text_model_path),
-        "text_model_exists": text_model_path.exists(),
-        "deep_model_path": str(deep_model_path),
-        "deep_model_exists": deep_model_path.exists(),
-        "vision_model_path": str(vision_model_path),
-        "vision_model_exists": vision_model_path.exists(),
-        "vision_mmproj_path": str(vision_mmproj_path),
-        "vision_mmproj_exists": vision_mmproj_path.exists(),
+        **models,
         "data_dir": str(settings.data_dir),
-        "models_dir": str(settings.models_dir),
         "processing": processing,
         "backend_ready": True,
+        "grobid": _grobid_health(),
         "frontend_target": pids.get("frontend_port"),
         "worker_inflight": processing.get("inflight", 0),
         "stale_jobs_recovered": processing.get("stale_jobs_recovered", 0),
@@ -1145,10 +1254,7 @@ def desktop_bootstrap(
     events = _load_runtime_events(limit=20)
 
     latest_event = events[-1] if events else None
-    text_model_path = settings.resolved_llm_text_model_path
-    deep_model_path = settings.resolved_llm_deep_model_path
-    vision_model_path = settings.resolved_llm_vision_model_path
-    vision_mmproj_path = settings.resolved_llm_vision_mmproj_path
+    models = _model_readiness_payload()
     return DesktopBootstrap(
         backend_ready=True,
         processing=DesktopProcessingStatus(
@@ -1161,21 +1267,7 @@ def desktop_bootstrap(
             last_recovery_at=processing_raw.get("last_recovery_at"),
             last_error=processing_raw.get("last_error"),
         ),
-        models=DesktopModelReadiness(
-            # Legacy fields retained for compatibility with existing frontends.
-            model_path=str(vision_model_path),
-            mmproj_path=str(vision_mmproj_path),
-            model_exists=vision_model_path.exists(),
-            mmproj_exists=vision_mmproj_path.exists(),
-            text_model_path=str(text_model_path),
-            text_model_exists=text_model_path.exists(),
-            deep_model_path=str(deep_model_path),
-            deep_model_exists=deep_model_path.exists(),
-            vision_model_path=str(vision_model_path),
-            vision_model_exists=vision_model_path.exists(),
-            vision_mmproj_path=str(vision_mmproj_path),
-            vision_mmproj_exists=vision_mmproj_path.exists(),
-        ),
+        models=DesktopModelReadiness(**models),
         runtime_build=_runtime_build_info(),
         lifecycle=DesktopLifecycleStatus(
             event_count=len(events),
@@ -1634,6 +1726,13 @@ def get_report(document_id: int, session: Session = Depends(get_session)):
     summary_payload = report.payload if report else None
     summary_json, summary_version, sectioned_report_version = _parse_summary_payload(summary_payload)
     analysis_diagnostics = _load_analysis_diagnostics(document_id)
+    invalid_reason = _openai_report_invalid_reason(summary_json or {})
+    if invalid_reason and isinstance(summary_json, dict):
+        summary_json = {
+            **summary_json,
+            "report_invalid": True,
+            "report_invalid_reason": invalid_reason,
+        }
 
     return {
         "document": document,
@@ -1645,6 +1744,8 @@ def get_report(document_id: int, session: Session = Depends(get_session)):
         "summary_schema_version": summary_version,
         "sectioned_report_version": sectioned_report_version,
         "analysis_diagnostics": analysis_diagnostics,
+        "report_invalid": bool(invalid_reason),
+        "report_invalid_reason": invalid_reason,
     }
 
 
@@ -1676,6 +1777,23 @@ def get_report_summary(document_id: int, session: Session = Depends(get_session)
 
     summary_json, summary_version, _sectioned_report_version = _parse_summary_payload(report.payload)
     summary_json = summary_json or {}
+    invalid_reason = _openai_report_invalid_reason(summary_json)
+    if invalid_reason:
+        return DesktopReportSummary(
+            document_id=document_id,
+            summary_version=summary_version,
+            report_status="failed",
+            executive_summary=invalid_reason,
+            modality_cards=[],
+            methods_card=[],
+            sections_card=[],
+            rerun_recommended=True,
+            report_capabilities={"openai_valid": False},
+            discrepancy_count=0,
+            overall_confidence=None,
+            export_url=f"/api/documents/{document_id}/export",
+            saved=is_document_saved(document_id),
+        )
 
     modalities = summary_json.get("modalities", {})
     cards = []

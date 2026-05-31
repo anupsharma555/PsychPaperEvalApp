@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +10,8 @@ from typing import Any
 from app.core.config import settings
 from app.services.analysis.image_source import resolve_image_path
 from app.services.analysis.llm import chat_text_fast, chat_with_images
+from app.services.analysis.media_cleaning import clean_figure_caption, figure_downstream_text
+from app.services.analysis.openai_usage import OpenAIBudgetExceeded
 from app.services.analysis.ocr import ocr_image_text
 from app.services.analysis.prompts import FIGURE_ANALYSIS_SYSTEM
 from app.services.analysis.utils import (
@@ -32,6 +35,8 @@ def analyze_figures(chunks: list[dict[str, Any]]) -> dict[str, Any]:
         "vision_failures": 0,
         "vision_input_sources": {},
         "vision_skipped": {},
+        "caption_only_calls": 0,
+        "caption_only_success": 0,
         "ocr_fallback_calls": 0,
         "ocr_fallback_success": 0,
     }
@@ -56,42 +61,73 @@ def analyze_figures(chunks: list[dict[str, Any]]) -> dict[str, Any]:
             if document_source_url:
                 meta_obj.setdefault("document_source_url", document_source_url)
 
-            caption = meta_obj.get("caption")
+            caption = clean_figure_caption(meta_obj.get("caption"))
             ocr_text = meta_obj.get("ocr_text")
+            downstream_text, downstream_source = figure_downstream_text(caption=caption, ocr_text=ocr_text)
+            diagnostics.setdefault("downstream_text_sources", {})
+            diagnostics["downstream_text_sources"][downstream_source] = (
+                int(diagnostics["downstream_text_sources"].get(downstream_source, 0) or 0) + 1
+            )
+            if _is_page_raster_fallback(meta_obj):
+                skipped["page_raster_fallback"] += 1
+                continue
             image_path, source_kind, skip_reason = resolve_image_path(meta_obj, cache_dir, remote_cache)
             if image_path and source_kind:
                 source_counts[source_kind] += 1
             if not image_path:
                 skipped[skip_reason or "missing_image_source"] += 1
-                if not ocr_text:
+                if caption and not _is_generic_caption(caption):
+                    diagnostics["caption_only_calls"] += 1
+                    caption_prompt = (
+                        "Image input is unavailable, but a figure legend/caption was extracted. "
+                        "Use only this caption to summarize what the figure contributes. "
+                        "Do not repeat OCR artifacts, page headers, URLs, or malformed tokens. "
+                        "Write a concise, figure-specific result or quality note.\n"
+                        f"Anchor: {anchor}\nCaption: {caption}"
+                    )
+                    try:
+                        response = chat_text_fast(caption_prompt, system=FIGURE_ANALYSIS_SYSTEM)
+                        diagnostics["caption_only_success"] += 1
+                    except Exception as exc:
+                        if isinstance(exc, OpenAIBudgetExceeded):
+                            raise
+                        continue
+                elif not ocr_text:
                     continue
-                ocr_text = str(ocr_text)
-                diagnostics["ocr_fallback_calls"] += 1
-                ocr_prompt = (
-                    "Image input is unavailable. Use only OCR text and caption to infer figure content. "
-                    f"Anchor: {anchor}\nCaption: {caption or 'N/A'}\nOCR Text: {ocr_text}"
-                )
-                try:
-                    response = chat_text_fast(ocr_prompt, system=FIGURE_ANALYSIS_SYSTEM)
-                    diagnostics["ocr_fallback_success"] += 1
-                except Exception:
-                    continue
+                else:
+                    diagnostics["ocr_fallback_calls"] += 1
+                    ocr_prompt = (
+                        "Image input is unavailable. Use only OCR text and caption to infer figure content. "
+                        "Ignore page headers, URLs, malformed tokens, and obvious OCR artifacts. "
+                        f"Anchor: {anchor}\nCaption/OCR Evidence: {downstream_text}"
+                    )
+                    try:
+                        response = chat_text_fast(ocr_prompt, system=FIGURE_ANALYSIS_SYSTEM)
+                        diagnostics["ocr_fallback_success"] += 1
+                    except Exception as exc:
+                        if isinstance(exc, OpenAIBudgetExceeded):
+                            raise
+                        continue
             else:
                 prompt = (
                     "Analyze this figure. Extract key quantitative or qualitative results. "
                     "Check if axes/legends are clear and if the caption matches the visual content. "
+                    "Ignore page headers, URLs, malformed tokens, and obvious OCR artifacts. "
                     f"Anchor: {anchor}\nCaption: {caption or 'N/A'}"
                 )
                 if not ocr_text and image_path:
                     ocr_text = _safe_ocr_text(image_path)
-                if ocr_text:
-                    prompt += f"\nOCR Text: {ocr_text}"
+                    downstream_text, downstream_source = figure_downstream_text(caption=caption, ocr_text=ocr_text)
+                if downstream_text and downstream_source != "caption":
+                    prompt += f"\nCaption/OCR Evidence: {downstream_text}"
 
                 diagnostics["vision_calls"] += 1
                 try:
                     response = chat_with_images(prompt, [image_path], system=FIGURE_ANALYSIS_SYSTEM)
                     diagnostics["vision_success"] += 1
-                except Exception:
+                except Exception as exc:
+                    if isinstance(exc, OpenAIBudgetExceeded):
+                        raise
                     diagnostics["vision_failures"] += 1
                     if not ocr_text and image_path:
                         ocr_text = _safe_ocr_text(image_path)
@@ -99,12 +135,14 @@ def analyze_figures(chunks: list[dict[str, Any]]) -> dict[str, Any]:
                         diagnostics["ocr_fallback_calls"] += 1
                         ocr_prompt = (
                             "Image analysis failed. Use only the OCR text and caption to infer the figure content. "
-                            f"Anchor: {anchor}\nCaption: {caption or 'N/A'}\nOCR Text: {ocr_text}"
+                            f"Anchor: {anchor}\nCaption/OCR Evidence: {downstream_text or ocr_text}"
                         )
                         try:
                             response = chat_text_fast(ocr_prompt, system=FIGURE_ANALYSIS_SYSTEM)
                             diagnostics["ocr_fallback_success"] += 1
-                        except Exception:
+                        except Exception as fallback_exc:
+                            if isinstance(fallback_exc, OpenAIBudgetExceeded):
+                                raise
                             continue
                     else:
                         continue
@@ -174,6 +212,23 @@ def _safe_ocr_text(image_path: str | Path | None) -> str:
         return ocr_image_text(image_path, max_chars=settings.figure_ocr_max_chars)
     except Exception:
         return ""
+
+
+def _is_page_raster_fallback(meta_obj: dict[str, Any]) -> bool:
+    source = str(meta_obj.get("source") or "").strip().lower()
+    fig_type = str(meta_obj.get("fig_type") or "").strip().lower()
+    extra = meta_obj.get("extra")
+    extra_source = ""
+    if isinstance(extra, dict):
+        extra_source = str(extra.get("source") or "").strip().lower()
+    return source == "page_raster_fallback" or extra_source == "page_raster_fallback" or fig_type == "page"
+
+
+def _is_generic_caption(value: Any) -> bool:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return True
+    return bool(re.fullmatch(r"(?:fig(?:ure)?\.?\s*)?[A-Za-z]?\d+[A-Za-z]?[.:]?", text, flags=re.IGNORECASE))
 
 
 def _normalize_llm_payload(raw: Any) -> dict[str, list[dict[str, Any]]]:

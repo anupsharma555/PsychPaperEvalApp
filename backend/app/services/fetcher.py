@@ -65,6 +65,7 @@ class FetchResult:
     html: Optional[str] = None
     resolved_pdf_url: Optional[str] = None
     supplement_urls: Optional[list[str]] = None
+    diagnostics: Optional[dict] = None
 
 
 def _http_client() -> httpx.Client:
@@ -109,53 +110,115 @@ def _http_status_error_message(status_code: int) -> str:
 
 
 def fetch_url(url: str, doi: Optional[str] = None) -> FetchResult:
+    diagnostics: dict = {
+        "input_url": url,
+        "input_doi": doi,
+        "events": [],
+    }
     with _http_client() as client:
         try:
             resp = client.get(url)
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             status_code = int(exc.response.status_code)
+            diagnostics["events"].append({"stage": "fetch_url", "status": "http_error", "status_code": status_code})
             doi_candidate = doi or extract_doi_from_text(url)
             pdf_url = _fallback_pdf_from_doi(doi_candidate)
             if pdf_url:
+                diagnostics["events"].append(
+                    {
+                        "stage": "doi_pdf_fallback",
+                        "status": "resolved",
+                        "doi": doi_candidate,
+                        "pdf_url": pdf_url,
+                    }
+                )
                 return FetchResult(
                     main_url=url,
                     content_type="",
                     html=None,
                     resolved_pdf_url=pdf_url,
                     supplement_urls=[],
+                    diagnostics=diagnostics,
                 )
             raise ValueError(_http_status_error_message(status_code)) from exc
         except httpx.RequestError as exc:
+            diagnostics["events"].append({"stage": "fetch_url", "status": "network_error", "error": str(exc)})
             doi_candidate = doi or extract_doi_from_text(url)
             pdf_url = _fallback_pdf_from_doi(doi_candidate)
             if pdf_url:
+                diagnostics["events"].append(
+                    {
+                        "stage": "doi_pdf_fallback",
+                        "status": "resolved",
+                        "doi": doi_candidate,
+                        "pdf_url": pdf_url,
+                    }
+                )
                 return FetchResult(
                     main_url=url,
                     content_type="",
                     html=None,
                     resolved_pdf_url=pdf_url,
                     supplement_urls=[],
+                    diagnostics=diagnostics,
                 )
             raise ValueError("Network error while fetching URL. Verify URL/DOI and retry.") from exc
 
         content_type = resp.headers.get("content-type", "")
         resolved_main_url = str(resp.url)
+        diagnostics["events"].append(
+            {
+                "stage": "fetch_url",
+                "status": "fetched",
+                "status_code": resp.status_code,
+                "resolved_url": resolved_main_url,
+                "content_type": content_type,
+            }
+        )
         if "application/pdf" in content_type or url.lower().endswith(".pdf"):
-            return FetchResult(main_url=resolved_main_url, content_type=content_type, resolved_pdf_url=resolved_main_url)
+            diagnostics["events"].append(
+                {"stage": "main_asset_resolution", "status": "direct_pdf", "pdf_url": resolved_main_url}
+            )
+            return FetchResult(
+                main_url=resolved_main_url,
+                content_type=content_type,
+                resolved_pdf_url=resolved_main_url,
+                diagnostics=diagnostics,
+            )
         html = resp.text
         soup = BeautifulSoup(html, "html.parser")
         doi = doi or extract_doi_from_text(url) or extract_doi_from_html(soup)
         pdf_url = extract_pdf_link_from_html(resolved_main_url, soup)
+        if pdf_url:
+            diagnostics["events"].append(
+                {"stage": "main_asset_resolution", "status": "html_pdf_link", "pdf_url": pdf_url}
+            )
         if not pdf_url and doi:
             pdf_url = _fallback_pdf_from_doi(doi)
+            diagnostics["events"].append(
+                {
+                    "stage": "doi_pdf_fallback",
+                    "status": "resolved" if pdf_url else "not_found",
+                    "doi": doi,
+                    "pdf_url": pdf_url,
+                }
+            )
         supp_urls = extract_supplement_links_from_html(resolved_main_url, soup, raw_html=html)
+        diagnostics["events"].append(
+            {
+                "stage": "supplement_discovery",
+                "status": "complete",
+                "count": len(supp_urls),
+            }
+        )
         return FetchResult(
             main_url=resolved_main_url,
             content_type=content_type,
             html=html,
             resolved_pdf_url=pdf_url,
             supplement_urls=supp_urls,
+            diagnostics=diagnostics,
         )
 
 

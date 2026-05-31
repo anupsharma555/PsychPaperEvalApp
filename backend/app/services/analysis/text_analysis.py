@@ -17,7 +17,9 @@ from app.services.analysis.utils import (
 
 INTRO_SECTION_RE = re.compile(r"\b(intro|background|objective|aim|rationale|hypoth)\b", re.IGNORECASE)
 METHOD_SECTION_RE = re.compile(
-    r"\b(methods?|materials?|participants?|procedure|analysis|acquisition|design|protocol|covariate)\b",
+    r"\b(methods?|materials?|participants?|procedure|analysis|acquisition|design|protocol|covariate|"
+    r"assay|cell lines?|cell clones?|cloning|construct|expression vectors?|flp-in|mutagenesis|pcr|"
+    r"primers?|plasmids?|qpcr|sanger|sequencing|selection|transfection|vectors?)\b",
     re.IGNORECASE,
 )
 RESULT_SECTION_RE = re.compile(
@@ -42,6 +44,7 @@ SECTION_SOURCE_WEIGHTS: dict[str, float] = {
     "heading_style": 0.90,
     "statement_prefix": 0.84,
     "category": 0.72,
+    "semantic": 0.68,
     "position": 0.46,
     "lexical": 0.60,
     "fallback": 0.28,
@@ -55,9 +58,10 @@ SECTION_SOURCE_RANK: dict[str, int] = {
     "anchor": 5,
     "statement_prefix": 6,
     "category": 7,
-    "lexical": 8,
-    "position": 9,
-    "fallback": 10,
+    "semantic": 8,
+    "lexical": 9,
+    "position": 10,
+    "fallback": 11,
 }
 SECTION_MARGIN_THRESHOLD = 0.08
 SECTION_CONFLICT_OVERRIDE_MARGIN = 0.12
@@ -97,6 +101,8 @@ EXPLICIT_HEADING_RE = re.compile(
 
 def analyze_text(chunks: list[dict[str, Any]], *, force_llm_enabled: bool | None = None) -> dict[str, Any]:
     max_chars = min(settings.analysis_max_text_chars, max_chars_for_ctx(settings.llm_n_ctx))
+    if settings.llm_provider_normalized == "openai":
+        max_chars = min(max_chars, max(2000, int(settings.analysis_text_llm_batch_max_chars or 0)))
     valid_anchors = {str(chunk.get("anchor", "unknown")) for chunk in chunks}
     raw_findings: list[dict[str, Any]] = []
     raw_claims: list[dict[str, Any]] = []
@@ -201,6 +207,7 @@ def analyze_text(chunks: list[dict[str, Any]], *, force_llm_enabled: bool | None
             evidence_packets = _dedupe_packets(evidence_packets + normalized_fallback)
     evidence_packets = _hydrate_anchor_metadata(evidence_packets, chunks)
     evidence_packets = _annotate_text_packet_sections(evidence_packets)
+    evidence_packets = _backfill_sparse_sections(evidence_packets, chunks, valid_anchors)
 
     findings_packets = [packet for packet in evidence_packets if packet.get("category") != "claim"]
     claim_packets = [packet for packet in evidence_packets if packet.get("category") == "claim"]
@@ -254,7 +261,9 @@ PAYWALL_MARKER_RE = re.compile(
 )
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 METHOD_FALLBACK_RE = re.compile(
-    r"\b(participants?|sample|cohort|scanner|acquisition|processing|cwas|mdmr|seed-based|covariate|regression|analysis)\b",
+    r"\b(participants?|sample|cohort|scanner|acquisition|processing|cwas|mdmr|seed-based|covariate|regression|analysis|"
+    r"assay|cell lines?|cell clones?|cloning|expression vectors?|mutagenesis|pcr|primers?|plasmids?|qpcr|"
+    r"sanger|sequencing|selection|transfection|vectors?)\b",
     re.IGNORECASE,
 )
 RESULT_FALLBACK_RE = re.compile(
@@ -274,11 +283,45 @@ INTRO_FALLBACK_RE = re.compile(
     re.IGNORECASE,
 )
 METHOD_STRONG_RE = re.compile(
-    r"\b(participants?|sample|cohort|scanner|acquisition|preprocess|processed|protocol|covariates?|regression|mdmr|quality assurance|inclusion|exclusion)\b",
+    r"\b(participants?|sample|cohort|scanner|acquisition|preprocess|processed|protocol|covariates?|regression|mdmr|quality assurance|inclusion|exclusion|"
+    r"assay|cell lines?|cell clones?|cloning|expression vectors?|mutagenesis|pcr|primers?|plasmids?|qpcr|"
+    r"sanger|sequencing|selection|transfection|vectors?)\b",
     re.IGNORECASE,
 )
 RESULT_STRONG_RE = re.compile(
     r"\b(we found|revealed|identified|significant|p\s*[<=>]\s*0?\.\d+|t\s*=\s*-?\d+(?:\.\d+)?|increased|decreased|higher|lower|hyperconnectivity|dysconnectivity)\b",
+    re.IGNORECASE,
+)
+STAT_RE = re.compile(r"\b(t|f|z|p|r|or|rr)\s*[=<>]\s*[-+]?\d+(?:\.\d+)?", re.IGNORECASE)
+RESULT_OUTCOME_RE = re.compile(
+    r"\b(found|identified|revealed|associated|correlated|increased|decreased|higher|lower|significant|effect|cluster)\b",
+    re.IGNORECASE,
+)
+RESULT_SEMANTIC_RE = re.compile(
+    r"\b("
+    r"we found|results? (?:showed|revealed|identified|demonstrated)|"
+    r"analysis (?:revealed|identified|showed|demonstrated)|"
+    r"(?:was|were) (?:associated|correlated) with|"
+    r"(?:showed|demonstrated|revealed|identified|observed|found) (?:a |an )?"
+    r")\b",
+    re.IGNORECASE,
+)
+RESULT_MEDIA_CONTEXT_RE = re.compile(
+    r"\b(?:figure|fig\.?|table|cluster|clusters?|network|connectivity|outcome|effect|association)\b",
+    re.IGNORECASE,
+)
+METHOD_PROCEDURE_RE = re.compile(
+    r"\b("
+    r"participants?|sample|cohort|recruited|eligible|excluded|inclusion|exclusion|"
+    r"underwent|completed|scanner|acquisition|preprocess(?:ed|ing)?|"
+    r"covariates?|regression|model(?:s|ed)?|mdmr|analysis|we used|we applied|"
+    r"was used|were used|procedure|protocol|assay|cell lines?|cell clones?|cloning|expression vectors?|"
+    r"mutagenesis|pcr|primers?|plasmids?|qpcr|sanger|sequencing|selection|transfection|vectors?"
+    r")\b",
+    re.IGNORECASE,
+)
+METHOD_PURPOSE_RE = re.compile(
+    r"\b(?:to identify|to test|to examine|to evaluate|to assess|to estimate|was used to|were used to)\b",
     re.IGNORECASE,
 )
 DISCUSSION_STRONG_RE = re.compile(
@@ -301,6 +344,72 @@ NOISE_STATEMENT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+def _semantic_section_scores(text: str, *, ratio: float) -> dict[str, float]:
+    lowered = str(text or "").lower()
+    scores = {label: 0.0 for label in SECTION_LABELS if label != "unknown"}
+    if not lowered:
+        return scores
+
+    if INTRO_SECTION_RE.search(lowered):
+        scores["introduction"] += 0.48
+        if ratio <= 0.30:
+            scores["introduction"] += 0.18
+
+    method_signal = bool(METHOD_PROCEDURE_RE.search(lowered) or METHOD_SECTION_RE.search(lowered))
+    result_signal = bool(RESULT_SEMANTIC_RE.search(lowered) or RESULT_OUTCOME_RE.search(lowered) or STAT_RE.search(lowered))
+    result_context = bool(RESULT_MEDIA_CONTEXT_RE.search(lowered))
+
+    if method_signal:
+        scores["methods"] += 0.48
+        if METHOD_PURPOSE_RE.search(lowered) and not STAT_RE.search(lowered):
+            scores["methods"] += 0.28
+        if ratio <= 0.58:
+            scores["methods"] += 0.12
+
+    if result_signal:
+        scores["results"] += 0.58
+        if result_context:
+            scores["results"] += 0.20
+        if STAT_RE.search(lowered) or re.search(r"\bp\s*[<=>]\s*0?\.\d+", lowered):
+            scores["results"] += 0.18
+        if ratio >= 0.18:
+            scores["results"] += 0.10
+
+    # Result paragraphs often contain analysis/method words; observed outcome language should win.
+    if result_signal and method_signal:
+        if RESULT_SEMANTIC_RE.search(lowered) or STAT_RE.search(lowered):
+            scores["results"] += 0.18
+            scores["methods"] -= 0.16
+        elif METHOD_PURPOSE_RE.search(lowered):
+            scores["methods"] += 0.16
+
+    if DISCUSSION_SECTION_RE.search(lowered) or DISCUSSION_STRONG_RE.search(lowered):
+        scores["discussion"] += 0.58
+        if ratio >= 0.45:
+            scores["discussion"] += 0.18
+        if result_signal and STAT_RE.search(lowered):
+            scores["discussion"] -= 0.16
+
+    if CONCLUSION_SECTION_RE.search(lowered) or CONCLUSION_STRONG_RE.search(lowered):
+        scores["conclusion"] += 0.62
+        if ratio >= 0.55:
+            scores["conclusion"] += 0.18
+        if result_signal and STAT_RE.search(lowered):
+            scores["conclusion"] -= 0.18
+
+    return {key: max(0.0, min(1.0, value)) for key, value in scores.items()}
+
+
+def _best_semantic_section(text: str, *, ratio: float, min_score: float = 0.58) -> str:
+    scores = _semantic_section_scores(text, ratio=ratio)
+    ranked = sorted(scores.items(), key=lambda item: (-float(item[1]), SECTION_ORDER.index(item[0])))
+    if not ranked or ranked[0][1] < min_score:
+        return "unknown"
+    if len(ranked) > 1 and (ranked[0][1] - ranked[1][1]) < 0.10:
+        return "unknown"
+    return ranked[0][0]
 
 
 def _filter_text_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -340,14 +449,20 @@ def _analysis_notes(chunks: list[dict[str, Any]]) -> list[str]:
     return []
 
 
-def _heuristic_packets_from_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    section_targets = {
+def _heuristic_packets_from_chunks(
+    chunks: list[dict[str, Any]],
+    *,
+    section_targets: dict[str, int] | None = None,
+    finding_prefix: str = "text-fallback",
+) -> list[dict[str, Any]]:
+    targets = section_targets or {
         "introduction": 3,
         "methods": 8,
         "results": 6,
         "discussion": 4,
-        "conclusion": 2,
+        "conclusion": 3,
     }
+    section_targets = {key: max(0, int(value or 0)) for key, value in targets.items()}
     section_counts = {key: 0 for key in section_targets}
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -356,36 +471,116 @@ def _heuristic_packets_from_chunks(chunks: list[dict[str, Any]]) -> list[dict[st
         anchor = str(chunk.get("anchor", "")).strip()
         if not anchor:
             continue
-        section = _infer_chunk_section(chunk, idx=idx, total_chunks=len(chunks))
-        if section == "unknown":
-            continue
-        if section_counts.get(section, 0) >= section_targets.get(section, 0):
+        primary_section = _infer_chunk_section(chunk, idx=idx, total_chunks=len(chunks))
+        if primary_section == "unknown":
             continue
         content = " ".join(str(chunk.get("content", "")).split()).strip()
         if not content:
             continue
-        candidates = _select_fallback_sentences(content, section=section)
-        for sentence in candidates:
-            canonical = " ".join(sentence.lower().split())
-            if not canonical or canonical in seen:
+
+        candidate_sections = [primary_section]
+        if primary_section == "discussion" and section_targets.get("conclusion", 0) > 0:
+            candidate_sections.append("conclusion")
+
+        for section in candidate_sections:
+            if section_counts.get(section, 0) >= section_targets.get(section, 0):
                 continue
-            seen.add(canonical)
-            out.append(
-                {
-                    "finding_id": f"text-fallback-{section}-{len(out) + 1}",
-                    "anchor": anchor,
-                    "statement": sentence,
-                    "evidence_refs": [anchor],
-                    "confidence": 0.68 if section == "introduction" else 0.7,
-                    "category": section,
-                }
-            )
-            section_counts[section] = section_counts.get(section, 0) + 1
-            if section_counts[section] >= section_targets.get(section, 0):
-                break
+            candidates = _select_fallback_sentences(content, section=section)
+            for sentence in candidates:
+                canonical = " ".join(sentence.lower().split())
+                seen_key = f"{section}:{anchor}:{canonical}"
+                if not canonical or seen_key in seen:
+                    continue
+                seen.add(seen_key)
+                out.append(
+                    {
+                        "finding_id": f"{finding_prefix}-{section}-{len(out) + 1}",
+                        "anchor": anchor,
+                        "statement": sentence,
+                        "evidence_refs": [anchor],
+                        "confidence": 0.68 if section == "introduction" else 0.7,
+                        "category": section,
+                        "section_label": section,
+                        "section_source": "fallback",
+                        "section_confidence": 0.68 if section == "introduction" else 0.7,
+                        "quality_flags": ["section_backfill"] if finding_prefix != "text-fallback" else [],
+                    }
+                )
+                section_counts[section] = section_counts.get(section, 0) + 1
+                if section_counts[section] >= section_targets.get(section, 0):
+                    break
         if all(section_counts[key] >= section_targets[key] for key in section_targets):
             break
     return out
+
+
+def _backfill_sparse_sections(
+    evidence_packets: list[dict[str, Any]],
+    chunks: list[dict[str, Any]],
+    valid_anchors: set[str],
+) -> list[dict[str, Any]]:
+    if len(chunks) < 3:
+        return evidence_packets
+
+    targets = {
+        "introduction": 3,
+        "methods": 6,
+        "results": 8,
+        "discussion": 5,
+        "conclusion": 3,
+    }
+    counts = _section_counts(evidence_packets)
+    missing = {
+        section: max(0, target - int(counts.get(section, 0) or 0))
+        for section, target in targets.items()
+    }
+    if not any(missing.values()):
+        return evidence_packets
+
+    fallback_packets = _heuristic_packets_from_chunks(
+        chunks,
+        section_targets=missing,
+        finding_prefix="text-section-backfill",
+    )
+    if not fallback_packets:
+        return evidence_packets
+
+    normalized = normalize_evidence_packets(
+        fallback_packets,
+        "text",
+        valid_anchors,
+        default_category="other",
+    )
+    normalized = _filter_text_packets(normalized)
+    normalized = _hydrate_anchor_metadata(normalized, chunks)
+    normalized = _annotate_text_packet_sections(normalized)
+
+    kept: list[dict[str, Any]] = []
+    next_counts = dict(counts)
+    for packet in normalized:
+        section = str(packet.get("section_label") or packet.get("category") or "").strip().lower()
+        if section not in targets:
+            continue
+        if int(next_counts.get(section, 0) or 0) >= targets[section]:
+            continue
+        kept.append(packet)
+        next_counts[section] = int(next_counts.get(section, 0) or 0) + 1
+
+    if not kept:
+        return evidence_packets
+    return _dedupe_packets(evidence_packets + kept)
+
+
+def _section_counts(packets: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {key: 0 for key in ("introduction", "methods", "results", "discussion", "conclusion")}
+    for packet in packets:
+        section = str(packet.get("section_label") or "").strip().lower()
+        if section not in counts:
+            category = str(packet.get("category") or "").strip().lower()
+            section = category if category in counts else "unknown"
+        if section in counts:
+            counts[section] += 1
+    return counts
 
 
 def _needs_heuristic_fallback(packets: list[dict[str, Any]]) -> bool:
@@ -447,6 +642,9 @@ def _infer_chunk_section(chunk: dict[str, Any], *, idx: int, total_chunks: int) 
         return structured_prefix
     lowered = content.lower()
     pos = (float(idx) / float(max(1, total_chunks - 1))) if total_chunks > 1 else 0.0
+    semantic_label = _best_semantic_section(content, ratio=pos)
+    if semantic_label != "unknown":
+        return semantic_label
     if CONCLUSION_STRONG_RE.search(lowered) and pos >= 0.55:
         return "conclusion"
     if DISCUSSION_STRONG_RE.search(lowered) and pos >= 0.45:
@@ -519,6 +717,8 @@ def _select_fallback_sentences(content: str, *, section: str) -> list[str]:
             ):
                 picked.append(text)
         elif section == "discussion":
+            if CONCLUSION_FALLBACK_RE.search(text):
+                continue
             if DISCUSSION_FALLBACK_RE.search(text) and not RESULT_STRONG_RE.search(text):
                 picked.append(text)
         elif section == "conclusion":
@@ -531,6 +731,8 @@ def _select_fallback_sentences(content: str, *, section: str) -> list[str]:
         return [_truncate_sentence_safely(item, max_chars=260) for item in picked]
     for sentence in sentences:
         text = " ".join(sentence.split()).strip()
+        if section == "discussion" and CONCLUSION_FALLBACK_RE.search(text):
+            continue
         if len(text) >= 24:
             return [_truncate_sentence_safely(text, max_chars=260)]
     return []
@@ -748,6 +950,10 @@ def _resolve_packet_section(
     statement = str(packet.get("statement", "") or "")
     packet_confidence = float(packet.get("confidence", 0.0) or 0.0)
     packet_section_confidence = float(packet.get("section_confidence", packet_confidence) or 0.0)
+    requested_section_label = str(packet.get("section_label", "") or "").strip().lower()
+    quality_flags = {str(flag).strip().lower() for flag in packet.get("quality_flags", [])}
+    if "section_backfill" in quality_flags and requested_section_label in SECTION_LABELS - {"unknown"}:
+        return requested_section_label, max(0.62, packet_section_confidence), "fallback", ["section_backfill"]
     meta_section_confidence = _clamp_confidence(packet.get("anchor_meta_section_confidence", 0.0))
     meta_source = str(packet.get("anchor_meta_source", "") or "").strip().lower()
     meta_raw_title = str(packet.get("anchor_meta_section_raw_title", "") or "").strip()
@@ -829,6 +1035,15 @@ def _resolve_packet_section(
     if lexical_label in votes:
         _vote(lexical_label, "lexical", SECTION_SOURCE_WEIGHTS["lexical"])
 
+    ratio_for_semantic = float(idx) / float(max(1, total_chunks - 1)) if total_chunks > 1 else 0.0
+    for semantic_label, semantic_score in _semantic_section_scores(statement, ratio=ratio_for_semantic).items():
+        if semantic_score < 0.45:
+            continue
+        semantic_weight = SECTION_SOURCE_WEIGHTS["semantic"] * semantic_score
+        if semantic_label == "results" and semantic_score >= 0.70:
+            semantic_weight += 0.10
+        _vote(semantic_label, "semantic", semantic_weight)
+
     position_label = _position_section_hint(idx, total_chunks)
     if position_label in votes:
         _vote(position_label, "position", SECTION_SOURCE_WEIGHTS["position"])
@@ -871,6 +1086,12 @@ def _resolve_packet_section(
     ):
         winner = prefix_label
         winner_score = votes.get(prefix_label, winner_score)
+        flags.append("section_conflict_resolved")
+    elif (
+        (anchor_label == "results" or category == "results")
+        and prefix_label in {"introduction", "methods"}
+        and winner == prefix_label
+    ):
         flags.append("section_conflict_resolved")
 
     prev_distance = abs(idx - previous_index) if previous_index >= 0 else total_chunks

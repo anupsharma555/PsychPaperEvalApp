@@ -22,6 +22,7 @@ from app.services.fetcher import (
     guess_filename,
     resolve_url,
 )
+from app.services.source_manifest import record_source_manifest
 from app.services.storage import asset_path, artifacts_dir, document_dir, ensure_document_dirs
 
 
@@ -136,6 +137,30 @@ def _url_suggests_pdf(url: str) -> bool:
     path = parsed.path.lower()
     query = parsed.query.lower()
     return path.endswith(".pdf") or "/doi/suppl/" in path or "pdf" in query or "suppl_file" in path
+
+
+def _asset_record(
+    *,
+    kind: str,
+    filename: str,
+    content_type: str | None,
+    path: Path | None,
+    source_url: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "kind": kind,
+        "filename": filename,
+        "content_type": content_type,
+    }
+    if path is not None:
+        payload["path"] = str(path)
+        try:
+            payload["bytes"] = path.stat().st_size
+        except Exception:
+            pass
+    if source_url:
+        payload["source_url"] = source_url
+    return payload
 
 
 FIGURE_TITLE_LINE_RE = re.compile(r"^Figure\s+(S?\d+[A-Za-z]?)\.\s*(.+)$", re.IGNORECASE)
@@ -374,9 +399,19 @@ async def ingest_upload(
 
     ensure_document_dirs(document.id)
 
+    manifest_assets: list[dict[str, object]] = []
     main_path = asset_path(document.id, main_file.filename)
     with open(main_path, "wb") as f:
         f.write(await main_file.read())
+    manifest_assets.append(
+        _asset_record(
+            kind="main",
+            filename=main_file.filename,
+            content_type=main_file.content_type,
+            path=main_path,
+            source_url=source_url,
+        )
+    )
 
     session.add(
         Asset(
@@ -392,6 +427,14 @@ async def ingest_upload(
         supp_path = asset_path(document.id, supp.filename)
         with open(supp_path, "wb") as f:
             f.write(await supp.read())
+        manifest_assets.append(
+            _asset_record(
+                kind="supp",
+                filename=supp.filename,
+                content_type=supp.content_type,
+                path=supp_path,
+            )
+        )
         session.add(
             Asset(
                 document_id=document.id,
@@ -402,6 +445,26 @@ async def ingest_upload(
             )
         )
 
+    record_source_manifest(
+        session,
+        document.id,
+        source_type="upload",
+        status="uploaded",
+        payload={
+            "input": {"source_url": source_url, "doi": doi},
+            "selected_assets": manifest_assets,
+            "supplements": [
+                {
+                    "filename": item.get("filename"),
+                    "status": "uploaded",
+                    "content_type": item.get("content_type"),
+                    "bytes": item.get("bytes"),
+                }
+                for item in manifest_assets
+                if item.get("kind") == "supp"
+            ],
+        },
+    )
     session.commit()
     session.refresh(document)
     return document
@@ -423,6 +486,8 @@ def ingest_url(
 
         resolved = resolve_url(input_url, doi)
         fetch_result = fetch_url(resolved, doi=doi)
+        selected_assets: list[dict[str, object]] = []
+        supplement_records: list[dict[str, object]] = []
         if fetch_result.main_url:
             document.source_url = str(fetch_result.main_url)
         _persist_source_figure_legend_maps(
@@ -498,12 +563,33 @@ def ingest_url(
                         path=str(main_path),
                     )
                 )
+                selected_assets.append(
+                    _asset_record(
+                        kind="main",
+                        filename=main_filename,
+                        content_type="application/pdf",
+                        path=main_path,
+                        source_url=pdf_url,
+                    )
+                )
         else:
             if not _try_add_html_fallback_main_asset(session, document.id, fetch_result.html):
                 raise ValueError(
                     "Could not resolve a downloadable PDF, and the page does not expose enough full-text content. "
                     "Use From Upload and choose the main PDF."
                 )
+
+        html_fallback_path = asset_path(document.id, "main_from_url.html")
+        if not selected_assets and html_fallback_path.exists():
+            selected_assets.append(
+                _asset_record(
+                    kind="main",
+                    filename=html_fallback_path.name,
+                    content_type="text/html",
+                    path=html_fallback_path,
+                    source_url=fetch_result.main_url or resolved,
+                )
+            )
 
         supp_urls: list[str] = []
         if fetch_supplements:
@@ -521,6 +607,11 @@ def ingest_url(
         for idx, supp_url in enumerate(supp_urls):
             supp_filename = guess_filename(supp_url, f"supp_{idx + 1}.bin")
             supp_path = asset_path(document.id, supp_filename)
+            supp_record: dict[str, object] = {
+                "url": supp_url,
+                "filename": supp_filename,
+                "status": "pending",
+            }
             try:
                 downloaded = _download_supplement_with_resolution(
                     supp_url=supp_url,
@@ -537,12 +628,30 @@ def ingest_url(
                         supp_path.unlink()
                     except Exception:
                         pass
+                    supp_record.update(
+                        {
+                            "status": "skipped",
+                            "reason": "expected_pdf_but_download_was_not_pdf",
+                        }
+                    )
+                    supplement_records.append(supp_record)
                     continue
                 supp_filename, supp_path, content_type = _normalize_downloaded_supplement(
                     document.id,
                     supp_filename,
                     supp_path,
                 )
+                supp_record.update(
+                    {
+                        "filename": supp_filename,
+                        "status": "downloaded",
+                        "content_type": content_type,
+                    }
+                )
+                try:
+                    supp_record["bytes"] = supp_path.stat().st_size
+                except Exception:
+                    pass
                 session.add(
                     Asset(
                         document_id=document.id,
@@ -552,10 +661,45 @@ def ingest_url(
                         path=str(supp_path),
                     )
                 )
+                selected_assets.append(
+                    _asset_record(
+                        kind="supp",
+                        filename=supp_filename,
+                        content_type=content_type,
+                        path=supp_path,
+                        source_url=supp_url,
+                    )
+                )
+                supplement_records.append(supp_record)
             except Exception:
-                # Skip failed supplements but keep main document
+                # Skip failed supplements but keep the outcome auditable.
+                supp_record.update({"status": "skipped", "reason": "download_or_normalization_failed"})
+                supplement_records.append(supp_record)
                 continue
 
+        record_source_manifest(
+            session,
+            document.id,
+            source_type="url",
+            status="resolved",
+            payload={
+                "input": {
+                    "url": input_url,
+                    "doi": doi,
+                    "resolved_request_url": resolved,
+                    "fetch_supplements": fetch_supplements,
+                },
+                "resolved": {
+                    "main_url": fetch_result.main_url,
+                    "content_type": fetch_result.content_type,
+                    "pdf_url": pdf_url,
+                },
+                "fetch_diagnostics": fetch_result.diagnostics or {},
+                "discovered_supplement_urls": supp_urls,
+                "selected_assets": selected_assets,
+                "supplements": supplement_records,
+            },
+        )
         session.commit()
         session.refresh(document)
         return document

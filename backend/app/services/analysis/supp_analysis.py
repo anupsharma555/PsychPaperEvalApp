@@ -9,6 +9,7 @@ from typing import Any
 from app.core.config import settings
 from app.services.analysis.image_source import resolve_image_path
 from app.services.analysis.llm import chat_text_fast, chat_with_images
+from app.services.analysis.openai_usage import OpenAIBudgetExceeded
 from app.services.analysis.ocr import ocr_image_text
 from app.services.analysis.prompts import SUPP_ANALYSIS_SYSTEM
 from app.services.analysis.utils import (
@@ -126,7 +127,9 @@ def analyze_supplements(chunks: list[dict[str, Any]]) -> dict[str, Any]:
                 try:
                     response = chat_text_fast(ocr_prompt, system=SUPP_ANALYSIS_SYSTEM)
                     diagnostics["ocr_fallback_success"] += 1
-                except Exception:
+                except Exception as exc:
+                    if isinstance(exc, OpenAIBudgetExceeded):
+                        raise
                     continue
             else:
                 prompt = (
@@ -141,7 +144,9 @@ def analyze_supplements(chunks: list[dict[str, Any]]) -> dict[str, Any]:
                 try:
                     response = chat_with_images(prompt, [image_path], system=SUPP_ANALYSIS_SYSTEM)
                     diagnostics["vision_success"] += 1
-                except Exception:
+                except Exception as exc:
+                    if isinstance(exc, OpenAIBudgetExceeded):
+                        raise
                     diagnostics["vision_failures"] += 1
                     if not ocr_text and image_path:
                         ocr_text = _safe_ocr_text(image_path)
@@ -155,7 +160,9 @@ def analyze_supplements(chunks: list[dict[str, Any]]) -> dict[str, Any]:
                     try:
                         response = chat_text_fast(ocr_prompt, system=SUPP_ANALYSIS_SYSTEM)
                         diagnostics["ocr_fallback_success"] += 1
-                    except Exception:
+                    except Exception as fallback_exc:
+                        if isinstance(fallback_exc, OpenAIBudgetExceeded):
+                            raise
                         continue
 
             data = _normalize_llm_payload(extract_json(response))

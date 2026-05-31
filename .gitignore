@@ -21,6 +21,10 @@ logs/
 backend/.env
 .env
 .env.*
+!.env.example
+!**/.env.example
+secrets/*
+!secrets/.gitignore
 *.pem
 *.key
 *.crt
@@ -30,6 +34,22 @@ backend/.env
 *.sqlite
 *.sqlite3
 data/
+
+# Generated benchmark/comparison outputs
+test/*.pdf
+test/bench_review/
+test/bench_runs*/
+test/upstream_ab/
+test/text/*_app_extraction_*.md
+test/text/*_comparison_*.json
+test/text/*_comparison_*.md
+test/text/*_information_retention_*.json
+test/text/*_model_benchmark_*.json
+test/text/*_run_*.json
+test/text/section_synthesis_v2_comparison_*.json
+test/text/section_synthesis_v2_comparison_*.md
+test/text/upstream_ab_comparison_*.json
+test/text/upstream_ab_comparison_*.md
 
 # Models (keep docs only)
 models/*

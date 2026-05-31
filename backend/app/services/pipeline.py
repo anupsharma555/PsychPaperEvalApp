@@ -15,6 +15,7 @@ from app.services.analysis.runner import run_full_analysis
 from app.services.parser import parse_document_assets
 from app.services.report_retention import enforce_report_retention
 from app.services.storage import artifacts_dir
+from app.services.timing import TimelineRecorder, utc_timestamp
 
 
 def _friendly_job_failure_message(exc: Exception, error_path: Path) -> str:
@@ -39,6 +40,8 @@ def _friendly_job_failure_message(exc: Exception, error_path: Path) -> str:
             "Remote site rate-limited this request. "
             "Retry later, or use From Upload with the main PDF."
         )
+    elif "openai run budget would be exceeded" in lowered or "openai daily budget would be exceeded" in lowered:
+        detail = f"OpenAI usage guardrail stopped this run. {raw}"
     else:
         detail = raw
 
@@ -46,43 +49,64 @@ def _friendly_job_failure_message(exc: Exception, error_path: Path) -> str:
 
 
 def run_pipeline(job_id: int) -> None:
+    timeline = TimelineRecorder()
+
+    def _write_run_timeline(document_id: int) -> None:
+        _write_artifact(
+            document_id,
+            "run_timeline.json",
+            {
+                "document_id": document_id,
+                "timeline": timeline.snapshot(),
+                "generated_at": utc_timestamp(),
+            },
+        )
+
     with Session(engine) as session:
         job = session.get(Job, job_id)
         if not job:
             return
         try:
-            job.status = JobStatus.running
-            job.progress = 0.05
-            job.message = "Preparing analysis"
-            job.updated_at = datetime.utcnow()
-            session.add(job)
-            session.commit()
+            with timeline.step("prepare_analysis", job_id=job.id, document_id=job.document_id):
+                job.status = JobStatus.running
+                job.progress = 0.05
+                job.message = "Preparing analysis"
+                job.updated_at = datetime.utcnow()
+                session.add(job)
+                session.commit()
 
-            job.progress = 0.12
-            job.message = "Parsing document assets"
-            job.updated_at = datetime.utcnow()
-            session.add(job)
-            session.commit()
+                job.progress = 0.12
+                job.message = "Parsing document assets"
+                job.updated_at = datetime.utcnow()
+                session.add(job)
+                session.commit()
 
             parse_started_at = monotonic()
-            parse_counts = parse_document_assets(session, job.document_id)
+            parse_started_ts = utc_timestamp()
+            with timeline.step("parse_document_assets", job_id=job.id, document_id=job.document_id):
+                parse_counts = parse_document_assets(session, job.document_id)
             parse_seconds = monotonic() - parse_started_at
+            parse_ended_ts = utc_timestamp()
             _write_artifact(
                 job.document_id,
                 "parse_diagnostics.json",
                 {
                     "document_id": job.document_id,
                     "parse_seconds": round(parse_seconds, 4),
+                    "started_at": parse_started_ts,
+                    "ended_at": parse_ended_ts,
                     "counts": parse_counts,
-                    "ts": datetime.utcnow().isoformat(),
+                    "ts": utc_timestamp(),
                 },
             )
+            _write_run_timeline(job.document_id)
 
-            job.progress = 0.48
-            job.message = "Parsed assets; initializing modality analysis"
-            job.updated_at = datetime.utcnow()
-            session.add(job)
-            session.commit()
+            with timeline.step("initialize_modality_analysis", job_id=job.id, document_id=job.document_id):
+                job.progress = 0.48
+                job.message = "Parsed assets; initializing modality analysis"
+                job.updated_at = datetime.utcnow()
+                session.add(job)
+                session.commit()
 
             def _update_progress(progress: float, message: str) -> None:
                 job.progress = max(job.progress or 0.0, min(float(progress), 0.99))
@@ -91,43 +115,52 @@ def run_pipeline(job_id: int) -> None:
                 session.add(job)
                 session.commit()
 
-            analysis_diag = run_full_analysis(
-                session,
-                job.document_id,
-                progress_callback=_update_progress,
-            )
+            with timeline.step("run_full_analysis", job_id=job.id, document_id=job.document_id):
+                analysis_diag = run_full_analysis(
+                    session,
+                    job.document_id,
+                    progress_callback=_update_progress,
+                    job_id=job.id,
+                )
             if isinstance(analysis_diag, dict):
                 analysis_diag["parse_timing"] = {
                     "parse_total_seconds": round(parse_seconds, 4),
+                    "started_at": parse_started_ts,
+                    "ended_at": parse_ended_ts,
                 }
+                analysis_diag["pipeline_timeline"] = timeline.snapshot()
             _log_model_timing(job.id, analysis_diag)
-            _write_artifact(
-                job.document_id,
-                "analysis_diagnostics.json",
-                {
-                    "document_id": job.document_id,
-                    "diagnostics": analysis_diag,
-                    "ts": datetime.utcnow().isoformat(),
-                },
-            )
+            with timeline.step("write_analysis_diagnostics", job_id=job.id, document_id=job.document_id):
+                _write_artifact(
+                    job.document_id,
+                    "analysis_diagnostics.json",
+                    {
+                        "document_id": job.document_id,
+                        "diagnostics": analysis_diag,
+                        "ts": utc_timestamp(),
+                    },
+                )
 
-            job.status = JobStatus.completed
-            job.progress = 1.0
-            job.message = "Completed"
-            job.updated_at = datetime.utcnow()
-            session.add(job)
-            session.commit()
+            with timeline.step("mark_job_completed", job_id=job.id, document_id=job.document_id):
+                job.status = JobStatus.completed
+                job.progress = 1.0
+                job.message = "Completed"
+                job.updated_at = datetime.utcnow()
+                session.add(job)
+                session.commit()
 
             if settings.report_retention_enabled:
-                retention = enforce_report_retention(
-                    session,
-                    keep_latest=max(1, int(settings.report_retention_limit)),
-                )
+                with timeline.step("report_retention", job_id=job.id, document_id=job.document_id):
+                    retention = enforce_report_retention(
+                        session,
+                        keep_latest=max(1, int(settings.report_retention_limit)),
+                    )
                 if retention.get("pruned_count", 0):
                     print(
                         "[pipeline] retention pruned documents:",
                         retention.get("pruned_document_ids", []),
                     )
+            _write_run_timeline(job.document_id)
         except Exception as exc:
             error_text = traceback.format_exc()
             error_path = artifacts_dir(job.document_id) / "error.log"
@@ -136,6 +169,7 @@ def run_pipeline(job_id: int) -> None:
                 error_path.write_text(error_text)
             except Exception:
                 pass
+            _write_run_timeline(job.document_id)
             job.status = JobStatus.failed
             job.message = _friendly_job_failure_message(exc, error_path)
             job.updated_at = datetime.utcnow()

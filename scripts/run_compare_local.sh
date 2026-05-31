@@ -9,9 +9,9 @@ REFERENCE_MD="${2:-$ROOT/test/text/sharma_2017_chatgpt_extraction.md}"
 OUT_DIR="${3:-$ROOT/test/text}"
 DB_PATH="${4:-/tmp/paper_eval_compare_local.db}"
 
-MODE="${MODE:-auto}"
+MODE="${MODE:-pipeline}"
 PARSER_ENGINE="${PARSER_ENGINE:-validated}"
-BACKEND_PROFILE="${BACKEND_PROFILE:-fast}"
+BACKEND_PROFILE="${BACKEND_PROFILE:-section-sensitive}"
 
 mkdir -p "$OUT_DIR"
 

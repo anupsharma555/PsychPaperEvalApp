@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import multiprocessing as mp
 import os
@@ -15,13 +16,22 @@ from app.db.models import Asset, Chunk, Discrepancy, Document, Finding, Report
 from app.core.config import settings
 from app.services.author_utils import sanitize_author_list
 from app.services.analysis.figure_analysis import analyze_figures
-from app.services.analysis.llm import reset_model_usage_counters, snapshot_model_usage_counters
+from app.services.analysis.information_retention import build_information_retention_audit
+from app.services.analysis.llm import (
+    reset_model_usage_counters,
+    set_openai_usage_context,
+    snapshot_model_usage_counters,
+)
+from app.services.analysis.openai_usage import mark_unmatched_openai_reservations_failed, summarize_openai_usage
 from app.services.analysis.reconcile import reconcile_reports
+from app.services.analysis.section_ledger import apply_section_boundary_ledger_to_chunks
 from app.services.analysis.synthesis import synthesize_report
 from app.services.analysis.supp_analysis import analyze_supplements
 from app.services.analysis.table_analysis import analyze_tables
 from app.services.analysis.text_analysis import analyze_text
 from app.services.analysis.utils import extract_expected_refs, extract_refs_from_text
+from app.services.storage import artifacts_dir
+from app.services.timing import utc_timestamp
 
 SUPPLEMENT_MARKER_RE = re.compile(
     r"\b(supplement(?:ary|al)?|suppl|appendix|extended data|supporting (?:information|info|data))\b",
@@ -33,18 +43,41 @@ def run_full_analysis(
     session: Session,
     document_id: int,
     progress_callback: Callable[[float, str], None] | None = None,
+    job_id: int | None = None,
 ) -> dict[str, Any]:
     _analysis_trace("run_full_analysis:start")
     reset_model_usage_counters()
+    set_openai_usage_context(job_id=job_id, document_id=document_id, stage="startup")
     analysis_started_at = monotonic()
     stage_timings: dict[str, float] = {}
+    stage_timeline: list[dict[str, Any]] = []
+
+    def _record_stage_timing(
+        stage: str,
+        started: float,
+        started_at: str,
+        **metadata: Any,
+    ) -> None:
+        event: dict[str, Any] = {
+            "stage": stage,
+            "started_at": started_at,
+            "ended_at": utc_timestamp(),
+            "duration_seconds": round(monotonic() - started, 4),
+            "status": "completed",
+        }
+        clean_metadata = {key: value for key, value in metadata.items() if value is not None}
+        if clean_metadata:
+            event["metadata"] = clean_metadata
+        stage_timeline.append(event)
+
     document = session.get(Document, document_id)
     document_source_url = str(document.source_url or "").strip() if document else ""
 
     assets = session.exec(select(Asset).where(Asset.document_id == document_id)).all()
     asset_kind = {asset.id: asset.kind for asset in assets}
 
-    chunks = session.exec(select(Chunk).where(Chunk.document_id == document_id)).all()
+    chunks = session.exec(select(Chunk).where(Chunk.document_id == document_id).order_by(Chunk.id)).all()
+    section_ledger_updates = apply_section_boundary_ledger_to_chunks(chunks)
     main_chunks = [chunk for chunk in chunks if asset_kind.get(chunk.asset_id) == "main"]
     supp_chunks = [chunk for chunk in chunks if asset_kind.get(chunk.asset_id) == "supp"]
 
@@ -59,10 +92,16 @@ def run_full_analysis(
         for c in main_chunks
         if c.modality in {"text", "table", "figure"} and _looks_like_supplement_chunk(c)
     ]
-    supp_analysis_chunks = _dedupe_chunks_by_id(supp_text)
+    supp_analysis_chunks = _dedupe_chunks_by_id(supp_text + supplement_proxy_from_main)
     supp_text_chunks = [c for c in supp_chunks if c.modality == "text"]
-    supp_table_chunks = [c for c in supp_chunks if c.modality == "table"]
-    supp_figure_chunks = [c for c in supp_chunks if c.modality == "figure"]
+    supp_table_chunks = _dedupe_chunks_by_id(
+        [c for c in supp_chunks if c.modality == "table"]
+        + [c for c in supplement_proxy_from_main if c.modality == "table"]
+    )
+    supp_figure_chunks = _dedupe_chunks_by_id(
+        [c for c in supp_chunks if c.modality == "figure"]
+        + [c for c in supplement_proxy_from_main if c.modality == "figure"]
+    )
     main_expected_text_chunks = [c for c in text_chunks if not _looks_like_supplement_chunk(c)]
     supp_expected_text_chunks = _dedupe_chunks_by_id(
         supp_text_chunks + [c for c in supplement_proxy_from_main if c.modality == "text"]
@@ -70,52 +109,156 @@ def run_full_analysis(
     stage_usage_samples: dict[str, dict[str, Any]] = {}
     stage_fallback_reasons: dict[str, str] = {}
 
-    _emit_progress(progress_callback, 0.56, "Analyzing text modality")
-    _analysis_trace("run_full_analysis:text:start")
-    stage_started = monotonic()
     text_inputs = [_chunk_to_dict(c, asset_kind, document_source_url) for c in text_chunks]
-    text_report, text_usage, text_fallback = _analyze_text_guarded(text_inputs)
-    stage_usage_samples["text"] = text_usage
-    if text_fallback:
-        stage_fallback_reasons["text"] = text_fallback
-    stage_timings["text"] = monotonic() - stage_started
-    _analysis_trace(f"run_full_analysis:text:done packets={len(text_report.get('evidence_packets', []))}")
-    _emit_progress(progress_callback, 0.64, "Analyzing table modality")
-    _analysis_trace("run_full_analysis:table:start")
-    stage_started = monotonic()
     table_inputs = [_chunk_to_dict(c, asset_kind, document_source_url) for c in table_chunks]
-    table_report, table_usage, table_fallback = _analyze_tables_guarded(table_inputs)
-    stage_usage_samples["table"] = table_usage
-    if table_fallback:
-        stage_fallback_reasons["table"] = table_fallback
-    stage_timings["table"] = monotonic() - stage_started
-    _analysis_trace(f"run_full_analysis:table:done packets={len(table_report.get('evidence_packets', []))}")
-    _emit_progress(progress_callback, 0.72, "Analyzing figure modality")
-    _analysis_trace("run_full_analysis:figure:start")
-    stage_started = monotonic()
     figure_inputs = [_chunk_to_dict(c, asset_kind, document_source_url) for c in figure_chunks]
-    figure_report, figure_usage, figure_fallback = _analyze_figures_guarded(figure_inputs)
-    stage_usage_samples["figure"] = figure_usage
-    if figure_fallback:
-        stage_fallback_reasons["figure"] = figure_fallback
-    stage_timings["figure"] = monotonic() - stage_started
-    _analysis_trace(f"run_full_analysis:figure:done packets={len(figure_report.get('evidence_packets', []))}")
-    _emit_progress(progress_callback, 0.78, "Analyzing supplements")
-    _analysis_trace("run_full_analysis:supplement:start")
-    stage_started = monotonic()
     supp_inputs = [_chunk_to_dict(c, asset_kind, document_source_url) for c in supp_analysis_chunks]
-    supp_report, supp_usage, supp_fallback = _analyze_supplements_guarded(supp_inputs)
-    stage_usage_samples["supplement"] = supp_usage
-    if supp_fallback:
-        stage_fallback_reasons["supplement"] = supp_fallback
-    stage_timings["supplement"] = monotonic() - stage_started
-    _analysis_trace(f"run_full_analysis:supplement:done packets={len(supp_report.get('evidence_packets', []))}")
+
+    modality_specs = [
+        {
+            "stage": "text",
+            "inputs": text_inputs,
+            "guarded_fn": _analyze_text_guarded,
+            "required": settings.analysis_text_llm_enabled,
+            "start_progress": 0.56,
+            "start_message": "Analyzing text modality",
+        },
+        {
+            "stage": "table",
+            "inputs": table_inputs,
+            "guarded_fn": _analyze_tables_guarded,
+            "required": settings.effective_analysis_nontext_llm_enabled,
+            "start_progress": 0.64,
+            "start_message": "Analyzing table modality",
+        },
+        {
+            "stage": "figure",
+            "inputs": figure_inputs,
+            "guarded_fn": _analyze_figures_guarded,
+            "required": settings.effective_analysis_nontext_llm_enabled,
+            "start_progress": 0.72,
+            "start_message": "Analyzing figure modality",
+        },
+        {
+            "stage": "supplement",
+            "inputs": supp_inputs,
+            "guarded_fn": _analyze_supplements_guarded,
+            "required": settings.effective_analysis_nontext_llm_enabled,
+            "start_progress": 0.78,
+            "start_message": "Analyzing supplements",
+        },
+    ]
+
+    def _run_modality_stage(spec: dict[str, Any]) -> dict[str, Any]:
+        stage = str(spec["stage"])
+        inputs = spec["inputs"]
+        guarded_fn = spec["guarded_fn"]
+        _analysis_trace(f"run_full_analysis:{stage}:start")
+        set_openai_usage_context(job_id=job_id, document_id=document_id, stage=stage)
+        stage_started = monotonic()
+        stage_started_at = utc_timestamp()
+        report, usage, fallback = guarded_fn(
+            inputs,
+            job_id=job_id,
+            document_id=document_id,
+        )
+        duration = monotonic() - stage_started
+        event = {
+            "stage": stage,
+            "started_at": stage_started_at,
+            "ended_at": utc_timestamp(),
+            "duration_seconds": round(duration, 4),
+            "status": "completed",
+            "metadata": {
+                "input_chunks": len(inputs),
+                "evidence_packets": len(report.get("evidence_packets", [])),
+                "fallback_reason": fallback,
+            },
+        }
+        _analysis_trace(f"run_full_analysis:{stage}:done packets={len(report.get('evidence_packets', []))}")
+        return {
+            **spec,
+            "report": report,
+            "usage": usage,
+            "fallback": fallback,
+            "duration": duration,
+            "event": event,
+        }
+
+    def _apply_modality_result(result: dict[str, Any]) -> None:
+        stage = str(result["stage"])
+        usage = result.get("usage", {})
+        fallback = str(result.get("fallback", "") or "")
+        report = result.get("report", {})
+        inputs = result.get("inputs", [])
+        stage_usage_samples[stage] = usage if isinstance(usage, dict) else {}
+        if fallback:
+            stage_fallback_reasons[stage] = fallback
+        _enforce_openai_stage_success(
+            stage,
+            chunks=inputs if isinstance(inputs, list) else [],
+            usage=stage_usage_samples[stage],
+            fallback_reason=fallback,
+            required=bool(result.get("required")),
+            report=report if isinstance(report, dict) else None,
+        )
+        stage_timings[stage] = float(result.get("duration", 0.0) or 0.0)
+        event = result.get("event")
+        if isinstance(event, dict):
+            stage_timeline.append(event)
+
+    text_report: dict[str, Any]
+    table_report: dict[str, Any]
+    figure_report: dict[str, Any]
+    supp_report: dict[str, Any]
+    modality_results: dict[str, dict[str, Any]] = {}
+    if _modalities_can_run_parallel():
+        _emit_progress(progress_callback, 0.56, "Analyzing text, table, figure, and supplements in parallel")
+        worker_count = min(len(modality_specs), max(1, int(settings.analysis_parallel_modality_workers or 1)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {executor.submit(_run_modality_stage, spec): str(spec["stage"]) for spec in modality_specs}
+            completed = 0
+            for future in as_completed(futures):
+                result = future.result()
+                _apply_modality_result(result)
+                modality_results[str(result["stage"])] = result
+                completed += 1
+                _emit_progress(
+                    progress_callback,
+                    0.56 + (0.28 * completed / max(1, len(futures))),
+                    f"Completed {result['stage']} modality analysis",
+                )
+        stage_timeline.sort(key=lambda event: str(event.get("started_at", "")))
+    else:
+        for spec in modality_specs:
+            _emit_progress(progress_callback, float(spec["start_progress"]), str(spec["start_message"]))
+            result = _run_modality_stage(spec)
+            _apply_modality_result(result)
+            modality_results[str(result["stage"])] = result
+
+    text_report = modality_results["text"]["report"]
+    table_report = modality_results["table"]["report"]
+    figure_report = modality_results["figure"]["report"]
+    supp_report = modality_results["supplement"]["report"]
 
     _emit_progress(progress_callback, 0.84, "Reconciling cross-modal evidence")
     _analysis_trace("run_full_analysis:reconcile:start")
+    set_openai_usage_context(job_id=job_id, document_id=document_id, stage="reconcile")
     stage_started = monotonic()
-    reconcile_report = reconcile_reports(text_report, table_report, figure_report, supp_report)
+    stage_started_at = utc_timestamp()
+    reconcile_report, reconcile_usage = _run_analysis_sync(
+        lambda _chunks: reconcile_reports(text_report, table_report, figure_report, supp_report),
+        [],
+    )
+    stage_usage_samples["reconcile"] = reconcile_usage
     stage_timings["reconcile"] = monotonic() - stage_started
+    _record_stage_timing(
+        "reconcile",
+        stage_started,
+        stage_started_at,
+        discrepancies=len(reconcile_report.get("discrepancies", [])),
+        cross_modal_claims=len(reconcile_report.get("cross_modal_claims", [])),
+    )
     _analysis_trace("run_full_analysis:reconcile:done")
     coverage = _compute_coverage(
         text_chunks=main_expected_text_chunks,
@@ -128,7 +271,9 @@ def run_full_analysis(
     paper_meta = _extract_meta(meta_chunks)
     _emit_progress(progress_callback, 0.9, "Synthesizing executive report")
     _analysis_trace("run_full_analysis:synthesis:start")
+    set_openai_usage_context(job_id=job_id, document_id=document_id, stage="synthesis")
     stage_started = monotonic()
+    stage_started_at = utc_timestamp()
 
     def _synthesis_progress(local_progress: float, local_message: str) -> None:
         bounded_local = max(0.0, min(float(local_progress or 0.0), 1.0))
@@ -139,23 +284,34 @@ def run_full_analysis(
             str(local_message or "Synthesizing executive report"),
         )
 
-    summary = synthesize_report(
-        text_report,
-        table_report,
-        figure_report,
-        supp_report,
-        reconcile_report,
-        paper_meta=paper_meta,
-        coverage=coverage,
-        text_chunk_records=[_chunk_to_dict(c, asset_kind, document_source_url) for c in text_chunks],
-        progress_callback=_synthesis_progress,
+    summary, synthesis_usage = _run_analysis_sync(
+        lambda _chunks: synthesize_report(
+            text_report,
+            table_report,
+            figure_report,
+            supp_report,
+            reconcile_report,
+            paper_meta=paper_meta,
+            coverage=coverage,
+            text_chunk_records=[_chunk_to_dict(c, asset_kind, document_source_url) for c in text_chunks],
+            progress_callback=_synthesis_progress,
+        ),
+        [],
     )
+    stage_usage_samples["synthesis"] = synthesis_usage
     stage_timings["synthesis"] = monotonic() - stage_started
+    _record_stage_timing(
+        "synthesis",
+        stage_started,
+        stage_started_at,
+        section_count=len(summary.get("sections", [])) if isinstance(summary.get("sections"), list) else 0,
+    )
     _analysis_trace("run_full_analysis:synthesis:done")
 
     _emit_progress(progress_callback, 0.95, "Saving findings and report")
     _analysis_trace("run_full_analysis:store:start")
     stage_started = monotonic()
+    stage_started_at = utc_timestamp()
     _clear_existing(session, document_id)
     _store_findings(session, document_id, text_report)
     _store_findings(session, document_id, table_report)
@@ -165,10 +321,20 @@ def run_full_analysis(
     _store_report(session, document_id, summary)
 
     session.commit()
+    information_retention_summary = _write_information_retention_audit(
+        document_id=document_id,
+        assets=assets,
+        chunks=chunks,
+        asset_kind=asset_kind,
+        document_source_url=document_source_url,
+        summary=summary,
+    )
     stage_timings["store"] = monotonic() - stage_started
+    _record_stage_timing("store", stage_started, stage_started_at)
     stage_timings["analysis_total_seconds"] = monotonic() - analysis_started_at
     _analysis_trace("run_full_analysis:done")
     model_usage = _merge_usage_counts(list(stage_usage_samples.values()))
+    openai_usage = summarize_openai_usage(job_id=job_id, document_id=document_id)
     section_diagnostics = summary.get("section_diagnostics", {})
     section_confidence_distribution = _aggregate_section_confidence_distribution(summary.get("sections"))
     fallback_counts_by_reason = _collect_fallback_reason_counts(
@@ -194,6 +360,7 @@ def run_full_analysis(
     }
     return {
         "analysis_timing": analysis_timing,
+        "analysis_timeline": stage_timeline,
         "coverage": coverage,
         "summary_schema_version": summary.get("schema_version", 1),
         "sectioned_report_version": summary.get("sectioned_report_version", 0),
@@ -206,6 +373,7 @@ def run_full_analysis(
         "sections_fallback_used": bool(summary.get("sections_fallback_used", False)),
         "sections_fallback_notes": summary.get("sections_fallback_notes", []),
         "section_confidence_distribution": section_confidence_distribution,
+        "section_boundary_ledger_updates": section_ledger_updates,
         "fallback_counts_by_reason": fallback_counts_by_reason,
         "text_llm_calls": int(model_usage.get("text_calls", 0)),
         "deep_vision_calls": int(
@@ -224,12 +392,14 @@ def run_full_analysis(
             "supplement": len(supp_report.get("evidence_packets", [])),
         },
         "model_usage": model_usage,
+        "openai_usage": openai_usage,
         "vision_input_diagnostics": {
             "figure": figure_report.get("diagnostics", {}),
             "supplement": supp_report.get("diagnostics", {}),
         },
         "stage_model_usage": stage_usage_samples,
         "reconcile": reconcile_report.get("stats", {}),
+        "information_retention_audit": information_retention_summary,
     }
 
 
@@ -239,9 +409,19 @@ def _analysis_trace(step: str) -> None:
         return
     try:
         with open(trace_path, "a", encoding="utf-8") as handle:
-            handle.write(f"{step}\n")
+            handle.write(f"{utc_timestamp()} {step}\n")
     except Exception:
         return
+
+
+def _modalities_can_run_parallel() -> bool:
+    return bool(
+        settings.analysis_parallel_modalities_enabled
+        and settings.llm_provider_normalized == "openai"
+        and settings.analysis_text_subprocess_guard_enabled
+        and settings.analysis_modality_subprocess_guard_enabled
+        and int(settings.analysis_parallel_modality_workers or 0) > 1
+    )
 
 
 def _snapshot_counter_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
@@ -375,9 +555,69 @@ def _collect_fallback_reason_counts(
     return counts
 
 
-def _analysis_worker(kind: str, chunks: list[dict[str, Any]], out_queue: Any) -> None:
+def _enforce_openai_stage_success(
+    stage: str,
+    *,
+    chunks: list[dict[str, Any]],
+    usage: dict[str, Any] | None,
+    fallback_reason: str = "",
+    required: bool = True,
+    report: dict[str, Any] | None = None,
+) -> None:
+    if settings.llm_provider_normalized != "openai" or not required or not chunks:
+        return
+
+    usage_payload = usage if isinstance(usage, dict) else {}
+    error_keys = ("text_errors", "deep_errors", "vision_errors")
+    errors = {
+        key: int(float(usage_payload.get(key, 0) or 0))
+        for key in error_keys
+        if int(float(usage_payload.get(key, 0) or 0)) > 0
+    }
+    call_count = sum(
+        int(float(usage_payload.get(key, 0) or 0))
+        for key in ("text_calls", "deep_calls", "vision_calls")
+    )
+
+    diagnostics = report.get("diagnostics", {}) if isinstance(report, dict) else {}
+    diagnostic_failures = 0
+    if isinstance(diagnostics, dict):
+        for key in ("vision_failures", "ocr_fallback_calls"):
+            try:
+                diagnostic_failures += int(diagnostics.get(key, 0) or 0)
+            except Exception:
+                continue
+
+    reasons: list[str] = []
+    if fallback_reason:
+        reasons.append(f"fallback was used: {fallback_reason}")
+    if errors:
+        reasons.append(
+            "OpenAI call errors: "
+            + ", ".join(f"{key}={value}" for key, value in sorted(errors.items()))
+        )
+    if diagnostic_failures:
+        reasons.append(f"diagnostic failures={diagnostic_failures}")
+    if call_count <= 0:
+        reasons.append("no OpenAI calls were recorded")
+
+    if reasons:
+        raise RuntimeError(
+            f"OpenAI {stage} analysis failed; refusing to create a fallback report. "
+            + " ".join(reasons)
+        )
+
+
+def _analysis_worker(
+    kind: str,
+    chunks: list[dict[str, Any]],
+    out_queue: Any,
+    job_id: int | None = None,
+    document_id: int | None = None,
+) -> None:
     try:
         kind_key = str(kind or "").strip().lower()
+        set_openai_usage_context(job_id=job_id, document_id=document_id, stage=kind_key or "unknown")
         if kind_key == "text":
             report = analyze_text(chunks)
         elif kind_key == "table":
@@ -413,8 +653,14 @@ def _empty_usage_payload() -> dict[str, Any]:
 def _run_analysis_sync(
     analyze_fn,
     chunks: list[dict[str, Any]],
+    *,
+    stage: str | None = None,
+    job_id: int | None = None,
+    document_id: int | None = None,
     **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    if stage:
+        set_openai_usage_context(job_id=job_id, document_id=document_id, stage=stage)
     before = snapshot_model_usage_counters()
     if kwargs:
         report = analyze_fn(chunks, **kwargs)
@@ -444,10 +690,12 @@ def _run_analysis_subprocess(
     chunks: list[dict[str, Any]],
     *,
     timeout_seconds: int,
+    job_id: int | None = None,
+    document_id: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     context = mp.get_context("spawn")
     out_queue = context.Queue(maxsize=1)
-    proc = context.Process(target=_analysis_worker, args=(kind, chunks, out_queue))
+    proc = context.Process(target=_analysis_worker, args=(kind, chunks, out_queue, job_id, document_id))
     proc.start()
     proc.join(timeout_seconds)
 
@@ -455,6 +703,12 @@ def _run_analysis_subprocess(
     if timed_out:
         proc.terminate()
         proc.join(5)
+        mark_unmatched_openai_reservations_failed(
+            job_id=job_id,
+            document_id=document_id,
+            stage=str(kind or "").strip().lower() or None,
+            error=f"{kind} analysis subprocess timed out",
+        )
 
     payload: dict[str, Any] = {}
     if not timed_out and int(proc.exitcode or 0) == 0:
@@ -494,13 +748,24 @@ def _empty_modality_report(kind: str, fail_reason: str) -> dict[str, Any]:
     return base
 
 
-def _analyze_text_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], str]:
+def _analyze_text_guarded(
+    chunks: list[dict[str, Any]],
+    *,
+    job_id: int | None = None,
+    document_id: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
     if not settings.analysis_text_llm_enabled or not settings.analysis_text_subprocess_guard_enabled:
-        report, usage = _run_analysis_sync(analyze_text, chunks)
+        report, usage = _run_analysis_sync(analyze_text, chunks, stage="text", job_id=job_id, document_id=document_id)
         return report, usage, ""
 
     timeout_seconds = max(15, int(settings.analysis_text_subprocess_timeout_sec or 0))
-    report, usage, fail_reason = _run_analysis_subprocess("text", chunks, timeout_seconds=timeout_seconds)
+    report, usage, fail_reason = _run_analysis_subprocess(
+        "text",
+        chunks,
+        timeout_seconds=timeout_seconds,
+        job_id=job_id,
+        document_id=document_id,
+    )
     if report:
         return report, usage, ""
 
@@ -512,6 +777,8 @@ def _analyze_text_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str, Any],
             "text",
             chunks,
             timeout_seconds=retry_timeout_seconds,
+            job_id=job_id,
+            document_id=document_id,
         )
         if retry_report:
             retry_notes = list(retry_report.get("analysis_notes", []))
@@ -528,7 +795,14 @@ def _analyze_text_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str, Any],
             f"{combined_fail_reason}; retry={retry_fail}" if combined_fail_reason else f"retry={retry_fail}"
         )
 
-    fallback_report, fallback_usage = _run_analysis_sync(analyze_text, chunks, force_llm_enabled=False)
+    fallback_report, fallback_usage = _run_analysis_sync(
+        analyze_text,
+        chunks,
+        stage="text",
+        job_id=job_id,
+        document_id=document_id,
+        force_llm_enabled=False,
+    )
     notes = list(fallback_report.get("analysis_notes", []))
     notes.append(
         "Text LLM stage failed in isolated subprocess; "
@@ -542,22 +816,38 @@ def _analyze_text_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str, Any],
     )
 
 
-def _analyze_tables_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], str]:
+def _analyze_tables_guarded(
+    chunks: list[dict[str, Any]],
+    *,
+    job_id: int | None = None,
+    document_id: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
     if not chunks:
         return {"findings": [], "results": [], "evidence_packets": []}, _empty_usage_payload(), ""
-    if not settings.analysis_nontext_llm_enabled:
+    if not settings.effective_analysis_nontext_llm_enabled:
         return _empty_modality_report("table", "non-text llm disabled"), _empty_usage_payload(), ""
     if not settings.analysis_modality_subprocess_guard_enabled:
-        report, usage = _run_analysis_sync(analyze_tables, chunks)
+        report, usage = _run_analysis_sync(analyze_tables, chunks, stage="table", job_id=job_id, document_id=document_id)
         return report, usage, ""
     timeout_seconds = max(15, int(settings.analysis_modality_subprocess_timeout_sec or 0))
-    report, usage, fail_reason = _run_analysis_subprocess("table", chunks, timeout_seconds=timeout_seconds)
+    report, usage, fail_reason = _run_analysis_subprocess(
+        "table",
+        chunks,
+        timeout_seconds=timeout_seconds,
+        job_id=job_id,
+        document_id=document_id,
+    )
     if report:
         return report, usage, ""
     return _empty_modality_report("table", fail_reason), usage, fail_reason
 
 
-def _analyze_figures_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], str]:
+def _analyze_figures_guarded(
+    chunks: list[dict[str, Any]],
+    *,
+    job_id: int | None = None,
+    document_id: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
     if not chunks:
         return {
             "findings": [],
@@ -565,19 +855,30 @@ def _analyze_figures_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str, An
             "evidence_packets": [],
             "diagnostics": {},
         }, _empty_usage_payload(), ""
-    if not settings.analysis_nontext_llm_enabled:
+    if not settings.effective_analysis_nontext_llm_enabled:
         return _empty_modality_report("figure", "non-text llm disabled"), _empty_usage_payload(), ""
     if not settings.analysis_modality_subprocess_guard_enabled:
-        report, usage = _run_analysis_sync(analyze_figures, chunks)
+        report, usage = _run_analysis_sync(analyze_figures, chunks, stage="figure", job_id=job_id, document_id=document_id)
         return report, usage, ""
     timeout_seconds = max(15, int(settings.analysis_modality_subprocess_timeout_sec or 0))
-    report, usage, fail_reason = _run_analysis_subprocess("figure", chunks, timeout_seconds=timeout_seconds)
+    report, usage, fail_reason = _run_analysis_subprocess(
+        "figure",
+        chunks,
+        timeout_seconds=timeout_seconds,
+        job_id=job_id,
+        document_id=document_id,
+    )
     if report:
         return report, usage, ""
     return _empty_modality_report("figure", fail_reason), usage, fail_reason
 
 
-def _analyze_supplements_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], str]:
+def _analyze_supplements_guarded(
+    chunks: list[dict[str, Any]],
+    *,
+    job_id: int | None = None,
+    document_id: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
     if not chunks:
         return {
             "findings": [],
@@ -585,13 +886,25 @@ def _analyze_supplements_guarded(chunks: list[dict[str, Any]]) -> tuple[dict[str
             "evidence_packets": [],
             "diagnostics": {},
         }, _empty_usage_payload(), ""
-    if not settings.analysis_nontext_llm_enabled:
+    if not settings.effective_analysis_nontext_llm_enabled:
         return _empty_modality_report("supplement", "non-text llm disabled"), _empty_usage_payload(), ""
     if not settings.analysis_modality_subprocess_guard_enabled:
-        report, usage = _run_analysis_sync(analyze_supplements, chunks)
+        report, usage = _run_analysis_sync(
+            analyze_supplements,
+            chunks,
+            stage="supplement",
+            job_id=job_id,
+            document_id=document_id,
+        )
         return report, usage, ""
     timeout_seconds = max(15, int(settings.analysis_modality_subprocess_timeout_sec or 0))
-    report, usage, fail_reason = _run_analysis_subprocess("supplement", chunks, timeout_seconds=timeout_seconds)
+    report, usage, fail_reason = _run_analysis_subprocess(
+        "supplement",
+        chunks,
+        timeout_seconds=timeout_seconds,
+        job_id=job_id,
+        document_id=document_id,
+    )
     if report:
         return report, usage, ""
     return _empty_modality_report("supplement", fail_reason), usage, fail_reason
@@ -615,6 +928,44 @@ def _chunk_to_dict(chunk: Chunk, asset_kind: dict[int, str], document_source_url
         "asset_kind": asset_kind.get(chunk.asset_id or -1, "main"),
         "document_source_url": document_source_url,
     }
+
+
+def _asset_to_dict(asset: Asset) -> dict[str, Any]:
+    return {
+        "id": asset.id,
+        "kind": asset.kind,
+        "filename": asset.filename,
+        "content_type": asset.content_type,
+        "path": asset.path,
+    }
+
+
+def _write_information_retention_audit(
+    *,
+    document_id: int,
+    assets: list[Asset],
+    chunks: list[Chunk],
+    asset_kind: dict[int, str],
+    document_source_url: str,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        audit = build_information_retention_audit(
+            document_id=document_id,
+            source_assets=[_asset_to_dict(asset) for asset in assets],
+            parsed_chunks=[_chunk_to_dict(chunk, asset_kind, document_source_url) for chunk in chunks],
+            summary_json=summary,
+        )
+        path = artifacts_dir(document_id) / "information_retention_audit.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
+        summary_payload = audit.get("compact_summary", {})
+        return summary_payload if isinstance(summary_payload, dict) else {}
+    except Exception as exc:
+        return {
+            "error": "information retention audit failed",
+            "detail": str(exc),
+        }
 
 
 def _extract_meta(meta_chunks: list[Chunk]) -> dict:

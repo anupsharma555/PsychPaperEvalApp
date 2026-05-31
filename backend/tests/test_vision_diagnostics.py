@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from app.services.analysis import figure_analysis, image_source, llm, supp_analysis
+from app.services.analysis.media_cleaning import clean_figure_caption, figure_downstream_text
 
 
 def test_figure_analysis_uses_remote_source_when_local_path_missing(monkeypatch) -> None:
@@ -88,6 +89,91 @@ def test_figure_analysis_falls_back_to_ocr_when_image_unavailable(monkeypatch) -
     assert report["evidence_packets"]
 
 
+def test_figure_analysis_uses_caption_only_when_legend_extracted(monkeypatch) -> None:
+    prompts: list[str] = []
+
+    def _fake_chat_text(
+        prompt: str,
+        system: str | None = None,
+        temperature: float = 0.2,
+    ) -> str:
+        prompts.append(prompt)
+        return (
+            '{"evidence_packets":[{"finding_id":"fig-caption-1","anchor":"F3",'
+            '"statement":"Figure legend describes PCR validation of vector integration.",'
+            '"evidence_refs":["F3"],"confidence":0.75,"category":"figure_quality"}]}'
+        )
+
+    monkeypatch.setattr(figure_analysis, "chat_text_fast", _fake_chat_text)
+
+    report = figure_analysis.analyze_figures(
+        [
+            {
+                "anchor": "F3",
+                "meta": json.dumps(
+                    {
+                        "caption": "Figure 4. Multiplex and single PCR confirmed vector integration order.",
+                        "source": "grobid_tei_figure",
+                    }
+                ),
+            }
+        ]
+    )
+    diagnostics = report["diagnostics"]
+
+    assert diagnostics["caption_only_calls"] == 1
+    assert diagnostics["caption_only_success"] == 1
+    assert diagnostics["ocr_fallback_calls"] == 0
+    assert "figure legend/caption was extracted" in prompts[0]
+    assert report["evidence_packets"][0]["statement"].startswith("Figure legend describes PCR")
+
+
+def test_media_cleaning_prefers_clean_caption_before_ocr() -> None:
+    text, source = figure_downstream_text(
+        caption=(
+            "Figure 1. Bar graph shows mean \x00B1 SEM for cell uptake across engineered cell lines "
+            "after stable vector integration."
+        ),
+        ocr_text="noisy page footer 150 6 250 www.example.org",
+    )
+
+    assert source == "caption"
+    assert "+/- SEM" in text
+    assert "www.example.org" not in text
+
+
+def test_media_cleaning_falls_back_to_ocr_for_short_caption() -> None:
+    text, source = figure_downstream_text(
+        caption="Figure 2.",
+        ocr_text="Dose response curves show higher transport activity in engineered cells.",
+    )
+
+    assert source == "caption_plus_ocr_fallback"
+    assert "Dose response curves" in text
+    assert clean_figure_caption("mean \x00B1 SEM") == "mean +/- SEM"
+
+
+def test_figure_analysis_skips_page_raster_fallback() -> None:
+    report = figure_analysis.analyze_figures(
+        [
+            {
+                "anchor": "page1",
+                "meta": json.dumps(
+                    {
+                        "caption": "Page 1 raster fallback",
+                        "fig_type": "page",
+                        "source": "page_raster_fallback",
+                        "ocr_text": "jspodanynuaps/wopauneummm noisy page text",
+                    }
+                ),
+            }
+        ]
+    )
+
+    assert report["diagnostics"]["vision_skipped"]["page_raster_fallback"] == 1
+    assert report["evidence_packets"] == []
+
+
 def test_supplement_analysis_uses_remote_source_for_figure_chunks(monkeypatch) -> None:
     seen_paths: list[list[str]] = []
 
@@ -137,6 +223,7 @@ def test_llm_model_usage_counters_capture_calls(monkeypatch) -> None:
     clock = iter([0.0, 0.25, 1.0, 1.8, 2.0, 4.5])
 
     monkeypatch.setattr(llm, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(llm.settings, "llm_provider", "local")
     monkeypatch.setattr(llm, "_load_text_model", lambda: _DummyLLM())
     monkeypatch.setattr(llm, "_load_deep_model", lambda: _DummyLLM())
     monkeypatch.setattr(llm, "_load_vision_model", lambda: _DummyLLM())

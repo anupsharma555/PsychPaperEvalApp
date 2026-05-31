@@ -17,7 +17,7 @@ use tauri::{Manager, State};
 use std::os::unix::process::CommandExt;
 
 const BACKEND_PORT: u16 = 8000;
-const STARTUP_TIMEOUT_SEC: u64 = 45;
+const STARTUP_TIMEOUT_SEC: u64 = 180;
 
 type SharedState = Mutex<DesktopState>;
 
@@ -153,7 +153,8 @@ impl DesktopState {
     }
 
     fn write_runtime_snapshot(&self) {
-        let payload = serde_json::to_vec_pretty(&self.runtime_info()).unwrap_or_else(|_| b"{}".to_vec());
+        let payload =
+            serde_json::to_vec_pretty(&self.runtime_info()).unwrap_or_else(|_| b"{}".to_vec());
         let _ = fs::write(self.runtime_snapshot_path(), payload);
     }
 
@@ -183,7 +184,10 @@ impl DesktopState {
             return;
         }
 
-        self.append_log(&format!("Killing stale backend process group for pid {}", marker.pid));
+        self.append_log(&format!(
+            "Killing stale backend process group for pid {}",
+            marker.pid
+        ));
         terminate_process_group(marker.pid as i32);
         let _ = fs::remove_file(self.marker_path());
     }
@@ -199,8 +203,6 @@ impl DesktopState {
     }
 
     fn start_backend(&mut self) -> Result<(), String> {
-        self.cleanup_stale_marker();
-
         if let Some(child) = self.backend_child.as_mut() {
             if child.try_wait().map_err(|err| err.to_string())?.is_none() {
                 self.startup_state = "backend_ready".to_string();
@@ -210,12 +212,16 @@ impl DesktopState {
             }
         }
 
+        self.cleanup_stale_marker();
+
         self.startup_state = "backend_starting".to_string();
         self.last_start_error = None;
         self.write_runtime_snapshot();
 
         if wait_for_backend_ready(&self.api_base, 1) {
-            self.append_log("Existing backend detected on port 8000; requesting shutdown before launch.");
+            self.append_log(
+                "Existing backend detected on port 8000; requesting shutdown before launch.",
+            );
             self.log_lifecycle(
                 "desktop_backend_preexisting_detected",
                 json!({"api_base": self.api_base.clone()}),
@@ -244,11 +250,9 @@ impl DesktopState {
             .arg("--backend-port")
             .arg(BACKEND_PORT.to_string())
             .env("PAPER_EVAL_ROOT", &self.root)
-            .stdout(Stdio::from(
-                backend_log
-                    .try_clone()
-                    .map_err(|err| format!("Failed to clone backend log handle: {err}"))?,
-            ))
+            .stdout(Stdio::from(backend_log.try_clone().map_err(|err| {
+                format!("Failed to clone backend log handle: {err}")
+            })?))
             .stderr(Stdio::from(backend_log));
 
         #[cfg(target_family = "unix")]
@@ -333,13 +337,17 @@ impl DesktopState {
 
 #[tauri::command]
 fn runtime_info(state: State<'_, SharedState>) -> Result<RuntimeInfo, String> {
-    let guard = state.lock().map_err(|_| "Failed to lock desktop state".to_string())?;
+    let guard = state
+        .lock()
+        .map_err(|_| "Failed to lock desktop state".to_string())?;
     Ok(guard.runtime_info())
 }
 
 #[tauri::command]
 fn restart_backend(state: State<'_, SharedState>) -> Result<RuntimeInfo, String> {
-    let mut guard = state.lock().map_err(|_| "Failed to lock desktop state".to_string())?;
+    let mut guard = state
+        .lock()
+        .map_err(|_| "Failed to lock desktop state".to_string())?;
     guard.stop_backend();
     guard.start_backend()?;
     Ok(guard.runtime_info())
@@ -347,7 +355,9 @@ fn restart_backend(state: State<'_, SharedState>) -> Result<RuntimeInfo, String>
 
 #[tauri::command]
 fn open_logs_folder(state: State<'_, SharedState>) -> Result<String, String> {
-    let guard = state.lock().map_err(|_| "Failed to lock desktop state".to_string())?;
+    let guard = state
+        .lock()
+        .map_err(|_| "Failed to lock desktop state".to_string())?;
     Command::new("open")
         .arg(&guard.logs_dir)
         .spawn()
@@ -357,11 +367,14 @@ fn open_logs_folder(state: State<'_, SharedState>) -> Result<String, String> {
 
 #[tauri::command]
 fn export_diagnostics(state: State<'_, SharedState>) -> Result<String, String> {
-    let guard = state.lock().map_err(|_| "Failed to lock desktop state".to_string())?;
+    let guard = state
+        .lock()
+        .map_err(|_| "Failed to lock desktop state".to_string())?;
 
-    let archive_path = guard
-        .logs_dir
-        .join(format!("papereval-diagnostics-{}.zip", unix_ts().replace(':', "-")));
+    let archive_path = guard.logs_dir.join(format!(
+        "papereval-diagnostics-{}.zip",
+        unix_ts().replace(':', "-")
+    ));
 
     let candidates = [
         guard.desktop_log_path(),
@@ -415,7 +428,8 @@ fn resolve_root() -> Result<PathBuf, String> {
         }
     }
 
-    let exe = std::env::current_exe().map_err(|err| format!("Failed to resolve current exe: {err}"))?;
+    let exe =
+        std::env::current_exe().map_err(|err| format!("Failed to resolve current exe: {err}"))?;
     for candidate in exe.ancestors() {
         if is_project_root(candidate) {
             return Ok(candidate.to_path_buf());
@@ -426,7 +440,9 @@ fn resolve_root() -> Result<PathBuf, String> {
 }
 
 fn is_project_root(path: &Path) -> bool {
-    path.join("backend").exists() && path.join("scripts").exists() && path.join("desktop_ui").exists()
+    path.join("backend").exists()
+        && path.join("scripts").exists()
+        && path.join("desktop_ui").exists()
 }
 
 fn resolve_backend_python(root: &Path) -> PathBuf {
@@ -550,24 +566,25 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let state = app.state::<SharedState>();
-            if let Ok(mut guard) = state.lock() {
-                guard.append_log("Secondary launch detected, recycling backend.");
-                guard.log_lifecycle("desktop_shell_secondary_launch", json!({}));
-                guard.stop_backend();
-                if let Err(err) = guard.start_backend() {
-                    guard.last_start_error = Some(err.clone());
-                    guard.startup_state = "degraded".to_string();
-                    guard.append_log(&format!("Backend restart on secondary launch failed: {err}"));
-                }
-                guard.write_runtime_snapshot();
-            }
-
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
             }
+
+            let state = app.state::<SharedState>();
+            if let Ok(mut guard) = state.lock() {
+                guard.append_log("Secondary launch detected, focusing existing window.");
+                guard.log_lifecycle("desktop_shell_secondary_launch", json!({}));
+                if let Err(err) = guard.start_backend() {
+                    guard.last_start_error = Some(err.clone());
+                    guard.startup_state = "degraded".to_string();
+                    guard.append_log(&format!(
+                        "Backend readiness check on secondary launch failed: {err}"
+                    ));
+                }
+                guard.write_runtime_snapshot();
+            };
         }))
         .manage(Mutex::new(state))
         .invoke_handler(tauri::generate_handler![
@@ -611,7 +628,8 @@ fn main() {
 }
 
 fn enforce_bundle_guard(root: &Path) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|err| format!("Failed to resolve executable path: {err}"))?;
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("Failed to resolve executable path: {err}"))?;
     let exe_str = exe.display().to_string();
     if exe_str.contains("/dist/") || exe_str.contains("/build/") {
         let canonical = root.join("PaperEval.app");

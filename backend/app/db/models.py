@@ -53,6 +53,15 @@ class Chunk(SQLModel, table=True):
     meta: Optional[str] = None
 
 
+class SourceManifest(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    document_id: int = Field(index=True)
+    source_type: str = Field(index=True)  # url|upload
+    status: str = Field(index=True)  # resolved|uploaded|failed
+    payload: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Finding(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     document_id: int = Field(index=True)
