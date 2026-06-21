@@ -1,9 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 
-const defaultApiBase =
-  window.__PAPEREVAL_API_BASE ||
-  import.meta.env.VITE_API_BASE ||
-  "http://127.0.0.1:8000/api";
+function inferApiBase() {
+  if (window.__PAPEREVAL_API_BASE) return window.__PAPEREVAL_API_BASE;
+  if (import.meta.env.VITE_API_BASE) return import.meta.env.VITE_API_BASE;
+
+  const { origin, pathname, port, protocol } = window.location;
+  const isHttp = protocol === "http:" || protocol === "https:";
+  const backendServedWeb = isHttp && pathname.startsWith("/web");
+  if (backendServedWeb) return `${origin}/api`;
+
+  // Vite/dev preview runs on a separate origin; keep it pointed at the
+  // default local backend unless VITE_API_BASE overrides it.
+  if (isHttp && port !== "5184" && port !== "4174") return `${origin}/api`;
+  return "http://127.0.0.1:8000/api";
+}
+
+const defaultApiBase = inferApiBase();
 
 export const API_BASE = defaultApiBase;
 
@@ -76,6 +88,10 @@ export async function fetchJobs({ status, limit = 200, offset = 0, sort = "updat
   params.set("offset", String(offset));
   params.set("sort", sort);
   return apiRequest(`/jobs?${params.toString()}`);
+}
+
+export async function fetchJob(jobId) {
+  return apiRequest(`/jobs/${jobId}`);
 }
 
 export async function fetchRuntimeEvents({ since, limit = 25 } = {}) {

@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import json
 import re
+from time import monotonic
 from typing import Any
 
 from app.core.config import settings
 from app.services.analysis.llm import chat_text_fast
 from app.services.analysis.prompts import TEXT_ANALYSIS_SYSTEM
 from app.services.analysis.utils import (
+    add_source_excerpts_to_packets,
     extract_json,
     max_chars_for_ctx,
     normalize_evidence_packets,
     packets_to_legacy_findings,
-    truncate_text,
 )
 
 INTRO_SECTION_RE = re.compile(r"\b(intro|background|objective|aim|rationale|hypoth)\b", re.IGNORECASE)
@@ -99,15 +100,297 @@ EXPLICIT_HEADING_RE = re.compile(
 )
 
 
+def _text_prompt_prefix() -> str:
+    return (
+        "Analyze the paper text for peer-review quality with strict section fidelity. "
+        "Only use anchors that exactly match the bracketed snippet anchors in the input. "
+        "Extract section-appropriate points from introduction, methods, results, discussion, and conclusion. "
+        "For methods anchors, extract concrete protocol details (design, cohort/sample construction, "
+        "inclusion/exclusion criteria, interventions/comparators, endpoints, measurement instruments, "
+        "statistical models, covariates, missing-data handling, and sensitivity checks). "
+        "For medication or therapeutic studies, preserve drug names, class, dose, route, schedule, "
+        "duration, comparator, outcome timepoint, and adverse-event details when stated. "
+        "For laboratory or preclinical studies, preserve model system, specimen/cell line, construct, "
+        "gene/protein target, assay/readout, and validation details when stated. "
+        "For results anchors, extract observed findings only and state the actual outcome direction/magnitude "
+        "reported in text (avoid vague phrasing like 'shows this or that'). "
+        "Never emit generic result narration like 'the figure shows' without concrete reported outcomes. "
+        "For discussion/conclusion anchors, extract interpretation/conclusions only from those sections. "
+        "Do not mix section content (for example, do not place methods statements in results packets). "
+        "Do not claim details are missing unless the text explicitly says they are missing/not reported. "
+        "Cite evidence anchors.\n\n"
+    )
+
+
+def _short_text_prompt_prefix() -> str:
+    return (
+        "Analyze paper text with strict section fidelity. Use only the bracketed anchors provided. "
+        "Preserve concrete methods, medication/intervention details, model systems, assays/readouts, "
+        "results directions, statistics, units, adverse events, limitations, and conclusions when stated. "
+        "Do not mix methods/results/discussion/conclusion content and do not invent missing details. "
+        "Cite evidence anchors.\n\n"
+    )
+
+
+def _text_analysis_prompt(blocks: list[str], *, max_chars: int) -> str:
+    prefix = _short_text_prompt_prefix() if settings.llm_provider_normalized == "local" else _text_prompt_prefix()
+    if len(prefix) + 260 > max_chars:
+        prefix = _short_text_prompt_prefix()
+    if len(prefix) >= max_chars:
+        return prefix[: max(0, max_chars - 3)].rstrip() + "..."
+    if not blocks:
+        return prefix.rstrip()
+    selected: list[str] = []
+    current_len = len(prefix)
+    separator_len = 2
+    for block in blocks:
+        block_text = str(block or "").strip()
+        if not block_text:
+            continue
+        projected = current_len + len(block_text) + (separator_len if selected else 0)
+        if projected <= max_chars:
+            selected.append(block_text)
+            current_len = projected
+            continue
+        remaining = max_chars - current_len - (separator_len if selected else 0)
+        if remaining >= 260:
+            selected.append(_compact_text_block(block_text, max_chars=remaining))
+        break
+    if not selected and blocks:
+        selected.append(_compact_text_block(str(blocks[0]), max_chars=max(0, max_chars - len(prefix))))
+    return prefix + "\n\n".join(selected)
+
+
+def _compact_text_block(block: str, *, max_chars: int) -> str:
+    text = str(block or "").strip()
+    if len(text) <= max_chars:
+        return text
+    lines = text.splitlines() or [text]
+    anchor_line = lines[0].strip()
+    if len(anchor_line) > max_chars - 3:
+        return anchor_line[: max(0, max_chars - 3)].rstrip() + "..."
+    body = " ".join(" ".join(lines[1:]).split()).strip()
+    if not body:
+        return anchor_line
+    remaining = max_chars - len(anchor_line) - 4
+    if remaining <= 0:
+        return anchor_line[: max(0, max_chars - 3)].rstrip() + "..."
+    body = _truncate_sentence_safely(body, max_chars=remaining)
+    compact = f"{anchor_line}\n{body}".strip()
+    if len(compact) > max_chars:
+        compact = compact[: max(0, max_chars - 3)].rstrip()
+    return compact + "..."
+
+
+HIGH_SIGNAL_TEXT_RE = re.compile(
+    r"\b("
+    r"sample|participants?|cohort|randomi[sz]ed|trial|placebo|control|dose|mg|kg|route|daily|weekly|"
+    r"adverse events?|side effects?|madrs|ham-?d|response|remission|biomarker|cytokine|il-?6|"
+    r"scanner|fmri|connectivity|assay|protein|gene|cell line|pcr|qpcr|sequencing|model system|"
+    r"primary outcome|secondary outcome|confidence interval|p\s*[<=>]|effect size|odds ratio|hazard ratio"
+    r")\b",
+    re.IGNORECASE,
+)
+TEXT_PRESELECTION_SECTION_TARGETS: dict[str, int] = {
+    "introduction": 3,
+    "methods": 8,
+    "results": 8,
+    "discussion": 5,
+    "conclusion": 3,
+    "unknown": 1,
+}
+
+
+def _preselect_text_llm_chunks(chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    original_count = len(chunks)
+    if (
+        settings.llm_provider_normalized != "local"
+        or not bool(settings.analysis_local_text_preselection_enabled)
+        or original_count <= 0
+    ):
+        return list(chunks), {
+            "enabled": False,
+            "original_chunks": original_count,
+            "selected_chunks": original_count,
+            "skipped_chunks": 0,
+        }
+
+    try:
+        max_chunks = max(8, int(settings.analysis_local_text_preselection_max_chunks or 0))
+    except Exception:
+        max_chunks = 28
+    if original_count <= max_chunks:
+        return list(chunks), {
+            "enabled": True,
+            "original_chunks": original_count,
+            "selected_chunks": original_count,
+            "skipped_chunks": 0,
+            "section_counts": _chunk_section_counts(chunks),
+            "reason": "below_max_chunks",
+        }
+
+    try:
+        min_per_section = max(1, int(settings.analysis_local_text_preselection_min_chunks_per_section or 0))
+    except Exception:
+        min_per_section = 2
+
+    scored: list[dict[str, Any]] = []
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks):
+        anchor = str(chunk.get("anchor", "") or "").strip()
+        content = str(chunk.get("content", "") or "").strip()
+        if not anchor or not content or _is_noise_statement(content):
+            continue
+        section = _infer_chunk_section(chunk, idx=idx, total_chunks=total)
+        score = _text_chunk_signal_score(chunk, section=section, idx=idx, total_chunks=total)
+        scored.append({"idx": idx, "chunk": chunk, "section": section, "score": score})
+
+    if not scored:
+        return list(chunks), {
+            "enabled": True,
+            "original_chunks": original_count,
+            "selected_chunks": original_count,
+            "skipped_chunks": 0,
+            "reason": "no_scoreable_chunks",
+        }
+
+    selected_indexes: set[int] = set()
+    scored_by_section: dict[str, list[dict[str, Any]]] = {section: [] for section in SECTION_ORDER}
+    for row in scored:
+        section = str(row["section"])
+        scored_by_section.setdefault(section, []).append(row)
+    for rows in scored_by_section.values():
+        rows.sort(key=lambda row: (-float(row["score"]), int(row["idx"])))
+
+    for section in ("introduction", "methods", "results", "discussion", "conclusion"):
+        for row in scored_by_section.get(section, [])[:min_per_section]:
+            selected_indexes.add(int(row["idx"]))
+
+    ranked = sorted(scored, key=lambda row: (-float(row["score"]), int(row["idx"])))
+    for row in ranked:
+        if len(selected_indexes) >= max_chunks:
+            break
+        section = str(row["section"])
+        section_limit = TEXT_PRESELECTION_SECTION_TARGETS.get(section, 1)
+        current_section_count = sum(
+            1
+            for idx in selected_indexes
+            if _infer_chunk_section(chunks[idx], idx=idx, total_chunks=total) == section
+        )
+        if current_section_count >= section_limit and len(selected_indexes) >= min(max_chunks, 18):
+            continue
+        selected_indexes.add(int(row["idx"]))
+
+    selected = [chunks[idx] for idx in sorted(selected_indexes)]
+    if not selected:
+        selected = list(chunks[:max_chunks])
+    selected_counts = _chunk_section_counts(selected)
+    return selected, {
+        "enabled": True,
+        "original_chunks": original_count,
+        "selected_chunks": len(selected),
+        "skipped_chunks": max(0, original_count - len(selected)),
+        "max_chunks": max_chunks,
+        "section_counts": selected_counts,
+        "top_skipped_sections": _chunk_section_counts(
+            [chunks[idx] for idx in range(original_count) if idx not in selected_indexes]
+        ),
+    }
+
+
+def _text_chunk_signal_score(chunk: dict[str, Any], *, section: str, idx: int, total_chunks: int) -> float:
+    content = " ".join(str(chunk.get("content", "") or "").split()).strip()
+    if not content:
+        return 0.0
+    lowered = content.lower()
+    score = min(2.0, len(content) / 900.0)
+    if section == "methods":
+        score += 2.8
+        if METHOD_STRONG_RE.search(lowered) or METHOD_PROCEDURE_RE.search(lowered):
+            score += 2.0
+    elif section == "results":
+        score += 2.8
+        if RESULT_STRONG_RE.search(lowered) or STAT_RE.search(lowered):
+            score += 2.2
+    elif section == "discussion":
+        score += 1.7
+        if DISCUSSION_STRONG_RE.search(lowered):
+            score += 1.4
+    elif section == "conclusion":
+        score += 1.6
+        if CONCLUSION_STRONG_RE.search(lowered):
+            score += 1.2
+    elif section == "introduction":
+        score += 1.2
+    if HIGH_SIGNAL_TEXT_RE.search(content):
+        score += 2.2
+    if STAT_RE.search(content) or re.search(r"\bp\s*[<=>]\s*0?\.\d+", content, re.IGNORECASE):
+        score += 1.5
+    if re.search(r"\b(?:figure|fig\.?|table|supplementary|extended data)\s+[s]?\d+", content, re.IGNORECASE):
+        score += 0.8
+    meta = _parse_chunk_meta(chunk.get("meta"))
+    score += 0.8 * _clamp_confidence(meta.get("section_confidence", 0.0))
+    if str(meta.get("section_source", "") or "").strip().lower() in {"heading", "structured_abstract", "meta"}:
+        score += 0.4
+    position = float(idx) / float(max(1, total_chunks - 1)) if total_chunks > 1 else 0.0
+    if section == "methods" and 0.10 <= position <= 0.58:
+        score += 0.4
+    elif section == "results" and 0.20 <= position <= 0.78:
+        score += 0.4
+    elif section in {"discussion", "conclusion"} and position >= 0.45:
+        score += 0.3
+    return round(score, 4)
+
+
+def _chunk_section_counts(chunks: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {section: 0 for section in SECTION_ORDER}
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks):
+        section = _infer_chunk_section(chunk, idx=idx, total_chunks=total)
+        counts[section if section in counts else "unknown"] += 1
+    return {section: count for section, count in counts.items() if count}
+
+
 def analyze_text(chunks: list[dict[str, Any]], *, force_llm_enabled: bool | None = None) -> dict[str, Any]:
     max_chars = min(settings.analysis_max_text_chars, max_chars_for_ctx(settings.llm_n_ctx))
     if settings.llm_provider_normalized == "openai":
         max_chars = min(max_chars, max(2000, int(settings.analysis_text_llm_batch_max_chars or 0)))
+    else:
+        local_batch_chars = int(
+            settings.analysis_local_text_llm_batch_max_chars
+            or settings.analysis_text_llm_batch_max_chars
+            or 0
+        )
+        max_chars = min(max_chars, max(1200, local_batch_chars))
     valid_anchors = {str(chunk.get("anchor", "unknown")) for chunk in chunks}
+    anchor_excerpts = {
+        str(chunk.get("anchor", "unknown")): str(chunk.get("content", ""))
+        for chunk in chunks
+        if str(chunk.get("anchor", "")).strip() and str(chunk.get("content", "")).strip()
+    }
     raw_findings: list[dict[str, Any]] = []
     raw_claims: list[dict[str, Any]] = []
     raw_packets: list[dict[str, Any]] = []
+    diagnostics: dict[str, Any] = {
+        "llm_batches": 0,
+        "llm_prompt_chars": [],
+        "llm_prompt_blocks": [],
+        "llm_batch_seconds": [],
+        "llm_batch_details": [],
+        "original_text_chunks": len(chunks),
+        "llm_input_chunks": 0,
+        "text_preselection": {
+            "enabled": False,
+            "original_chunks": len(chunks),
+            "selected_chunks": len(chunks),
+            "skipped_chunks": 0,
+        },
+    }
     llm_enabled = settings.analysis_text_llm_enabled if force_llm_enabled is None else bool(force_llm_enabled)
+    llm_chunks = chunks
+    if llm_enabled:
+        llm_chunks, diagnostics["text_preselection"] = _preselect_text_llm_chunks(chunks)
+        diagnostics["llm_input_chunks"] = len(llm_chunks)
 
     if llm_enabled:
         batch: list[str] = []
@@ -117,41 +400,41 @@ def analyze_text(chunks: list[dict[str, Any]], *, force_llm_enabled: bool | None
             nonlocal batch, batch_len, raw_findings, raw_claims, raw_packets
             if not batch:
                 return
-            prompt = (
-                "Analyze the paper text for peer-review quality with strict section fidelity. "
-                "Only use anchors that exactly match the bracketed snippet anchors in the input. "
-                "Extract section-appropriate points from introduction, methods, results, discussion, and conclusion. "
-                "For methods anchors, extract concrete protocol details (design, cohort/sample construction, "
-                "inclusion/exclusion criteria, interventions/comparators, endpoints, measurement instruments, "
-                "statistical models, covariates, missing-data handling, and sensitivity checks). "
-                "For results anchors, extract observed findings only and state the actual outcome direction/magnitude "
-                "reported in text (avoid vague phrasing like 'shows this or that'). "
-                "Never emit generic result narration like 'the figure shows' without concrete reported outcomes. "
-                "For discussion/conclusion anchors, extract interpretation/conclusions only from those sections. "
-                "Do not mix section content (for example, do not place methods statements in results packets). "
-                "Do not claim details are missing unless the text explicitly says they are missing/not reported. "
-                "Cite evidence anchors.\n\n"
-                + "\n\n".join(batch)
-            )
-            prompt = truncate_text(prompt, max_chars)
+            prompt = _text_analysis_prompt(batch, max_chars=max_chars)
+            batch_index = int(diagnostics["llm_batches"]) + 1
+            prompt_chars = len(prompt)
+            prompt_blocks = len(batch)
+            diagnostics["llm_batches"] = batch_index
+            diagnostics["llm_prompt_chars"].append(prompt_chars)
+            diagnostics["llm_prompt_blocks"].append(prompt_blocks)
+            started = monotonic()
             response = chat_text_fast(prompt, system=TEXT_ANALYSIS_SYSTEM)
+            elapsed_seconds = round(monotonic() - started, 4)
+            diagnostics["llm_batch_seconds"].append(elapsed_seconds)
+            diagnostics["llm_batch_details"].append(
+                {
+                    "batch_index": batch_index,
+                    "prompt_chars": prompt_chars,
+                    "prompt_blocks": prompt_blocks,
+                    "duration_seconds": elapsed_seconds,
+                    **_batch_anchor_summary(batch),
+                }
+            )
             data = _normalize_llm_payload(extract_json(response))
             raw_findings.extend(data.get("findings", []))
             raw_claims.extend(data.get("claims", []))
-            raw_packets.extend(data.get("evidence_packets", []))
+            raw_packets.extend(add_source_excerpts_to_packets(data.get("evidence_packets", []), anchor_excerpts))
             batch = []
             batch_len = 0
 
-        for chunk in chunks:
+        for chunk in llm_chunks:
             text = chunk.get("content", "")
             anchor = chunk.get("anchor", "unknown")
             if not text:
                 continue
-            snippet = f"[{anchor}] {text}"
-            if batch_len + len(snippet) > max_chars and batch:
+            snippet = f"[{anchor}]\n{text}"
+            if batch_len + len(snippet) + len(_text_prompt_prefix()) > max_chars and batch:
                 flush_batch()
-            if len(snippet) > max_chars:
-                snippet = snippet[:max_chars]
             batch.append(snippet)
             batch_len += len(snippet)
 
@@ -169,6 +452,7 @@ def analyze_text(chunks: list[dict[str, Any]], *, force_llm_enabled: bool | None
                 "evidence_refs": evidence,
                 "confidence": finding.get("confidence", 0.0),
                 "category": finding.get("category", "other"),
+                "source_excerpt": anchor_excerpts.get(str(anchor), ""),
             }
         )
     for claim in raw_claims:
@@ -182,6 +466,7 @@ def analyze_text(chunks: list[dict[str, Any]], *, force_llm_enabled: bool | None
                 "evidence_refs": evidence,
                 "confidence": claim.get("confidence", 0.0),
                 "category": "claim",
+                "source_excerpt": anchor_excerpts.get(str(anchor), ""),
             }
         )
 
@@ -226,6 +511,7 @@ def analyze_text(chunks: list[dict[str, Any]], *, force_llm_enabled: bool | None
         "evidence_packets": evidence_packets,
         "claim_packets": claim_packets,
         "analysis_notes": analysis_notes,
+        "diagnostics": diagnostics,
     }
 
 
@@ -242,6 +528,21 @@ def _normalize_llm_payload(raw: Any) -> dict[str, list[dict[str, Any]]]:
         "evidence_packets": [item for item in raw.get("evidence_packets", []) if isinstance(item, dict)],
         "findings": [item for item in raw.get("findings", []) if isinstance(item, dict)],
         "claims": [item for item in raw.get("claims", []) if isinstance(item, dict)],
+    }
+
+
+def _batch_anchor_summary(batch: list[str]) -> dict[str, Any]:
+    anchors: list[str] = []
+    for block in batch:
+        first_line = str(block or "").splitlines()[0] if str(block or "").splitlines() else ""
+        match = re.match(r"^\[([^\]]+)\]", first_line.strip())
+        if match:
+            anchors.append(match.group(1))
+    if not anchors:
+        return {}
+    return {
+        "first_anchor": anchors[0],
+        "last_anchor": anchors[-1],
     }
 
 
@@ -618,12 +919,25 @@ def _dedupe_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _infer_chunk_section(chunk: dict[str, Any], *, idx: int, total_chunks: int) -> str:
     meta = _parse_chunk_meta(chunk.get("meta"))
     meta_label = str(meta.get("section_norm", "") or "").strip().lower()
-    if meta_label in SECTION_LABELS and meta_label != "unknown":
-        return meta_label
     meta_raw_title = str(meta.get("section_raw_title", "") or "").strip()
     explicit_meta = _explicit_heading_section(meta_raw_title)
     if explicit_meta != "unknown":
         return explicit_meta
+    content = str(chunk.get("content", "")).strip()
+    if _is_noise_statement(content):
+        return "unknown"
+    lowered = content.lower()
+    pos = (float(idx) / float(max(1, total_chunks - 1))) if total_chunks > 1 else 0.0
+    semantic_label = _best_semantic_section(content, ratio=pos)
+    if (
+        meta_label == "methods"
+        and semantic_label == "results"
+        and RESULT_STRONG_RE.search(lowered)
+        and not METHOD_SECTION_RE.search(meta_raw_title)
+    ):
+        return "results"
+    if meta_label in SECTION_LABELS and meta_label != "unknown":
+        return meta_label
     meta_anchor_token = str(meta.get("section_anchor_token", "") or "").strip().lower()
     if meta_anchor_token in SECTION_LABELS and meta_anchor_token != "unknown":
         return meta_anchor_token
@@ -634,15 +948,9 @@ def _infer_chunk_section(chunk: dict[str, Any], *, idx: int, total_chunks: int) 
     if from_heading != "unknown":
         return from_heading
 
-    content = str(chunk.get("content", "")).strip()
-    if _is_noise_statement(content):
-        return "unknown"
     structured_prefix = _statement_prefix_section(content)
     if structured_prefix != "unknown":
         return structured_prefix
-    lowered = content.lower()
-    pos = (float(idx) / float(max(1, total_chunks - 1))) if total_chunks > 1 else 0.0
-    semantic_label = _best_semantic_section(content, ratio=pos)
     if semantic_label != "unknown":
         return semantic_label
     if CONCLUSION_STRONG_RE.search(lowered) and pos >= 0.55:

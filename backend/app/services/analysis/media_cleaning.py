@@ -5,6 +5,16 @@ from typing import Any
 
 
 GENERIC_CAPTION_RE = re.compile(r"^\s*(?:fig(?:ure)?\.?\s*)?[A-Za-z]?\d+[A-Za-z]?[.:]?\s*$", re.IGNORECASE)
+SCIENTIFIC_CAPTION_SIGNAL_RE = re.compile(
+    r"\b("
+    r"p\s*[<=>]\s*0?\.\d+|ci\b|confidence interval|effect size|odds ratio|hazard ratio|"
+    r"response|remission|symptom|score|madrs|ham-?d|phq-?9|gad-?7|panss|ymrs|"
+    r"placebo|treatment|control|intervention|dose|mg|mcg|µg|oral|intravenous|"
+    r"biomarker|assay|qpcr|pcr|elisa|western blot|rna[- ]?seq|cell line|mice|mouse|"
+    r"increased|decreased|higher|lower|mean|sem|sd|baseline|follow[- ]up"
+    r")\b",
+    re.IGNORECASE,
+)
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 SOFT_HYPHEN_RE = re.compile(r"([A-Za-z])-\s+([a-z])")
 SPACED_PUNCT_RE = re.compile(r"\s+([,.;:)])")
@@ -23,9 +33,9 @@ def clean_figure_ocr_text(value: Any) -> str:
 
 def usable_caption(value: Any, *, min_chars: int = 80) -> bool:
     text = clean_figure_caption(value)
-    if len(text) < min_chars:
+    if not text or GENERIC_CAPTION_RE.fullmatch(text):
         return False
-    return not GENERIC_CAPTION_RE.fullmatch(text)
+    return len(text) >= min_chars or _has_scientific_caption_signal(text)
 
 
 def figure_downstream_text(
@@ -46,6 +56,12 @@ def figure_downstream_text(
     if parts:
         return "\n".join(parts), "caption_plus_ocr_fallback" if clean_caption and clean_ocr else "ocr_fallback"
     return "", "missing"
+
+
+def _has_scientific_caption_signal(text: str) -> bool:
+    if SCIENTIFIC_CAPTION_SIGNAL_RE.search(text):
+        return True
+    return bool(re.search(r"\b\d+(?:\.\d+)?\s*(?:%|mg|mcg|µg|weeks?|months?|nM|uM|mM)\b", text, re.IGNORECASE))
 
 
 def _clean_media_text(value: Any, *, max_chars: int) -> str:

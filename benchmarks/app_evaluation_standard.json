@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "name": "PsychPaperEvalApp Product Evaluation Benchmark",
+  "purpose": "Evaluate whether full app runs produce useful, trustworthy psychiatric paper analyses beyond unit-test correctness.",
+  "non_goals": [
+    "Replace backend unit tests, parser tests, API tests, or desktop smoke tests.",
+    "Treat diagnostic-coverage cases as release gates before reviewed reference markdown exists.",
+    "Run live model, provider, or API work without explicit benchmark execution intent.",
+    "Commit private PDFs, secrets, runtime databases, OpenAI ledgers, or full proprietary paper text."
+  ],
+  "processing_stages": [
+    "source_ingestion",
+    "source_manifest",
+    "parsing",
+    "text_analysis",
+    "table_analysis",
+    "figure_analysis",
+    "supplement_analysis",
+    "reconcile",
+    "synthesis",
+    "diagnostics",
+    "desktop_operator_review"
+  ],
+  "paper_components": [
+    "title_abstract",
+    "introduction",
+    "methods",
+    "results",
+    "discussion",
+    "conclusion",
+    "tables",
+    "figures",
+    "supplements",
+    "references_metadata"
+  ],
+  "reference_authoring": {
+    "allowed_methods": [
+      "human_expert_reference",
+      "codex_assisted_reference",
+      "codex_assisted_source_review",
+      "external_model_reference"
+    ],
+    "requirements": [
+      "Each manifest case should have one final-report gold-standard JSON fixture for case-level comparison.",
+      "Reference markdown must be sectioned into INTRODUCTION, METHODS, RESULTS, DISCUSSION, and CONCLUSION when those sections exist.",
+      "Final-report gold standards must include secondary_findings, sensitivity_analysis, statistical_tests_used, supplement_availability, and uniqueness so scientific nuance is visible in synthesis review.",
+      "Reference bullets should preserve source-grounded claims, not editorial opinions.",
+      "Codex-assisted references must be reviewed for unsupported claims before promotion to a release gate.",
+      "Private or copyrighted paper text must not be copied wholesale into committed reference files."
+    ]
+  },
+  "decision_thresholds": {
+    "pass_min_score": 80,
+    "conditional_min_score": 70,
+    "fail_below_score": 70
+  },
+  "hard_gates": [
+    {
+      "id": "no_silent_provider_failure",
+      "description": "Required LLM/provider failures must invalidate or visibly fail the report instead of producing a normal-looking success report.",
+      "severity": "critical"
+    },
+    {
+      "id": "source_provenance_required",
+      "description": "Every completed benchmark run must record source provenance through source_manifest.json or equivalent diagnostics.",
+      "severity": "critical"
+    },
+    {
+      "id": "no_unsupported_primary_result",
+      "description": "The executive summary must not state a primary result, effect direction, or causal interpretation that is unsupported by the source paper.",
+      "severity": "critical"
+    },
+    {
+      "id": "cost_caps_visible",
+      "description": "OpenAI runs must expose estimated cost/tokens and respect configured run/day/call/output caps.",
+      "severity": "critical"
+    },
+    {
+      "id": "no_private_artifact_commit",
+      "description": "Benchmark artifacts must not commit private PDFs, secrets, runtime databases, OpenAI ledgers, or full proprietary paper text.",
+      "severity": "critical"
+    }
+  ],
+  "dimensions": [
+    {
+      "id": "source_integrity_ingestion",
+      "label": "Source Integrity and Ingestion",
+      "weight": 15,
+      "evidence": [
+        "source_manifest.json",
+        "parse_diagnostics.json",
+        "parser_asset_diagnostics.json",
+        "ingestion diagnostics",
+        "API or desktop smoke result"
+      ],
+      "acceptance": [
+        "Main source asset is identified.",
+        "Parser engine, timing, page/chunk counts, and asset deltas are visible.",
+        "URL, DOI, and upload provenance are not silently rewritten.",
+        "Missing or unreadable supplements are warnings, not hidden success."
+      ]
+    },
+    {
+      "id": "evidence_retention_grounding",
+      "label": "Evidence Retention and Grounding",
+      "weight": 20,
+      "evidence": [
+        "scripts/compare_pdf_against_reference.py comparison JSON",
+        "information retention audit JSON",
+        "summary_json evidence_refs",
+        "analysis_diagnostics.json"
+      ],
+      "acceptance": [
+        "Important reference statements are retained at acceptable recall.",
+        "Major claims have anchors or evidence references.",
+        "Missing evidence is labeled as missing or access-limited.",
+        "Failed LLM/provider calls do not result in normal deterministic fallback reports."
+      ]
+    },
+    {
+      "id": "section_fidelity_scientific_structure",
+      "label": "Section Fidelity and Scientific Structure",
+      "weight": 15,
+      "evidence": [
+        "comparison JSON section recalls",
+        "information retention section metrics",
+        "rendered report review"
+      ],
+      "acceptance": [
+        "Introduction, Methods, Results, Discussion, and Conclusion are populated when present.",
+        "Methods are not misrepresented as Results.",
+        "Results preserve outcome/statistical content where present.",
+        "Discussion and Conclusion emphasize interpretation, limitations, and implications."
+      ]
+    },
+    {
+      "id": "multimodal_coverage",
+      "label": "Multimodal Coverage",
+      "weight": 15,
+      "evidence": [
+        "analysis_diagnostics.json",
+        "vision input diagnostics",
+        "table/figure/supplement stage diagnostics",
+        "parser_asset_diagnostics.json"
+      ],
+      "acceptance": [
+        "Tables are extracted or explicitly diagnosed as unavailable.",
+        "Figures are analyzed from valid figure/caption inputs or labeled fallbacks.",
+        "Supplements are included, skipped, or failed with source-level reasons.",
+        "Model calls and fallbacks are visible by stage."
+      ]
+    },
+    {
+      "id": "domain_usefulness",
+      "label": "Domain Usefulness",
+      "weight": 15,
+      "evidence": [
+        "manual rubric review",
+        "executive summary",
+        "sectioned report",
+        "reference comparison samples"
+      ],
+      "acceptance": [
+        "Population, diagnosis or phenotype, measures, outcomes, effect direction, and limitations are preserved.",
+        "Study design, sample, exposure/intervention, and endpoints are distinguishable.",
+        "Limitations and implications are not overstated.",
+        "Executive summary is readable and useful for psychiatric research review."
+      ]
+    },
+    {
+      "id": "operational_reliability_cost_runtime",
+      "label": "Operational Reliability, Cost, and Runtime",
+      "weight": 10,
+      "evidence": [
+        "run_timeline.json",
+        "analysis_diagnostics.json",
+        "openai_usage summary",
+        "error.log",
+        "backend status API"
+      ],
+      "acceptance": [
+        "Stage timings are present.",
+        "Provider/model mode is visible.",
+        "OpenAI cost and token estimates are present when applicable.",
+        "Failures are explicit and actionable."
+      ]
+    },
+    {
+      "id": "desktop_operator_experience",
+      "label": "Desktop Operator Experience",
+      "weight": 10,
+      "evidence": [
+        "scripts/desktop_smoke.py output",
+        "desktop screenshots",
+        "backend status API",
+        "lifecycle events"
+      ],
+      "acceptance": [
+        "Startup reaches readiness or reports a blocker.",
+        "GROBID, provider, and model readiness are visible.",
+        "UI exposes source coverage, model calls, estimated cost, and report diagnostics.",
+        "App-owned background services are cleaned up on close where configured."
+      ]
+    }
+  ],
+  "tiers": [
+    {
+      "id": "smoke",
+      "description": "Minimum benchmark before merging focused pipeline, prompt, parser, or desktop lifecycle changes.",
+      "minimum_cases": 1,
+      "required_cases": [
+        {
+          "id": "sharma_2017_reward_deficits",
+          "pdf": "test/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association.pdf",
+          "reference_md": "test/text/sharma_2017_chatgpt_extraction.md",
+          "domain": "psychiatry_neuroimaging",
+          "required": true
+        }
+      ],
+      "minimum_evidence": [
+        "comparison_json",
+        "run_json",
+        "analysis_diagnostics",
+        "source_manifest"
+      ]
+    },
+    {
+      "id": "release",
+      "description": "Benchmark before packaging, sharing, or relying on a new app version.",
+      "minimum_cases": 5,
+      "case_mix": [
+        "psychiatry_neuroimaging",
+        "table_heavy_clinical_or_epidemiology",
+        "figure_heavy",
+        "supplement_heavy",
+        "url_or_doi_ingestion"
+      ]
+    },
+    {
+      "id": "deep",
+      "description": "Benchmark for model swaps, parser changes, major prompt rewrites, or release candidates.",
+      "minimum_cases": 8,
+      "recommended_max_cases": 12,
+      "case_mix": [
+        "psychiatry",
+        "neuroscience",
+        "clinical_trial",
+        "systematic_review",
+        "methods_heavy",
+        "clean_born_digital_pdf",
+        "degraded_or_scanned_pdf",
+        "tables_figures_supplements",
+        "intentional_failure_path"
+      ]
+    }
+  ],
+  "recommended_smoke_command": [
+    ".venv/bin/python",
+    "scripts/compare_pdf_against_reference.py",
+    "--mode",
+    "pipeline",
+    "--parser-engine",
+    "validated",
+    "--backend-profile",
+    "section-sensitive",
+    "--pdf",
+    "test/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association.pdf",
+    "--reference-md",
+    "test/text/sharma_2017_chatgpt_extraction.md",
+    "--out-dir",
+    "test/text",
+    "--retain-runs",
+    "1",
+    "--matching-mode",
+    "hybrid",
+    "--matching-threshold",
+    "0.42",
+    "--db-path",
+    "/tmp/papereval_benchmark_smoke.db"
+  ],
+  "review_record_fields": [
+    "git_commit_or_diff_note",
+    "environment",
+    "cases_run",
+    "artifact_paths",
+    "dimension_scores",
+    "hard_gate_results",
+    "weighted_score",
+    "decision",
+    "top_failures_or_regressions"
+  ]
+}

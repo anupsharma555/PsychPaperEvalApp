@@ -210,6 +210,8 @@ def _aggregate_media_variant(rows: list[dict[str, Any]], name: str) -> dict[str,
         "documents": len(media_rows),
         "mean_figure_ref_recall": _mean(media_rows, "figure_ref_recall"),
         "mean_table_ref_recall": _mean(media_rows, "table_ref_recall"),
+        "mean_supplementary_figure_ref_recall": _mean(media_rows, "supplementary_figure_ref_recall"),
+        "mean_supplementary_table_ref_recall": _mean(media_rows, "supplementary_table_ref_recall"),
         "mean_artifact_text_rate": _mean(media_rows, "artifact_text_rate"),
         "mean_downstream_text_chars": _mean(media_rows, "mean_downstream_text_chars"),
         "artifact_rate_wins": wins,
@@ -248,6 +250,9 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     for name, metrics in payload.get("aggregate", {}).get("media_variants", {}).items():
         lines.append(
             f"- {name}: fig_recall={metrics.get('mean_figure_ref_recall')}, "
+            f"table_recall={metrics.get('mean_table_ref_recall')}, "
+            f"supp_fig_recall={metrics.get('mean_supplementary_figure_ref_recall')}, "
+            f"supp_table_recall={metrics.get('mean_supplementary_table_ref_recall')}, "
             f"artifact_rate={metrics.get('mean_artifact_text_rate')}, "
             f"mean_chars={metrics.get('mean_downstream_text_chars')}, "
             f"wins={metrics.get('artifact_rate_wins')}, ties={metrics.get('artifact_rate_ties')}"

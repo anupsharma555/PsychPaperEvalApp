@@ -22,6 +22,7 @@ from app.services.analysis.utils import (
 from app.services.timing import utc_timestamp
 
 REPORT_GUIDANCE = report_guidance()
+_NARRATIVE_SYNTHESIS_USAGE: dict[str, Any] = {}
 
 PROSE_QUALITY_RULES = """
 Prose quality rules:
@@ -44,6 +45,7 @@ Return JSON only with this schema:
   "reproducibility_ethics": ["bullet"],
   "uncertainty_gaps": ["bullet"]
 }
+If supplementary material was not available, not extracted, or only partially reviewed, state that limitation in uncertainty_gaps. If supplementary evidence was available, do not invent findings beyond the provided supplement evidence.
 """.strip() + "\n\n" + PROSE_QUALITY_RULES + "\n\n" + REPORT_GUIDANCE
 
 VERIFIER_SYSTEM = """
@@ -61,6 +63,7 @@ Return JSON only with this schema:
   "reproducibility_ethics": ["bullet"],
   "uncertainty_gaps": ["bullet"]
 }
+Keep or add a supplement availability limitation in uncertainty_gaps when supplementary material was unavailable, not extracted, or only partially reviewed.
 """.strip() + "\n\n" + PROSE_QUALITY_RULES + "\n\n" + REPORT_GUIDANCE
 
 EXECUTIVE_REPORT_SYNTHESIS_SYSTEM = """
@@ -369,6 +372,7 @@ METHODS_NOTE_ONLY_RE = re.compile(
 
 METHODS_COMPACT_VERSION = 1
 SECTIONS_COMPACT_VERSION = 1
+SCIENTIFIC_DETAILS_VERSION = 1
 METHODS_FOUND_CONFIDENCE_THRESHOLD = 0.55
 SECTIONS_FOUND_CONFIDENCE_THRESHOLD = 0.55
 RESULT_SUPPORT_FOUND_CONFIDENCE_THRESHOLD = 0.45
@@ -418,6 +422,138 @@ INCOMPLETE_TAIL_TOKENS = {
     "consistent",
 }
 ALLOWED_SHORT_FINAL_TOKENS = {"adhd", "fdr", "ci", "sd", "msn", "auc", "sex", "age"}
+SYNTHESIS_FOCUS_SUPPORT_LIMIT = 3
+
+SCIENTIFIC_DETAIL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "medication_or_therapeutic",
+        re.compile(
+            r"\b("
+            r"medication|drug|therapeutic|pharmacologic|antidepressant|antipsychotic|ssri|snri|"
+            r"ketamine|esketamine|fluoxetine|sertraline|escitalopram|citalopram|paroxetine|"
+            r"venlafaxine|duloxetine|bupropion|mirtazapine|lithium|clozapine|risperidone|"
+            r"olanzapine|quetiapine|aripiprazole|methylphenidate|amphetamine"
+            r")\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dose_schedule",
+        re.compile(
+            r"\b(\d+(?:\.\d+)?\s*(?:mg|mcg|ug|µg|g|ml|iu|units?)\b|dose|dosage|route|oral|"
+            r"intravenous|subcutaneous|intramuscular|daily|weekly|twice daily|duration|"
+            r"weeks?|months?|titrated|administered)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "intervention_or_exposure",
+        re.compile(
+            r"\b(intervention|treatment|therapy|exposure|comparator|control arm|placebo|"
+            r"stimulation|psychotherapy|cbt|training|randomi[sz]ed|trial arm)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "outcome_measure",
+        re.compile(
+            r"\b(outcome|endpoint|measure|scale|questionnaire|instrument|score|gad-7|phq-9|"
+            r"ham-?d|madrs|panss|ymrs|timepoint|follow[- ]up|symptom)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "adverse_event",
+        re.compile(r"\b(adverse event|side effect|tolerability|safety|dropout|discontinuation)\b", re.IGNORECASE),
+    ),
+    (
+        "model_system",
+        re.compile(
+            r"\b(cell lines?|cell clones?|organoid|mouse|mice|rat|animal model|in vivo|in vitro|"
+            r"specimens?|culture|construct|plasmid|vector|transfection|mutagenesis)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "assay_readout",
+        re.compile(
+            r"\b(assay|readout|qpcr|pcr|western blot|elisa|rna[- ]?seq|sequencing|flow cytometry|"
+            r"microscopy|immunostaining|biomarker|protein|gene expression|validation)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "statistical_result",
+        re.compile(
+            r"\b(p\s*[<=>]\s*0?\.\d+|confidence interval|ci\b|odds ratio|hazard ratio|effect size|"
+            r"cohen'?s?\s*d|beta|regression|mixed[- ]effects|bayesian|sensitivity analysis|"
+            r"subgroup|adjusted|covariate|significant|increased|decreased|higher|lower)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "data_source_or_design",
+        re.compile(
+            r"\b(cohort|registry|claims database|survey|dataset|data source|cross[- ]sectional|"
+            r"case[- ]control|longitudinal|systematic review|meta[- ]analysis|eligibility criteria|"
+            r"search strategy|risk of bias)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "rationale_or_objective",
+        re.compile(
+            r"\b(objective|aim|hypothesis|rationale|research question|background|motivat(?:e|ion)|"
+            r"knowledge gap|unmet need|designed to test|sought to determine)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "interpretation_or_implication",
+        re.compile(
+            r"\b(interpret(?:ation|ed)?|implication|may reflect|suggests?|supports?|consistent with|"
+            r"clinical relevance|biological significance|mechanism|context)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "limitation_or_caution",
+        re.compile(
+            r"\b(limitation|caution|generalizability|underpowered|bias|confounding|cannot establish|"
+            r"cross[- ]sectional|future work|future research|replication needed)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "conclusion_or_takeaway",
+        re.compile(
+            r"\b(conclusion|in conclusion|overall|taken together|collectively|main takeaway|"
+            r"these findings|these results|we conclude|the study concludes|highlight|underscore)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "tool_or_algorithm",
+        re.compile(r"\b(algorithm|software|pipeline|classifier|benchmark|validation dataset|model performance)\b", re.IGNORECASE),
+    ),
+]
+
+SCIENTIFIC_CATEGORY_HINTS = {
+    "medication": "medication_or_therapeutic",
+    "intervention": "intervention_or_exposure",
+    "clinical": "outcome_measure",
+    "assay": "assay_readout",
+    "model_system": "model_system",
+    "stats": "statistical_result",
+    "table_quality": "statistical_result",
+    "data_consistency": "statistical_result",
+    "objective": "rationale_or_objective",
+    "rationale": "rationale_or_objective",
+    "interpretation": "interpretation_or_implication",
+    "implications": "interpretation_or_implication",
+    "limitations": "limitation_or_caution",
+    "conclusion": "conclusion_or_takeaway",
+}
 
 METHODS_COMPACT_SLOTS: list[dict[str, Any]] = [
     {
@@ -631,6 +767,144 @@ SECTION_COMPACT_MIN_FOUND_FOR_RESCUE: dict[str, int] = {
     "conclusion": 2,
 }
 
+SYNTHESIS_FOCUS_SLOT_RULES: list[dict[str, Any]] = [
+    {
+        "slot_key": "objective_or_rationale",
+        "label": "Objective/Rationale",
+        "sections": ["introduction"],
+        "keywords": ["objective", "aim", "hypothesis", "rationale", "gap", "motivation"],
+    },
+    {
+        "slot_key": "design_source_sample_or_model",
+        "label": "Design/Source/Sample or Model",
+        "sections": ["methods"],
+        "detail_types": ["data_source_or_design", "model_system"],
+        "keywords": ["cohort", "sample", "participants", "dataset", "data source", "cell line", "animal model"],
+    },
+    {
+        "slot_key": "intervention_exposure_protocol_or_assay",
+        "label": "Intervention/Exposure/Protocol or Assay",
+        "sections": ["methods"],
+        "detail_types": [
+            "medication_or_therapeutic",
+            "dose_schedule",
+            "intervention_or_exposure",
+            "assay_readout",
+        ],
+        "keywords": ["treatment", "exposure", "comparator", "protocol", "assay", "construct", "dose"],
+    },
+    {
+        "slot_key": "outcome_readout_or_endpoint",
+        "label": "Outcome/Readout or Endpoint",
+        "sections": ["methods", "results"],
+        "detail_types": ["outcome_measure", "assay_readout"],
+        "keywords": ["outcome", "endpoint", "readout", "scale", "score", "measure", "validation"],
+    },
+    {
+        "slot_key": "primary_results_statistics_or_effects",
+        "label": "Primary Results/Statistics or Effects",
+        "sections": ["results"],
+        "detail_types": ["statistical_result", "cross_modal_result"],
+        "modalities": ["table", "figure", "supplement"],
+        "keywords": ["significant", "increased", "decreased", "higher", "lower", "associated", "p <"],
+    },
+    {
+        "slot_key": "figure_table_or_supplement_evidence",
+        "label": "Figure/Table/Supplement Evidence",
+        "detail_types": ["cross_modal_result", "statistical_result"],
+        "modalities": ["table", "figure", "supplement"],
+        "keywords": ["figure", "table", "supplement", "legend", "panel"],
+    },
+    {
+        "slot_key": "limitations_interpretation_or_implications",
+        "label": "Limitations/Interpretation or Implications",
+        "sections": ["discussion", "conclusion"],
+        "keywords": ["limitation", "interpret", "implication", "generalizability", "future", "caution"],
+    },
+    {
+        "slot_key": "safety_or_adverse_events",
+        "label": "Safety or Adverse Events",
+        "paper_types": ["trial", "clinical"],
+        "detail_types": ["adverse_event"],
+        "keywords": ["adverse event", "side effect", "safety", "tolerability", "dropout"],
+    },
+    {
+        "slot_key": "review_search_synthesis_quality",
+        "label": "Review Search/Synthesis Quality",
+        "paper_types": ["review", "meta-analysis"],
+        "detail_types": ["data_source_or_design"],
+        "sections": ["methods", "results"],
+        "keywords": ["search strategy", "eligibility", "risk of bias", "heterogeneity", "evidence pattern"],
+    },
+    {
+        "slot_key": "laboratory_validation_readout",
+        "label": "Laboratory Validation/Readout",
+        "paper_types": ["laboratory", "preclinical"],
+        "detail_types": ["model_system", "assay_readout"],
+        "sections": ["methods", "results"],
+        "keywords": ["validation", "assay", "qpcr", "pcr", "construct", "cell", "mouse", "mice"],
+    },
+    {
+        "slot_key": "methods_workflow_benchmark",
+        "label": "Methods Workflow/Benchmark",
+        "paper_types": ["methods", "tool"],
+        "detail_types": ["tool_or_algorithm"],
+        "sections": ["methods", "results"],
+        "keywords": ["workflow", "algorithm", "benchmark", "comparator", "performance", "validation dataset"],
+    },
+]
+
+CORE_CRITICAL_SYNTHESIS_FOCUS_SLOTS = {
+    "objective_or_rationale",
+    "design_source_sample_or_model",
+    "primary_results_statistics_or_effects",
+    "limitations_interpretation_or_implications",
+}
+
+PAPER_TYPE_CRITICAL_SYNTHESIS_FOCUS_SLOTS: list[tuple[tuple[str, ...], set[str]]] = [
+    (
+        ("trial", "clinical"),
+        {
+            "intervention_exposure_protocol_or_assay",
+            "outcome_readout_or_endpoint",
+            "safety_or_adverse_events",
+        },
+    ),
+    (
+        ("observational", "cohort", "case-control", "cross-sectional"),
+        {
+            "design_source_sample_or_model",
+            "outcome_readout_or_endpoint",
+            "primary_results_statistics_or_effects",
+            "limitations_interpretation_or_implications",
+        },
+    ),
+    (
+        ("review", "meta-analysis"),
+        {
+            "review_search_synthesis_quality",
+            "primary_results_statistics_or_effects",
+            "limitations_interpretation_or_implications",
+        },
+    ),
+    (
+        ("laboratory", "preclinical"),
+        {
+            "design_source_sample_or_model",
+            "laboratory_validation_readout",
+            "outcome_readout_or_endpoint",
+        },
+    ),
+    (
+        ("methods", "tool"),
+        {
+            "methods_workflow_benchmark",
+            "primary_results_statistics_or_effects",
+            "limitations_interpretation_or_implications",
+        },
+    ),
+]
+
 
 def synthesize_report(
     text_report: dict[str, Any],
@@ -643,6 +917,7 @@ def synthesize_report(
     text_chunk_records: list[dict[str, Any]] | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, Any]:
+    _reset_narrative_synthesis_usage()
     _emit_synthesis_progress(
         progress_callback,
         0.05,
@@ -685,13 +960,17 @@ def synthesize_report(
         "Synthesizing executive report: assembling section dossier",
     )
     draft = _assemble_structured_dossier(payload)
+    payload["scientific_details"] = list(draft.get("scientific_details", [])) if isinstance(draft, dict) else []
+    prompt_scientific_details = _scientific_details_for_prompt(payload.get("scientific_details", []), max_items=12)
+    if isinstance(draft.get("section_diagnostics"), dict):
+        draft["section_diagnostics"]["scientific_details_prompt_count"] = len(prompt_scientific_details)
     _trace_synthesis_step("synthesize:assemble_done")
     _emit_synthesis_progress(
         progress_callback,
         0.58,
         "Synthesizing executive report: dossier assembled",
     )
-    if settings.analysis_narrative_overrides_enabled:
+    if settings.effective_analysis_narrative_overrides_enabled:
         _emit_synthesis_progress(
             progress_callback,
             0.67,
@@ -701,7 +980,7 @@ def synthesize_report(
         if llm_overrides:
             _apply_narrative_overrides(draft, llm_overrides)
 
-        if settings.analysis_verifier_enabled:
+        if settings.effective_analysis_verifier_enabled:
             _emit_synthesis_progress(
                 progress_callback,
                 0.77,
@@ -716,12 +995,14 @@ def synthesize_report(
         "Synthesizing executive report: finalizing summary",
     )
 
-    if settings.analysis_exec_summary_second_pass_enabled:
+    if settings.effective_analysis_exec_summary_second_pass_enabled:
         _ensure_executive_summary_components(draft, payload)
         _trace_synthesis_step("synthesize:summary_ensured")
     else:
         _trace_synthesis_step("synthesize:summary_second_pass_skipped")
     draft["coverage_snapshot_line"] = _media_counts_line(payload.get("coverage", {}) or {})
+    if isinstance(draft.get("section_diagnostics"), dict):
+        draft["section_diagnostics"]["narrative_synthesis_usage"] = _snapshot_narrative_synthesis_usage()
     report_payload = draft
     if settings.analysis_schema_validation_enabled:
         _emit_synthesis_progress(
@@ -739,6 +1020,61 @@ def synthesize_report(
         "Synthesizing executive report: complete",
     )
     return _attach_v1_compat_fields(report_payload)
+
+
+def _reset_narrative_synthesis_usage() -> None:
+    _NARRATIVE_SYNTHESIS_USAGE.clear()
+    _NARRATIVE_SYNTHESIS_USAGE.update(
+        {
+            "deep_calls": 0,
+            "deep_errors": 0,
+            "deep_total_seconds": 0.0,
+            "guarded_calls": 0,
+            "unguarded_calls": 0,
+            "timed_out": 0,
+            "empty_payloads": 0,
+            "failed_payloads": 0,
+        }
+    )
+
+
+def _record_narrative_synthesis_usage(
+    *,
+    guarded: bool,
+    elapsed_seconds: float,
+    error: bool = False,
+    timed_out: bool = False,
+    empty_payload: bool = False,
+    failed_payload: bool = False,
+) -> None:
+    if not _NARRATIVE_SYNTHESIS_USAGE:
+        _reset_narrative_synthesis_usage()
+    _NARRATIVE_SYNTHESIS_USAGE["deep_calls"] = int(_NARRATIVE_SYNTHESIS_USAGE.get("deep_calls", 0) or 0) + 1
+    _NARRATIVE_SYNTHESIS_USAGE["deep_total_seconds"] = round(
+        float(_NARRATIVE_SYNTHESIS_USAGE.get("deep_total_seconds", 0.0) or 0.0)
+        + max(0.0, float(elapsed_seconds or 0.0)),
+        4,
+    )
+    key = "guarded_calls" if guarded else "unguarded_calls"
+    _NARRATIVE_SYNTHESIS_USAGE[key] = int(_NARRATIVE_SYNTHESIS_USAGE.get(key, 0) or 0) + 1
+    if error:
+        _NARRATIVE_SYNTHESIS_USAGE["deep_errors"] = int(_NARRATIVE_SYNTHESIS_USAGE.get("deep_errors", 0) or 0) + 1
+    if timed_out:
+        _NARRATIVE_SYNTHESIS_USAGE["timed_out"] = int(_NARRATIVE_SYNTHESIS_USAGE.get("timed_out", 0) or 0) + 1
+    if empty_payload:
+        _NARRATIVE_SYNTHESIS_USAGE["empty_payloads"] = int(_NARRATIVE_SYNTHESIS_USAGE.get("empty_payloads", 0) or 0) + 1
+    if failed_payload:
+        _NARRATIVE_SYNTHESIS_USAGE["failed_payloads"] = int(_NARRATIVE_SYNTHESIS_USAGE.get("failed_payloads", 0) or 0) + 1
+
+
+def _snapshot_narrative_synthesis_usage() -> dict[str, Any]:
+    if not _NARRATIVE_SYNTHESIS_USAGE:
+        _reset_narrative_synthesis_usage()
+    usage = dict(_NARRATIVE_SYNTHESIS_USAGE)
+    deep_calls = int(usage.get("deep_calls", 0) or 0)
+    deep_seconds = float(usage.get("deep_total_seconds", 0.0) or 0.0)
+    usage["deep_avg_seconds"] = round(deep_seconds / deep_calls, 4) if deep_calls else 0.0
+    return usage
 
 
 def _emit_synthesis_progress(
@@ -785,32 +1121,62 @@ def _run_deep_json_prompt(
     guard_enabled: bool,
 ) -> Any:
     if not guard_enabled:
+        from time import monotonic
+
+        started = monotonic()
         try:
             response = chat_text_deep(prompt, system=system_prompt)
+            _record_narrative_synthesis_usage(guarded=False, elapsed_seconds=monotonic() - started)
             return extract_json(response)
         except Exception:
+            _record_narrative_synthesis_usage(guarded=False, elapsed_seconds=monotonic() - started, error=True)
             return {}
+
+    from time import monotonic
 
     timeout = max(15, int(timeout_seconds or 0))
     context = mp.get_context("spawn")
     out_queue = context.Queue(maxsize=1)
     proc = context.Process(target=_deep_json_prompt_worker, args=(prompt, system_prompt, out_queue))
+    started = monotonic()
     proc.start()
     proc.join(timeout)
+    elapsed = monotonic() - started
     if proc.is_alive():
         proc.terminate()
         proc.join(5)
+        _record_narrative_synthesis_usage(
+            guarded=True,
+            elapsed_seconds=elapsed,
+            error=True,
+            timed_out=True,
+        )
         return {}
     if int(proc.exitcode or 0) != 0:
+        _record_narrative_synthesis_usage(guarded=True, elapsed_seconds=elapsed, error=True)
         return {}
     try:
         payload = out_queue.get_nowait()
     except QueueEmpty:
+        _record_narrative_synthesis_usage(
+            guarded=True,
+            elapsed_seconds=elapsed,
+            error=True,
+            empty_payload=True,
+        )
         return {}
     except Exception:
+        _record_narrative_synthesis_usage(guarded=True, elapsed_seconds=elapsed, error=True)
         return {}
     if not isinstance(payload, dict) or not payload.get("ok"):
+        _record_narrative_synthesis_usage(
+            guarded=True,
+            elapsed_seconds=elapsed,
+            error=True,
+            failed_payload=True,
+        )
         return {}
+    _record_narrative_synthesis_usage(guarded=True, elapsed_seconds=elapsed)
     return payload.get("data", {})
 
 
@@ -910,10 +1276,153 @@ def _sanitize_coverage(coverage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _section_inputs_for_synthesis_plan(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    extracted = payload.get("sections_extracted")
+    if not isinstance(extracted, dict):
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for section, rows in extracted.items():
+        section_key = str(section or "").strip().lower()
+        if not section_key or not isinstance(rows, list):
+            continue
+        normalized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            statement = str(row.get("statement", "") or "").strip()
+            refs = [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()]
+            if not statement or not refs:
+                continue
+            normalized_rows.append(
+                {
+                    "statement": statement,
+                    "evidence_refs": refs,
+                    "source_modality": _normalize_modality_name(str(row.get("source_modality", "text"))),
+                    "section_label": str(row.get("section_label") or section_key),
+                    "confidence": clamp_confidence(row.get("confidence", 0.0)),
+                }
+            )
+        out[section_key] = normalized_rows
+    return out
+
+
+def _compact_synthesis_prompt_payload(
+    payload: dict[str, Any],
+    *,
+    detail_limit: int,
+    finding_limit: int,
+    focus_slot_limit: int,
+    issue_limit: int,
+    draft_chars: int = 900,
+    strip_excerpts: bool = False,
+) -> dict[str, Any]:
+    compact = dict(payload)
+    details: list[dict[str, Any]] = []
+    for detail in compact.get("scientific_detail_candidates", [])[:detail_limit]:
+        if not isinstance(detail, dict):
+            continue
+        row = dict(detail)
+        row["statement"] = _summary_fragment(str(row.get("statement", "")), max_chars=240)
+        if strip_excerpts:
+            row.pop("source_excerpt", None)
+        else:
+            row["source_excerpt"] = _summary_fragment(str(row.get("source_excerpt", "")), max_chars=200)
+        details.append(row)
+    compact["scientific_detail_candidates"] = details
+
+    compact["evidence_plan"] = _compact_evidence_plan_for_prompt(
+        compact.get("evidence_plan", {}),
+        focus_slot_limit=focus_slot_limit,
+        focus_statement_chars=150 if not strip_excerpts else 100,
+    )
+
+    for key in ("text_findings", "table_findings", "figure_findings", "supp_findings"):
+        if isinstance(compact.get(key), list):
+            compact[key] = [
+                _summary_fragment(str(item), max_chars=220)
+                for item in compact.get(key, [])[:finding_limit]
+                if str(item).strip()
+            ]
+    digest = compact.get("evidence_digest")
+    if isinstance(digest, dict):
+        compact["evidence_digest"] = {
+            key: [
+                _summary_fragment(str(item), max_chars=220)
+                for item in values[:finding_limit]
+                if str(item).strip()
+            ]
+            for key, values in digest.items()
+            if isinstance(values, list)
+        }
+    for key in ("cross_modal_claims", "discrepancies"):
+        if isinstance(compact.get(key), list):
+            compact[key] = compact.get(key, [])[:issue_limit]
+    draft_report = compact.get("draft_report")
+    if isinstance(draft_report, dict):
+        compact["draft_report"] = {
+            key: (
+                _summary_fragment(str(value), max_chars=draft_chars)
+                if isinstance(value, str)
+                else value[: max(1, issue_limit)]
+                if isinstance(value, list)
+                else value
+            )
+            for key, value in draft_report.items()
+        }
+    return compact
+
+
+def _synthesis_prompt_text(prefix: str, payload: dict[str, Any], *, max_chars: int) -> str:
+    body = json.dumps(payload, indent=2)
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_synthesis_prompt_payload(
+            payload,
+            detail_limit=8,
+            finding_limit=6,
+            focus_slot_limit=8,
+            issue_limit=6,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_synthesis_prompt_payload(
+            payload,
+            detail_limit=4,
+            finding_limit=4,
+            focus_slot_limit=5,
+            issue_limit=4,
+            draft_chars=600,
+            strip_excerpts=True,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_synthesis_prompt_payload(
+            payload,
+            detail_limit=2,
+            finding_limit=2,
+            focus_slot_limit=0,
+            issue_limit=2,
+            draft_chars=360,
+            strip_excerpts=True,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    return prefix + body
+
+
 def _llm_synthesis_overrides(payload: dict[str, Any]) -> dict[str, Any]:
+    scientific_details = _scientific_details_for_prompt(payload.get("scientific_details", []), max_items=10)
+    section_inputs = _section_inputs_for_synthesis_plan(payload)
     prompt_payload = {
         "paper_meta": payload.get("paper_meta", {}),
         "coverage": payload.get("coverage", {}),
+        "supplement_availability_note": payload.get("supplement_availability_note", ""),
+        "evidence_plan": _synthesis_evidence_plan(
+            paper_type=str(payload.get("paper_type") or _infer_paper_type(payload)),
+            scientific_details=scientific_details,
+            section_inputs=section_inputs,
+        ),
+        "scientific_detail_candidates": scientific_details,
         "text_findings": summarize_packet_statements(payload.get("text_packets", []), max_items=8),
         "table_findings": summarize_packet_statements(payload.get("table_packets", []), max_items=6),
         "figure_findings": summarize_packet_statements(payload.get("figure_packets", []), max_items=6),
@@ -921,9 +1430,10 @@ def _llm_synthesis_overrides(payload: dict[str, Any]) -> dict[str, Any]:
         "discrepancies": payload.get("discrepancies", [])[:8],
         "cross_modal_claims": payload.get("cross_modal_claims", [])[:8],
     }
-    prompt = truncate_text(
-        "Create a concise, evidence-grounded dossier narrative summary.\n\n" + json.dumps(prompt_payload, indent=2),
-        max_chars_for_ctx(settings.llm_n_ctx),
+    prompt = _synthesis_prompt_text(
+        "Create a concise, evidence-grounded dossier narrative summary.\n\n",
+        prompt_payload,
+        max_chars=max_chars_for_ctx(settings.llm_n_ctx),
     )
     parsed = _run_deep_json_prompt(
         prompt=prompt,
@@ -935,9 +1445,18 @@ def _llm_synthesis_overrides(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _llm_verifier_overrides(payload: dict[str, Any], draft: dict[str, Any]) -> dict[str, Any]:
+    scientific_details = _scientific_details_for_prompt(payload.get("scientific_details", []), max_items=12)
+    section_inputs = _section_inputs_for_synthesis_plan(payload)
     prompt_payload = {
         "paper_meta": payload.get("paper_meta", {}),
         "coverage": payload.get("coverage", {}),
+        "supplement_availability_note": payload.get("supplement_availability_note", ""),
+        "evidence_plan": _synthesis_evidence_plan(
+            paper_type=str(payload.get("paper_type") or _infer_paper_type(payload)),
+            scientific_details=scientific_details,
+            section_inputs=section_inputs,
+        ),
+        "scientific_detail_candidates": scientific_details,
         "evidence_digest": {
             "text_findings": summarize_packet_statements(payload.get("text_packets", []), max_items=10),
             "table_findings": summarize_packet_statements(payload.get("table_packets", []), max_items=8),
@@ -954,10 +1473,10 @@ def _llm_verifier_overrides(payload: dict[str, Any], draft: dict[str, Any]) -> d
             "uncertainty_gaps": draft.get("uncertainty_gaps", []),
         },
     }
-    prompt = truncate_text(
-        "Verifier pass: fix only what is inaccurate or unsupported in this draft report.\n\n"
-        + json.dumps(prompt_payload, indent=2),
-        max_chars_for_ctx(settings.llm_n_ctx),
+    prompt = _synthesis_prompt_text(
+        "Verifier pass: fix only what is inaccurate or unsupported in this draft report.\n\n",
+        prompt_payload,
+        max_chars=max_chars_for_ctx(settings.llm_n_ctx),
     )
     parsed = _run_deep_json_prompt(
         prompt=prompt,
@@ -966,6 +1485,478 @@ def _llm_verifier_overrides(payload: dict[str, Any], draft: dict[str, Any]) -> d
         guard_enabled=bool(settings.analysis_narrative_overrides_subprocess_guard_enabled),
     )
     return _coerce_narrative_overrides(parsed)
+
+
+def _scientific_details_for_prompt(
+    details: Any,
+    max_items: int = 10,
+    *,
+    statement_max_chars: int = 420,
+    excerpt_max_chars: int = 520,
+) -> list[dict[str, Any]]:
+    if not isinstance(details, list):
+        return []
+    candidates: list[dict[str, Any]] = []
+    seen: list[str] = []
+    for idx, detail in enumerate(details):
+        if not isinstance(detail, dict):
+            continue
+        statement = _clean_section_statement(str(detail.get("statement", "")).strip())
+        refs = [str(ref).strip() for ref in detail.get("evidence_refs", []) if str(ref).strip()][:5]
+        if not statement or not refs:
+            continue
+        key = _canonical_statement_text(statement)
+        if not key:
+            continue
+        if any(_are_near_duplicate_statement_keys(existing, key) for existing in seen):
+            continue
+        seen.append(key)
+        detail_types = [
+            str(value).strip()
+            for value in detail.get("detail_types", [])
+            if str(value).strip()
+        ][:4] if isinstance(detail.get("detail_types"), list) else []
+        candidates.append(
+            {
+                "statement": _summary_fragment(statement, max_chars=statement_max_chars),
+                "source_excerpt": _summary_fragment(str(detail.get("source_excerpt", "")).strip(), max_chars=excerpt_max_chars),
+                "detail_types": detail_types,
+                "evidence_refs": refs,
+                "source_modality": _normalize_modality_name(str(detail.get("source_modality", ""))),
+                "section_label": _packet_section_label(
+                    {
+                        "section_label": detail.get("section_label"),
+                        "anchor": refs[0] if refs else "",
+                        "category": detail.get("category"),
+                        "statement": statement,
+                    }
+                ),
+                "category": str(detail.get("category", "")).strip(),
+                "confidence": clamp_confidence(detail.get("confidence", 0.0)),
+                "_prompt_idx": idx,
+            }
+        )
+    selected = _diversify_scientific_details_for_prompt(candidates, max_items=max_items)
+    for item in selected:
+        item.pop("_prompt_idx", None)
+    return selected
+
+
+def _diversify_scientific_details_for_prompt(
+    candidates: list[dict[str, Any]],
+    *,
+    max_items: int,
+) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    if len(candidates) <= max_items:
+        return list(candidates)
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[int] = set()
+
+    def _candidate_sort_key(item: dict[str, Any]) -> tuple[float, int]:
+        return (-_scientific_detail_prompt_score(item), int(item.get("_prompt_idx", 0) or 0))
+
+    def _pick_best(predicate: Callable[[dict[str, Any]], bool]) -> None:
+        if len(selected) >= max_items:
+            return
+        pool = [
+            (idx, item)
+            for idx, item in enumerate(candidates)
+            if idx not in selected_ids and predicate(item)
+        ]
+        if not pool:
+            return
+        idx, item = sorted(pool, key=lambda pair: _candidate_sort_key(pair[1]))[0]
+        selected_ids.add(idx)
+        selected.append(item)
+
+    priority_detail_types = [
+        "rationale_or_objective",
+        "medication_or_therapeutic",
+        "dose_schedule",
+        "intervention_or_exposure",
+        "outcome_measure",
+        "statistical_result",
+        "model_system",
+        "assay_readout",
+        "data_source_or_design",
+        "interpretation_or_implication",
+        "limitation_or_caution",
+        "conclusion_or_takeaway",
+        "tool_or_algorithm",
+    ]
+    for detail_type in priority_detail_types:
+        _pick_best(lambda item, detail_type=detail_type: detail_type in item.get("detail_types", []))
+
+    for modality in ("table", "figure", "supplement"):
+        _pick_best(lambda item, modality=modality: _normalize_modality_name(str(item.get("source_modality", ""))) == modality)
+
+    for section in ("introduction", "methods", "results", "discussion", "conclusion"):
+        _pick_best(lambda item, section=section: str(item.get("section_label", "")).lower() == section)
+
+    remaining = [
+        item for idx, item in enumerate(candidates) if idx not in selected_ids
+    ]
+    selected.extend(sorted(remaining, key=_candidate_sort_key)[: max(0, max_items - len(selected))])
+    return selected[:max_items]
+
+
+def _scientific_detail_prompt_score(detail: dict[str, Any]) -> float:
+    score = 20.0 * clamp_confidence(detail.get("confidence", 0.0))
+    detail_types = [str(item) for item in detail.get("detail_types", []) if str(item).strip()]
+    score += min(20.0, 4.0 * len(detail_types))
+    section = str(detail.get("section_label", "") or "").lower()
+    if section == "results":
+        score += 5.0
+    elif section == "methods":
+        score += 4.0
+    modality = _normalize_modality_name(str(detail.get("source_modality", "")))
+    if modality in {"table", "figure", "supplement"}:
+        score += 5.0
+    if any(item in detail_types for item in ("medication_or_therapeutic", "dose_schedule")):
+        score += 6.0
+    if any(item in detail_types for item in ("statistical_result", "cross_modal_result")):
+        score += 5.0
+    return score
+
+
+def _synthesis_evidence_plan(
+    *,
+    paper_type: str,
+    scientific_details: list[dict[str, Any]],
+    section_inputs: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    selected_details = [detail for detail in scientific_details if isinstance(detail, dict)]
+    section_counts = {
+        section: len(rows)
+        for section, rows in (section_inputs or {}).items()
+        if isinstance(rows, list)
+    }
+    modalities = _count_values(
+        _normalize_modality_name(str(detail.get("source_modality", "")))
+        for detail in selected_details
+    )
+    sections = _count_values(
+        str(detail.get("section_label", "") or "unknown").lower()
+        for detail in selected_details
+    )
+    detail_type_values: list[str] = []
+    for detail in selected_details:
+        raw_types = detail.get("detail_types", [])
+        if not isinstance(raw_types, list):
+            continue
+        detail_type_values.extend(str(detail_type) for detail_type in raw_types if str(detail_type).strip())
+    detail_types = _count_values(detail_type_values)
+    guidance = [
+        "Preserve section boundaries; do not move methods into results or results into methods.",
+        "Preserve numbers, medications, doses, timepoints, instruments, model systems, assays, and effect directions exactly.",
+        "Use figure, table, and supplement candidates as evidence, not as generic captions.",
+    ]
+    paper = str(paper_type or "").lower()
+    if "review" in paper:
+        guidance.append("For review papers, prioritize search strategy, eligibility, synthesis method, risk of bias, heterogeneity, and evidence pattern.")
+    elif "trial" in paper:
+        guidance.append("For trials, prioritize arms, medication/intervention details, comparator, outcomes, timing, adverse events, and statistical support.")
+    elif "observational" in paper:
+        guidance.append("For observational studies, prioritize cohort/source, exposure, outcome, adjustment strategy, effect direction, sensitivity analyses, and limitations.")
+    elif "laboratory" in paper or "preclinical" in paper:
+        guidance.append("For laboratory or preclinical papers, prioritize model system, constructs, assays, validation, readouts, and biological interpretation.")
+    elif "methods" in paper or "tool" in paper:
+        guidance.append("For methods papers, prioritize workflow, inputs, validation benchmark, comparator, performance, and limitations.")
+
+    focus_slots = _synthesis_focus_slots(
+        paper_type=paper_type,
+        scientific_details=selected_details,
+        section_inputs=section_inputs or {},
+    )
+    missing_focus_slots = [slot for slot in focus_slots if slot.get("status") == "missing"]
+    critical_missing_focus_slots = _critical_missing_synthesis_focus_slots(
+        paper_type=paper_type,
+        focus_slots=focus_slots,
+    )
+    quality_flags = _synthesis_evidence_plan_quality_flags(
+        critical_missing_focus_slots=critical_missing_focus_slots,
+        selected_modalities=modalities,
+        selected_detail_types=detail_types,
+    )
+
+    return {
+        "paper_type": paper_type or "unknown",
+        "section_input_counts": section_counts,
+        "selected_detail_counts": {
+            "by_modality": modalities,
+            "by_section": sections,
+            "by_detail_type": detail_types,
+        },
+        "focus_slots": focus_slots,
+        "missing_focus_slot_count": len(missing_focus_slots),
+        "critical_missing_focus_slots": critical_missing_focus_slots,
+        "quality_flags": quality_flags,
+        "guidance": guidance,
+    }
+
+
+def _critical_missing_synthesis_focus_slots(
+    *,
+    paper_type: str,
+    focus_slots: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    critical_keys = set(CORE_CRITICAL_SYNTHESIS_FOCUS_SLOTS)
+    paper = str(paper_type or "").lower()
+    for tokens, slot_keys in PAPER_TYPE_CRITICAL_SYNTHESIS_FOCUS_SLOTS:
+        if any(token in paper for token in tokens):
+            critical_keys.update(slot_keys)
+
+    out: list[dict[str, str]] = []
+    for slot in focus_slots:
+        if not isinstance(slot, dict):
+            continue
+        slot_key = str(slot.get("slot_key", "") or "").strip()
+        if slot_key not in critical_keys or slot.get("status") != "missing":
+            continue
+        out.append(
+            {
+                "slot_key": slot_key,
+                "label": str(slot.get("label", "") or slot_key).strip(),
+                "reason": str(slot.get("reason", "") or "Critical paper-type focus slot was not found.").strip(),
+            }
+        )
+    return out
+
+
+def _synthesis_evidence_plan_quality_flags(
+    *,
+    critical_missing_focus_slots: list[dict[str, str]],
+    selected_modalities: dict[str, int],
+    selected_detail_types: dict[str, int],
+) -> list[str]:
+    flags: list[str] = []
+    if critical_missing_focus_slots:
+        flags.append("critical_focus_slots_missing")
+    missing_keys = {str(slot.get("slot_key", "")) for slot in critical_missing_focus_slots}
+    if "safety_or_adverse_events" in missing_keys:
+        flags.append("safety_or_adverse_events_missing")
+    if "review_search_synthesis_quality" in missing_keys:
+        flags.append("review_search_or_bias_details_missing")
+    if "laboratory_validation_readout" in missing_keys:
+        flags.append("laboratory_validation_details_missing")
+    if "methods_workflow_benchmark" in missing_keys:
+        flags.append("methods_benchmark_details_missing")
+    if not any(selected_modalities.get(item, 0) > 0 for item in ("table", "figure", "supplement")):
+        flags.append("no_selected_cross_modal_detail")
+    if not selected_detail_types:
+        flags.append("no_selected_scientific_detail_types")
+    return flags
+
+
+def _synthesis_evidence_warnings(evidence_plan: Any) -> list[str]:
+    if not isinstance(evidence_plan, dict):
+        return []
+    warnings: list[str] = []
+    critical_missing = evidence_plan.get("critical_missing_focus_slots", [])
+    if isinstance(critical_missing, list):
+        labels = [
+            str(slot.get("label", "") or slot.get("slot_key", "")).strip()
+            for slot in critical_missing
+            if isinstance(slot, dict) and str(slot.get("label", "") or slot.get("slot_key", "")).strip()
+        ]
+        if labels:
+            warnings.append(
+                "Critical synthesis evidence not found for this paper type: "
+                + ", ".join(labels[:6])
+                + "."
+            )
+    quality_flags = [
+        str(flag).strip()
+        for flag in evidence_plan.get("quality_flags", [])
+        if str(flag).strip()
+    ] if isinstance(evidence_plan.get("quality_flags"), list) else []
+    if "no_selected_cross_modal_detail" in quality_flags:
+        warnings.append("No table, figure, or supplement scientific detail was selected for synthesis.")
+    if "no_selected_scientific_detail_types" in quality_flags:
+        warnings.append("No typed scientific detail candidates were selected for synthesis.")
+    return _unique_strings(warnings, max_items=4)
+
+
+def _synthesis_focus_slots(
+    *,
+    paper_type: str,
+    scientific_details: list[dict[str, Any]],
+    section_inputs: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    slots: list[dict[str, Any]] = []
+    for rule in _active_synthesis_focus_rules(paper_type):
+        match = _best_focus_slot_match(rule, scientific_details=scientific_details, section_inputs=section_inputs)
+        if match:
+            slots.append({"slot_key": rule["slot_key"], "label": rule["label"], "status": "found", **match})
+        else:
+            slots.append(
+                {
+                    "slot_key": rule["slot_key"],
+                    "label": rule["label"],
+                    "status": "missing",
+                    "reason": "No selected scientific detail or section input matched this focus slot.",
+                }
+            )
+    return slots
+
+
+def _active_synthesis_focus_rules(paper_type: str) -> list[dict[str, Any]]:
+    paper = str(paper_type or "").lower()
+    active: list[dict[str, Any]] = []
+    for rule in SYNTHESIS_FOCUS_SLOT_RULES:
+        paper_types = [str(item).lower() for item in rule.get("paper_types", [])]
+        if not paper_types or any(token in paper for token in paper_types):
+            active.append(rule)
+    return active
+
+
+def _best_focus_slot_match(
+    rule: dict[str, Any],
+    *,
+    scientific_details: list[dict[str, Any]],
+    section_inputs: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    candidates: list[tuple[float, int, dict[str, Any]]] = []
+    order = 0
+    for detail in scientific_details:
+        if not isinstance(detail, dict):
+            continue
+        score = _focus_slot_detail_score(rule, detail)
+        if score <= 0:
+            continue
+        candidates.append((score, order, _focus_slot_detail_candidate(detail)))
+        order += 1
+
+    for section, rows in section_inputs.items():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            score = _focus_slot_section_row_score(rule, row, section)
+            if score <= 0:
+                continue
+            candidates.append((score, order, _focus_slot_section_row_candidate(row, section)))
+            order += 1
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    support = _dedupe_focus_slot_candidates(
+        [candidate for _, _, candidate in candidates],
+        max_items=SYNTHESIS_FOCUS_SUPPORT_LIMIT,
+    )
+    if not support:
+        return None
+    match = dict(support[0])
+    if len(support) > 1:
+        match["supporting_candidates"] = support
+    return match
+
+
+def _focus_slot_detail_candidate(detail: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": "scientific_detail",
+        "statement": _summary_fragment(str(detail.get("statement", "")).strip(), max_chars=280),
+        "evidence_refs": [str(ref).strip() for ref in detail.get("evidence_refs", []) if str(ref).strip()][:4],
+        "source_modality": _normalize_modality_name(str(detail.get("source_modality", ""))),
+        "section_label": str(detail.get("section_label", "") or "unknown").lower(),
+        "detail_types": [
+            str(item).strip()
+            for item in detail.get("detail_types", [])
+            if str(item).strip()
+        ][:5],
+    }
+
+
+def _focus_slot_section_row_candidate(row: dict[str, Any], section: str) -> dict[str, Any]:
+    return {
+        "source": "section_input",
+        "statement": _summary_fragment(str(row.get("statement", "")).strip(), max_chars=280),
+        "evidence_refs": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:4],
+        "source_modality": _normalize_modality_name(str(row.get("source_modality", "text"))),
+        "section_label": str(row.get("section_label") or section or "unknown").lower(),
+        "detail_types": [],
+    }
+
+
+def _dedupe_focus_slot_candidates(candidates: list[dict[str, Any]], *, max_items: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        statement = _summary_fragment(str(candidate.get("statement", "") or ""), max_chars=280)
+        refs = [str(ref).strip() for ref in candidate.get("evidence_refs", []) if str(ref).strip()][:4]
+        if not statement or not refs:
+            continue
+        key = (statement.lower(), "|".join(refs))
+        if key in seen:
+            continue
+        seen.add(key)
+        clean = dict(candidate)
+        clean["statement"] = statement
+        clean["evidence_refs"] = refs
+        out.append(clean)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _focus_slot_detail_score(rule: dict[str, Any], detail: dict[str, Any]) -> float:
+    score = 0.0
+    rule_types = {str(item).lower() for item in rule.get("detail_types", [])}
+    detail_types = {str(item).lower() for item in detail.get("detail_types", [])}
+    score += 6.0 * len(rule_types & detail_types)
+    rule_sections = {str(item).lower() for item in rule.get("sections", [])}
+    section = str(detail.get("section_label", "") or "").lower()
+    if rule_sections and section in rule_sections:
+        score += 3.0
+    rule_modalities = {str(item).lower() for item in rule.get("modalities", [])}
+    modality = _normalize_modality_name(str(detail.get("source_modality", "")))
+    if rule_modalities and modality in rule_modalities:
+        score += 4.0
+    text = " ".join(
+        str(detail.get(key, "") or "")
+        for key in ("statement", "source_excerpt", "category")
+    ).lower()
+    score += min(5.0, float(sum(1 for keyword in rule.get("keywords", []) if str(keyword).lower() in text)))
+    if score > 0:
+        score += _scientific_detail_prompt_score(detail) / 20.0
+    return score
+
+
+def _focus_slot_section_row_score(rule: dict[str, Any], row: dict[str, Any], section: str) -> float:
+    statement = str(row.get("statement", "") or "").lower()
+    if not statement:
+        return 0.0
+    score = 0.0
+    rule_sections = {str(item).lower() for item in rule.get("sections", [])}
+    row_section = str(row.get("section_label") or section or "").lower()
+    if rule_sections and row_section in rule_sections:
+        score += 3.0
+    rule_modalities = {str(item).lower() for item in rule.get("modalities", [])}
+    modality = _normalize_modality_name(str(row.get("source_modality", "")))
+    if rule_modalities and modality in rule_modalities:
+        score += 4.0
+    score += min(5.0, float(sum(1 for keyword in rule.get("keywords", []) if str(keyword).lower() in statement)))
+    if score > 0:
+        score += float(clamp_confidence(row.get("confidence", 0.0)))
+    return score
+
+
+def _count_values(values: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for raw in values:
+        key = str(raw or "").strip()
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _llm_section_extraction_worker(payload: dict[str, Any], out_queue: Any) -> None:
@@ -997,12 +1988,38 @@ def _section_extraction_safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
             )
         return out
 
+    def _clean_details(raw_details: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        if not isinstance(raw_details, list):
+            return out
+        for detail in raw_details[:40]:
+            if not isinstance(detail, dict):
+                continue
+            refs = [str(ref).strip() for ref in detail.get("evidence_refs", []) if str(ref).strip()][:6]
+            statement = str(detail.get("statement", "") or "").strip()
+            if not statement or not refs:
+                continue
+            out.append(
+                {
+                    "detail_types": [str(item).strip() for item in detail.get("detail_types", []) if str(item).strip()][:5],
+                    "statement": statement,
+                    "source_excerpt": _summary_fragment(str(detail.get("source_excerpt", "")).strip(), max_chars=520),
+                    "evidence_refs": refs,
+                    "source_modality": str(detail.get("source_modality", "") or ""),
+                    "section_label": str(detail.get("section_label", "") or ""),
+                    "category": str(detail.get("category", "") or ""),
+                    "confidence": clamp_confidence(detail.get("confidence", 0.0)),
+                }
+            )
+        return out
+
     return {
         "paper_type": str(payload.get("paper_type") or _infer_paper_type(payload)),
         "text_packets": _clean_packets(payload.get("text_packets", [])),
         "table_packets": _clean_packets(payload.get("table_packets", [])),
         "figure_packets": _clean_packets(payload.get("figure_packets", [])),
         "supp_packets": _clean_packets(payload.get("supp_packets", [])),
+        "scientific_details": _clean_details(payload.get("scientific_details", [])),
     }
 
 
@@ -1264,14 +2281,18 @@ def _llm_section_extraction_direct(payload: dict[str, Any]) -> dict[str, list[di
 
     rows_by_section = _section_rows_for_extraction(payload)
     fallback_extraction = _fallback_section_extraction_from_rows(rows_by_section)
+    scientific_detail_candidates = _scientific_details_for_prompt(payload.get("scientific_details", []), max_items=12)
     prompt_payload = {
         "paper_type": str(payload.get("paper_type") or _infer_paper_type(payload)),
         "section_rows": rows_by_section,
+        "evidence_plan": _synthesis_evidence_plan(
+            paper_type=str(payload.get("paper_type") or _infer_paper_type(payload)),
+            scientific_details=scientific_detail_candidates,
+            section_inputs=rows_by_section,
+        ),
+        "scientific_detail_candidates": scientific_detail_candidates,
     }
-    prompt = truncate_text(
-        "Extract high-fidelity section bullets from these evidence rows.\n\n" + json.dumps(prompt_payload, indent=2),
-        max_chars_for_ctx(settings.llm_n_ctx),
-    )
+    prompt = _section_extraction_prompt_text(prompt_payload, max_chars=max_chars_for_ctx(settings.llm_n_ctx))
     try:
         response = chat_text_deep(prompt, system=SECTION_EXTRACTION_SYSTEM)
     except Exception:
@@ -1280,6 +2301,112 @@ def _llm_section_extraction_direct(payload: dict[str, Any]) -> dict[str, list[di
     if _section_extract_has_content(normalized):
         return normalized
     return fallback_extraction
+
+
+def _compact_section_extraction_prompt_payload(
+    payload: dict[str, Any],
+    *,
+    rows_per_section: int,
+    detail_limit: int,
+    focus_slot_limit: int,
+    statement_chars: int,
+    strip_excerpts: bool = False,
+) -> dict[str, Any]:
+    section_rows = payload.get("section_rows", {})
+    compact_rows: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(section_rows, dict):
+        for section, rows in section_rows.items():
+            compact_section_rows: list[dict[str, Any]] = []
+            for row in rows[:rows_per_section] if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                compact_row = dict(row)
+                compact_row["statement"] = _summary_fragment(str(compact_row.get("statement", "")), max_chars=statement_chars)
+                compact_section_rows.append(compact_row)
+            compact_rows[str(section)] = compact_section_rows
+
+    details: list[dict[str, Any]] = []
+    for detail in payload.get("scientific_detail_candidates", [])[:detail_limit]:
+        if not isinstance(detail, dict):
+            continue
+        row = dict(detail)
+        row["statement"] = _summary_fragment(str(row.get("statement", "")), max_chars=statement_chars)
+        if strip_excerpts:
+            row.pop("source_excerpt", None)
+        else:
+            row["source_excerpt"] = _summary_fragment(str(row.get("source_excerpt", "")), max_chars=180)
+        details.append(row)
+
+    return {
+        "paper_type": payload.get("paper_type", "unknown"),
+        "section_rows": compact_rows,
+        "evidence_plan": _compact_evidence_plan_for_prompt(
+            payload.get("evidence_plan", {}),
+            focus_slot_limit=focus_slot_limit,
+            focus_statement_chars=min(statement_chars, 140),
+        ),
+        "scientific_detail_candidates": details,
+    }
+
+
+def _section_extraction_prompt_text(payload: dict[str, Any], *, max_chars: int) -> str:
+    prefix = "Extract high-fidelity section bullets from these evidence rows.\n\n"
+    body = json.dumps(payload, indent=2)
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_extraction_prompt_payload(
+            payload,
+            rows_per_section=12,
+            detail_limit=8,
+            focus_slot_limit=8,
+            statement_chars=260,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_extraction_prompt_payload(
+            payload,
+            rows_per_section=8,
+            detail_limit=4,
+            focus_slot_limit=5,
+            statement_chars=180,
+            strip_excerpts=True,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_extraction_prompt_payload(
+            payload,
+            rows_per_section=4,
+            detail_limit=2,
+            focus_slot_limit=0,
+            statement_chars=120,
+            strip_excerpts=True,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        section_rows = payload.get("section_rows", {})
+        minimal_rows: dict[str, list[dict[str, Any]]] = {}
+        if isinstance(section_rows, dict):
+            for section, rows in section_rows.items():
+                compact_rows: list[dict[str, Any]] = []
+                for row in rows[:1] if isinstance(rows, list) else []:
+                    if not isinstance(row, dict):
+                        continue
+                    compact_rows.append(
+                        {
+                            "statement": _summary_fragment(str(row.get("statement", "")), max_chars=80),
+                            "evidence_refs": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:1],
+                        }
+                    )
+                minimal_rows[str(section)] = compact_rows
+        minimal_payload = {
+            "paper_type": payload.get("paper_type", "unknown"),
+            "section_rows": minimal_rows,
+            "evidence_plan": {"paper_type": payload.get("paper_type", "unknown"), "focus_slots": []},
+            "scientific_detail_candidates": [],
+        }
+        body = json.dumps(minimal_payload, separators=(",", ":"))
+    return prefix + body
 
 
 def _normalize_llm_section_extraction(
@@ -1367,11 +2494,34 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
     analysis_notes = _as_str_list(payload.get("analysis_notes"))
     text_chunk_records = list(payload.get("text_chunk_records", []))
     paper_type = str(payload.get("paper_type") or _infer_paper_type(payload))
+    all_packets = text_packets + table_packets + figure_packets + supp_packets
+    scientific_details = _scientific_details(all_packets, paper_type=paper_type)
+    evidence_packets = _evidence_packet_audit(all_packets, paper_type=paper_type)
+    prompt_scientific_details = _scientific_details_for_prompt(scientific_details, max_items=12)
+    supplement_availability_note = _supplement_availability_note(
+        coverage=coverage,
+        supp_packets=supp_packets,
+        text_chunk_records=text_chunk_records,
+    )
+    payload["supplement_availability_note"] = supplement_availability_note
 
     methods_compact = _methods_compact(text_packets, analysis_notes=analysis_notes)
     sections_extracted = (
-        _llm_section_extraction(payload) if settings.analysis_section_extraction_enabled else {}
+        _llm_section_extraction({**payload, "scientific_details": scientific_details})
+        if settings.effective_analysis_section_extraction_llm_enabled
+        else {}
     )
+    synthesis_evidence_plan = _synthesis_evidence_plan(
+        paper_type=paper_type,
+        scientific_details=prompt_scientific_details,
+        section_inputs=sections_extracted,
+    )
+    evidence_packet_coverage = _evidence_packet_coverage(
+        evidence_packets,
+        paper_type=paper_type,
+        synthesis_evidence_plan=synthesis_evidence_plan,
+    )
+    synthesis_evidence_warnings = _synthesis_evidence_warnings(synthesis_evidence_plan)
     sections_compact = _sections_compact(
         text_packets=text_packets,
         methods_compact=methods_compact,
@@ -1390,7 +2540,7 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
         existing_summary="",
         sections_extracted=sections_extracted,
     )
-    if settings.analysis_summary_polish_enabled:
+    if settings.effective_analysis_summary_polish_enabled:
         executive_summary = _constrained_summary_polish(executive_summary, sections_compact)
 
     detailed_sections, section_diagnostics, sections_fallback_notes = _build_detailed_sections(
@@ -1411,6 +2561,7 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
     executive_report = _build_executive_report(
         extractive_evidence=extractive_evidence,
         fallback_summary=executive_summary,
+        scientific_details=scientific_details,
     )
     detailed_sections = _enrich_detailed_sections_with_executive_report(
         detailed_sections,
@@ -1429,6 +2580,13 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
             "sections_compact_cross_section_dedupe": sections_compact_dedupe,
             "cross_section_rejections": _cross_section_rejections(text_packets),
             "section_extraction_enabled": bool(settings.analysis_section_extraction_enabled),
+            "section_extraction_llm_enabled": bool(settings.effective_analysis_section_extraction_llm_enabled),
+            "section_extraction_skip_reason": (
+                "local_evidence_first"
+                if settings.analysis_section_extraction_enabled
+                and not settings.effective_analysis_section_extraction_llm_enabled
+                else ""
+            ),
             "paper_type": paper_type,
             "section_extraction_counts": {
                 key: len(value) for key, value in sections_extracted.items() if isinstance(value, list)
@@ -1440,6 +2598,15 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
                 key: len(value) for key, value in presentation_evidence.items() if isinstance(value, list)
             },
             "executive_report_style": str(executive_report.get("style", "")),
+            "evidence_packet_count": len(evidence_packets),
+            "evidence_packet_usable_count": sum(1 for packet in evidence_packets if _audit_packet_usable(packet)),
+            "evidence_packet_coverage": evidence_packet_coverage,
+            "scientific_details_count": len(scientific_details),
+            "scientific_details_prompt_count": len(prompt_scientific_details),
+            "scientific_details_by_type": _scientific_detail_type_counts(scientific_details),
+            "synthesis_evidence_plan": synthesis_evidence_plan,
+            "synthesis_evidence_warnings": synthesis_evidence_warnings,
+            "supplement_availability_note": supplement_availability_note,
         }
     )
     strengths = _methods_strengths_from_compact(methods_compact, max_items=5)
@@ -1457,6 +2624,9 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
     reproducibility_ethics = _unique_strings(reproducibility_ethics, max_items=6)
 
     uncertainty_gaps = _coverage_gaps(coverage)
+    if _supplement_note_is_limitation(supplement_availability_note):
+        uncertainty_gaps.append(supplement_availability_note)
+    uncertainty_gaps += synthesis_evidence_warnings
     uncertainty_gaps += analysis_notes
     uncertainty_gaps += [
         _discrepancy_uncertainty_line(item)
@@ -1468,7 +2638,6 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
     if not methodology_details:
         methodology_details = _methodology_details(text_packets)
 
-    all_packets = text_packets + table_packets + figure_packets + supp_packets
     confidence_values = [clamp_confidence(packet.get("confidence", 0.0)) for packet in all_packets]
     avg_conf = sum(confidence_values) / len(confidence_values) if confidence_values else 0.0
     penalty = min(0.5, 0.08 * len(discrepancies))
@@ -1507,6 +2676,10 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "cross_modal_claims": cross_modal_claims,
         "discrepancies": discrepancies,
+        "evidence_packets_version": 1 if evidence_packets else 0,
+        "evidence_packets": evidence_packets,
+        "evidence_packet_coverage_version": 1 if evidence_packets else 0,
+        "evidence_packet_coverage": evidence_packet_coverage,
         "executive_summary": executive_summary,
         "extractive_evidence_version": 1,
         "extractive_evidence": extractive_evidence,
@@ -1523,11 +2696,14 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
         "sections_extracted_version": 1 if sections_extracted else 0,
         "sections_extracted": sections_extracted,
         "methodology_details": methodology_details,
+        "scientific_details_version": SCIENTIFIC_DETAILS_VERSION if scientific_details else 0,
+        "scientific_details": scientific_details,
         "sections": detailed_sections,
         "section_diagnostics": section_diagnostics,
         "sections_fallback_used": bool(sections_fallback_notes),
         "sections_fallback_notes": sections_fallback_notes,
         "coverage_snapshot_line": _media_counts_line(coverage),
+        "supplement_availability_note": supplement_availability_note,
         "reproducibility_ethics": reproducibility_ethics,
         "uncertainty_gaps": uncertainty_gaps,
         "overall_confidence": overall_confidence,
@@ -2557,6 +3733,283 @@ def _methodology_details(text_packets: list[dict[str, Any]], max_items: int = 20
 
     ranked.sort(key=lambda item: (-item["score"], item["idx"]))
     return [item["detail"] for item in ranked[:max_items]]
+
+
+def _scientific_details(
+    packets: list[dict[str, Any]],
+    *,
+    paper_type: str = "",
+    max_items: int = 28,
+) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, packet in enumerate(packets):
+        if not isinstance(packet, dict):
+            continue
+        flags = {str(flag).strip().lower() for flag in packet.get("quality_flags", [])}
+        if "missing_evidence" in flags:
+            continue
+        statement = _strip_confidence_annotations(str(packet.get("statement", "")).strip())
+        if not statement or _is_fragment_like_statement(statement):
+            continue
+        refs = _packet_refs(packet, max_items=6)
+        if not refs:
+            continue
+        detail_types = _scientific_detail_types(packet, statement)
+        if not detail_types:
+            continue
+        statement = _compact_method_statement(statement, max_chars=260)
+        key = _canonical_statement_text(statement)
+        if not key or _is_redundant_statement_key(key, seen):
+            continue
+        seen.add(key)
+        detail = {
+            "detail_types": detail_types[:5],
+            "statement": statement,
+            "source_excerpt": _scientific_detail_source_excerpt(packet),
+            "evidence_refs": refs,
+            "source_modality": _normalize_modality_name(str(packet.get("modality", ""))),
+            "section_label": _packet_section_label(packet),
+            "category": str(packet.get("category", "") or "other"),
+            "confidence": clamp_confidence(packet.get("confidence", 0.0)),
+        }
+        ranked.append(
+            {
+                "score": _scientific_detail_score(detail, paper_type=paper_type),
+                "idx": idx,
+                "detail": detail,
+            }
+        )
+    ranked.sort(key=lambda item: (-int(item["score"]), int(item["idx"])))
+    return [item["detail"] for item in ranked[:max_items]]
+
+
+def _evidence_packet_audit(
+    packets: list[dict[str, Any]],
+    *,
+    paper_type: str = "",
+    max_items: int = 160,
+) -> list[dict[str, Any]]:
+    audit_packets: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...], str]] = set()
+    for idx, packet in enumerate(packets, start=1):
+        if not isinstance(packet, dict):
+            continue
+        statement = _strip_confidence_annotations(str(packet.get("statement", "")).strip())
+        refs = _packet_refs(packet, max_items=8)
+        modality = _normalize_modality_name(str(packet.get("modality", "")))
+        section_label = _packet_section_label(packet)
+        key = (_canonical_statement_text(statement), tuple(refs), modality)
+        if not statement or key in seen:
+            continue
+        seen.add(key)
+        detail_types = _scientific_detail_types(packet, statement)
+        audit_packets.append(
+            {
+                "finding_id": str(packet.get("finding_id") or f"evidence-packet-{idx}").strip(),
+                "modality": modality,
+                "section_label": section_label,
+                "anchor": str(packet.get("anchor") or (refs[0] if refs else "")).strip(),
+                "statement": _summary_fragment(statement, max_chars=420),
+                "source_excerpt": _scientific_detail_source_excerpt(packet),
+                "evidence_refs": refs,
+                "confidence": clamp_confidence(packet.get("confidence", 0.0)),
+                "category": str(packet.get("category") or "other"),
+                "detail_types": detail_types[:6],
+                "quality_flags": _as_str_list(packet.get("quality_flags")),
+                "result_evidence_type": _normalize_result_evidence_type(packet.get("result_evidence_type")),
+                "usable_for_gold_comparison": bool(
+                    statement and refs and section_label in SECTION_LABELS and section_label != "unknown"
+                ),
+            }
+        )
+        if len(audit_packets) >= max_items:
+            break
+    audit_packets.sort(
+        key=lambda packet: (
+            not bool(packet.get("usable_for_gold_comparison")),
+            _evidence_packet_section_rank(str(packet.get("section_label") or "")),
+            _evidence_packet_modality_rank(str(packet.get("modality") or "")),
+            -clamp_confidence(packet.get("confidence", 0.0)),
+        )
+    )
+    return audit_packets
+
+
+def _audit_packet_usable(packet: dict[str, Any]) -> bool:
+    return bool(
+        isinstance(packet, dict)
+        and packet.get("statement")
+        and packet.get("evidence_refs")
+        and str(packet.get("section_label") or "") in SECTION_LABELS
+        and str(packet.get("section_label") or "") != "unknown"
+    )
+
+
+def _evidence_packet_coverage(
+    packets: list[dict[str, Any]],
+    *,
+    paper_type: str = "",
+    synthesis_evidence_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    valid_sections = tuple(EXEC_REPORT_SECTION_ORDER)
+    valid_modalities = ("text", "table", "figure", "supplement")
+    usable_packets = [packet for packet in packets if _audit_packet_usable(packet)]
+    section_counts = {
+        section: sum(1 for packet in usable_packets if str(packet.get("section_label") or "") == section)
+        for section in valid_sections
+    }
+    modality_counts = {
+        modality: sum(1 for packet in usable_packets if str(packet.get("modality") or "") == modality)
+        for modality in valid_modalities
+    }
+    detail_counts: dict[str, int] = {}
+    for packet in usable_packets:
+        for detail_type in packet.get("detail_types", []):
+            key = str(detail_type or "").strip()
+            if not key:
+                continue
+            detail_counts[key] = detail_counts.get(key, 0) + 1
+
+    critical_missing: list[dict[str, str]] = []
+    quality_flags: list[str] = []
+    if isinstance(synthesis_evidence_plan, dict):
+        critical_missing = [
+            {
+                "slot_key": str(slot.get("slot_key") or ""),
+                "label": str(slot.get("label") or slot.get("slot_key") or ""),
+                "reason": str(slot.get("reason") or ""),
+            }
+            for slot in synthesis_evidence_plan.get("critical_missing_focus_slots", [])
+            if isinstance(slot, dict)
+        ]
+        quality_flags.extend(
+            str(flag).strip()
+            for flag in synthesis_evidence_plan.get("quality_flags", [])
+            if str(flag).strip()
+        )
+
+    if not usable_packets:
+        quality_flags.append("no_usable_evidence_packets")
+    if section_counts.get("methods", 0) == 0:
+        quality_flags.append("no_methods_packets")
+    if section_counts.get("results", 0) == 0:
+        quality_flags.append("no_results_packets")
+    if not any(modality_counts.get(modality, 0) for modality in ("table", "figure", "supplement")):
+        quality_flags.append("no_cross_modal_packets")
+    if not detail_counts:
+        quality_flags.append("no_typed_evidence_packets")
+
+    return {
+        "paper_type": paper_type or "unknown",
+        "packet_total": len(packets),
+        "usable_packets": len(usable_packets),
+        "usable_packet_rate": round((len(usable_packets) / len(packets)) if packets else 0.0, 3),
+        "sections_present": [section for section, count in section_counts.items() if count > 0],
+        "missing_core_sections": [section for section, count in section_counts.items() if count == 0],
+        "by_section": section_counts,
+        "by_modality": modality_counts,
+        "by_detail_type": dict(sorted(detail_counts.items())),
+        "cross_modal_packet_count": sum(modality_counts.get(item, 0) for item in ("table", "figure", "supplement")),
+        "typed_packet_count": sum(1 for packet in usable_packets if packet.get("detail_types")),
+        "critical_missing_focus_slots": critical_missing,
+        "quality_flags": _unique_strings(quality_flags, max_items=12),
+    }
+
+
+def _evidence_packet_section_rank(value: str) -> int:
+    order = {"introduction": 0, "methods": 1, "results": 2, "discussion": 3, "conclusion": 4}
+    return order.get(str(value or "").strip().lower(), 99)
+
+
+def _evidence_packet_modality_rank(value: str) -> int:
+    order = {"text": 0, "table": 1, "figure": 2, "supplement": 3}
+    return order.get(str(value or "").strip().lower(), 99)
+
+
+def _scientific_detail_source_excerpt(packet: dict[str, Any]) -> str:
+    for key in ("source_excerpt", "verbatim_text", "source_text", "caption", "legend", "ocr_text"):
+        excerpt = _summary_fragment(str(packet.get(key, "") or "").strip(), max_chars=620)
+        if excerpt:
+            return excerpt
+    evidence = packet.get("evidence")
+    if isinstance(evidence, list):
+        excerpt = _summary_fragment(" ".join(str(item or "") for item in evidence), max_chars=620)
+        if excerpt:
+            return excerpt
+    return ""
+
+
+def _scientific_detail_types(packet: dict[str, Any], statement: str) -> list[str]:
+    found: list[str] = []
+    category_tokens = _category_tokens(str(packet.get("category", "")))
+    for token in category_tokens:
+        detail_type = SCIENTIFIC_CATEGORY_HINTS.get(token)
+        if detail_type:
+            found.append(detail_type)
+
+    text = str(statement or "")
+    for detail_type, pattern in SCIENTIFIC_DETAIL_PATTERNS:
+        if pattern.search(text):
+            found.append(detail_type)
+
+    modality = _normalize_modality_name(str(packet.get("modality", "")))
+    if modality in {"table", "figure", "supplement"} and _has_concrete_result_outcome(text):
+        found.append("cross_modal_result")
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in found:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _scientific_detail_score(detail: dict[str, Any], *, paper_type: str = "") -> int:
+    score = int(round(clamp_confidence(detail.get("confidence", 0.0)) * 20))
+    detail_types = [str(item) for item in detail.get("detail_types", []) if str(item).strip()]
+    score += min(24, len(detail_types) * 6)
+    refs = [str(ref) for ref in detail.get("evidence_refs", []) if str(ref).strip()]
+    score += min(8, len(refs) * 2)
+    section = str(detail.get("section_label", "") or "").lower()
+    if section == "methods":
+        score += 8
+    elif section == "results":
+        score += 10
+    modality = _normalize_modality_name(str(detail.get("source_modality", "")))
+    if modality in {"table", "figure", "supplement"}:
+        score += 8
+    category = str(detail.get("category", "") or "").lower()
+    if category in {"medication", "intervention", "stats", "assay", "model_system", "clinical"}:
+        score += 8
+    paper = str(paper_type or "").lower()
+    if "review" in paper and "data_source_or_design" in detail_types:
+        score += 10
+    if ("laboratory" in paper or "preclinical" in paper) and (
+        "model_system" in detail_types or "assay_readout" in detail_types
+    ):
+        score += 10
+    if ("trial" in paper or "observational" in paper) and (
+        "intervention_or_exposure" in detail_types or "outcome_measure" in detail_types
+    ):
+        score += 10
+    return score
+
+
+def _scientific_detail_type_counts(details: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        for detail_type in detail.get("detail_types", []):
+            key = str(detail_type or "").strip()
+            if not key:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _is_methods_anchor(anchor: str) -> bool:
@@ -3656,6 +5109,8 @@ def _verify_section_fidelity_with_llm(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if not bool(settings.analysis_section_verifier_enabled):
         return sections, {}
+    if not bool(settings.effective_analysis_section_verifier_enabled):
+        return sections, {"attempted": False, "skipped_reason": "local_evidence_first"}
     if not isinstance(sections, dict):
         return sections, {}
 
@@ -3689,22 +5144,16 @@ def _verify_section_fidelity_with_llm(
     if not any(section_payload.values()):
         return sections, {}
 
-    prompt = truncate_text(
-        "Verify section membership for this draft report. Return only valid JSON.\n\n"
-        + json.dumps(
-            {
-                "draft_sections": section_payload,
-                "evidence_digest": {
-                    "text_findings": summarize_packet_statements(payload.get("text_packets", []), max_items=12),
-                    "table_findings": summarize_packet_statements(payload.get("table_packets", []), max_items=4),
-                    "figure_findings": summarize_packet_statements(payload.get("figure_packets", []), max_items=4),
-                    "supp_findings": summarize_packet_statements(payload.get("supp_packets", []), max_items=4),
-                },
-            },
-            indent=2,
-        ),
-        max_chars_for_ctx(settings.llm_n_ctx),
-    )
+    prompt_payload = {
+        "draft_sections": section_payload,
+        "evidence_digest": {
+            "text_findings": summarize_packet_statements(payload.get("text_packets", []), max_items=12),
+            "table_findings": summarize_packet_statements(payload.get("table_packets", []), max_items=4),
+            "figure_findings": summarize_packet_statements(payload.get("figure_packets", []), max_items=4),
+            "supp_findings": summarize_packet_statements(payload.get("supp_packets", []), max_items=4),
+        },
+    }
+    prompt = _section_verifier_prompt_text(prompt_payload, max_chars=max_chars_for_ctx(settings.llm_n_ctx))
     try:
         parsed = _run_deep_json_prompt(
             prompt=prompt,
@@ -3877,6 +5326,71 @@ def _verify_section_fidelity_with_llm(
         diagnostics["restored_count"] = restored_total
         diagnostics["restored_by_section"] = restored_by_section
     return next_sections, diagnostics
+
+
+def _compact_section_verifier_prompt_payload(
+    payload: dict[str, Any],
+    *,
+    rows_per_section: int,
+    digest_limit: int,
+    statement_chars: int,
+) -> dict[str, Any]:
+    draft_sections = payload.get("draft_sections", {})
+    compact_sections: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(draft_sections, dict):
+        for section, rows in draft_sections.items():
+            compact_rows: list[dict[str, Any]] = []
+            for row in rows[:rows_per_section] if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                compact_row = dict(row)
+                compact_row["statement"] = _summary_fragment(str(compact_row.get("statement", "")), max_chars=statement_chars)
+                compact_rows.append(compact_row)
+            compact_sections[str(section)] = compact_rows
+    digest = payload.get("evidence_digest", {})
+    compact_digest: dict[str, list[str]] = {}
+    if isinstance(digest, dict):
+        for key, values in digest.items():
+            if not isinstance(values, list):
+                continue
+            compact_digest[str(key)] = [
+                _summary_fragment(str(item), max_chars=statement_chars)
+                for item in values[:digest_limit]
+                if str(item).strip()
+            ]
+    return {"draft_sections": compact_sections, "evidence_digest": compact_digest}
+
+
+def _section_verifier_prompt_text(payload: dict[str, Any], *, max_chars: int) -> str:
+    prefix = "Verify section membership for this draft report. Return only valid JSON.\n\n"
+    body = json.dumps(payload, indent=2)
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_verifier_prompt_payload(
+            payload,
+            rows_per_section=8,
+            digest_limit=4,
+            statement_chars=260,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_verifier_prompt_payload(
+            payload,
+            rows_per_section=4,
+            digest_limit=2,
+            statement_chars=180,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_verifier_prompt_payload(
+            payload,
+            rows_per_section=2,
+            digest_limit=1,
+            statement_chars=120,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    return prefix + body
 
 
 def _build_section_block(
@@ -4657,6 +6171,7 @@ def _build_executive_report(
     *,
     extractive_evidence: dict[str, list[dict[str, Any]]],
     fallback_summary: str,
+    scientific_details: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     section_rows: list[dict[str, Any]] = []
     overview_parts: list[str] = []
@@ -4714,6 +6229,7 @@ def _build_executive_report(
     llm_report = _llm_executive_report_synthesis(
         extractive_evidence=extractive_evidence,
         fallback_report=report,
+        scientific_details=scientific_details or [],
     )
     if llm_report:
         return llm_report
@@ -4722,6 +6238,7 @@ def _build_executive_report(
 
 def _executive_report_synthesis_payload(
     extractive_evidence: dict[str, list[dict[str, Any]]],
+    scientific_details: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload_sections: dict[str, list[dict[str, Any]]] = {}
     for section in EXEC_REPORT_SECTION_ORDER:
@@ -4737,19 +6254,29 @@ def _executive_report_synthesis_payload(
             if not statement:
                 continue
             verbatim = _summary_fragment(str(row.get("verbatim_text", "")).strip(), max_chars=520)
+            anchors = [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:4]
             payload_rows.append(
                 {
                     "statement": statement,
                     "verbatim_excerpt": verbatim,
-                    "anchors": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:4],
+                    "anchors": anchors,
+                    "evidence_refs": anchors,
                     "confidence": clamp_confidence(row.get("confidence", 0.0)),
                     "section_confidence": clamp_confidence(row.get("section_confidence", row.get("confidence", 0.0))),
                     "source_modality": _normalize_modality_name(str(row.get("source_modality", "text"))),
                 }
             )
         payload_sections[section] = payload_rows
+    selected_details = _scientific_details_for_prompt(scientific_details or [], max_items=12)
+    paper_type = _infer_paper_type({"sections": payload_sections})
     return {
-        "paper_type": _infer_paper_type({"sections": payload_sections}),
+        "paper_type": paper_type,
+        "evidence_plan": _synthesis_evidence_plan(
+            paper_type=paper_type,
+            scientific_details=selected_details,
+            section_inputs=payload_sections,
+        ),
+        "scientific_detail_candidates": selected_details,
         "sections": payload_sections,
     }
 
@@ -4979,32 +6506,123 @@ def _statement_supported_by_text(statement: str, source_text: str) -> bool:
 def _executive_section_payload_supports(section: str, statement: str, support_payload: dict[str, Any]) -> bool:
     sections = support_payload.get("sections") if isinstance(support_payload, dict) else {}
     rows = sections.get(section, []) if isinstance(sections, dict) else []
-    if not isinstance(rows, list):
-        return False
     source_parts: list[str] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        source_parts.append(str(row.get("statement", "") or ""))
-        source_parts.append(str(row.get("verbatim_excerpt", "") or ""))
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            source_parts.append(str(row.get("statement", "") or ""))
+            source_parts.append(str(row.get("verbatim_excerpt", "") or ""))
+    detail_rows = support_payload.get("scientific_detail_candidates") if isinstance(support_payload, dict) else []
+    if isinstance(detail_rows, list):
+        for detail in detail_rows:
+            if not isinstance(detail, dict):
+                continue
+            detail_section = str(detail.get("section_label", "") or "").strip().lower()
+            if detail_section and detail_section != section:
+                continue
+            source_parts.append(str(detail.get("statement", "") or ""))
+            source_parts.append(str(detail.get("source_excerpt", "") or ""))
     return _statement_supported_by_text(statement, " ".join(source_parts))
+
+
+def _compact_executive_synthesis_prompt_payload(
+    payload: dict[str, Any],
+    *,
+    detail_limit: int,
+    rows_per_section: int,
+    focus_slot_limit: int,
+    strip_excerpts: bool = False,
+) -> dict[str, Any]:
+    compact_payload = dict(payload)
+    compact_details: list[dict[str, Any]] = []
+    for detail in compact_payload.get("scientific_detail_candidates", [])[:detail_limit]:
+        if not isinstance(detail, dict):
+            continue
+        row = dict(detail)
+        row["statement"] = _summary_fragment(str(row.get("statement", "")), max_chars=240)
+        if strip_excerpts:
+            row.pop("source_excerpt", None)
+        else:
+            row["source_excerpt"] = _summary_fragment(str(row.get("source_excerpt", "")), max_chars=200)
+        compact_details.append(row)
+    compact_payload["scientific_detail_candidates"] = compact_details
+
+    compact_payload["evidence_plan"] = _compact_evidence_plan_for_prompt(
+        compact_payload.get("evidence_plan", {}),
+        focus_slot_limit=focus_slot_limit,
+        focus_statement_chars=160 if not strip_excerpts else 100,
+    )
+
+    sections = compact_payload.get("sections", {})
+    if isinstance(sections, dict):
+        compact_sections: dict[str, list[dict[str, Any]]] = {}
+        for section, rows in sections.items():
+            compact_rows: list[dict[str, Any]] = []
+            for row in rows[:rows_per_section] if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                compact_row = dict(row)
+                compact_row["statement"] = _summary_fragment(str(compact_row.get("statement", "")), max_chars=240)
+                if strip_excerpts:
+                    compact_row.pop("verbatim_excerpt", None)
+                else:
+                    compact_row["verbatim_excerpt"] = _summary_fragment(
+                        str(compact_row.get("verbatim_excerpt", "")),
+                        max_chars=180,
+                    )
+                compact_rows.append(compact_row)
+            compact_sections[str(section)] = compact_rows
+        compact_payload["sections"] = compact_sections
+    return compact_payload
+
+
+def _executive_report_synthesis_prompt_text(payload: dict[str, Any], *, max_chars: int) -> str:
+    prefix = "Synthesize a sectioned executive summary from this evidence payload.\n\n"
+    body = json.dumps(payload, indent=2)
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_executive_synthesis_prompt_payload(
+            payload,
+            detail_limit=6,
+            rows_per_section=3,
+            focus_slot_limit=8,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_executive_synthesis_prompt_payload(
+            payload,
+            detail_limit=3,
+            rows_per_section=2,
+            focus_slot_limit=5,
+            strip_excerpts=True,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_executive_synthesis_prompt_payload(
+            payload,
+            detail_limit=1,
+            rows_per_section=1,
+            focus_slot_limit=0,
+            strip_excerpts=True,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    return prefix + body
 
 
 def _llm_executive_report_synthesis(
     *,
     extractive_evidence: dict[str, list[dict[str, Any]]],
     fallback_report: dict[str, Any],
+    scientific_details: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if not settings.analysis_narrative_overrides_enabled:
+    if not settings.effective_analysis_narrative_overrides_enabled:
         return {}
-    prompt_payload = _executive_report_synthesis_payload(extractive_evidence)
+    prompt_payload = _executive_report_synthesis_payload(extractive_evidence, scientific_details=scientific_details)
     if not any(prompt_payload.get("sections", {}).get(section) for section in EXEC_REPORT_SECTION_ORDER):
         return {}
-    prompt = truncate_text(
-        "Synthesize a sectioned executive summary from this evidence payload.\n\n"
-        + json.dumps(prompt_payload, indent=2),
-        max_chars_for_ctx(settings.llm_n_ctx),
-    )
+    prompt = _executive_report_synthesis_prompt_text(prompt_payload, max_chars=max_chars_for_ctx(settings.llm_n_ctx))
     parsed = _run_deep_json_prompt(
         prompt=prompt,
         system_prompt=EXECUTIVE_REPORT_SYNTHESIS_SYSTEM,
@@ -5030,12 +6648,15 @@ def build_section_synthesis_v2(
     paper_type = _paper_type_from_summary(summary_json)
     section_inputs = _section_synthesis_v2_inputs(summary_json=summary_json, parsed_chunks=parsed_chunks)
     fallback_report = _build_section_synthesis_v2_fallback(section_inputs=section_inputs, paper_type=paper_type)
-    should_call_llm = bool(settings.analysis_section_synthesis_v2_llm_enabled if use_llm is None else use_llm)
+    should_call_llm = bool(settings.effective_analysis_section_synthesis_v2_llm_enabled if use_llm is None else use_llm)
     if should_call_llm:
         llm_report = _llm_section_synthesis_v2(
             section_inputs=section_inputs,
             paper_type=paper_type,
             fallback_report=fallback_report,
+            scientific_details=list(summary_json.get("scientific_details", []))
+            if isinstance(summary_json.get("scientific_details"), list)
+            else [],
         )
         if llm_report:
             return llm_report
@@ -5280,6 +6901,323 @@ def _section_synthesis_v2_limit(section: str) -> int:
     return {"introduction": 8, "methods": 12, "results": 14, "discussion": 10, "conclusion": 7}.get(section, 8)
 
 
+def _section_synthesis_v2_prompt_payload(
+    *,
+    section_inputs: dict[str, list[dict[str, Any]]],
+    paper_type: str,
+    scientific_details: list[dict[str, Any]] | None = None,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    max_payload_chars = max(2800, int(max_chars or max_chars_for_ctx(settings.llm_n_ctx)) - 1200)
+    row_limits = {
+        section: min(len(section_inputs.get(section, []) or []), _section_synthesis_v2_limit(section))
+        for section in EXEC_REPORT_SECTION_ORDER
+    }
+    detail_limit = 12
+    excerpt_chars = 520
+    detail_excerpt_chars = 520
+
+    def _rows_for_section(section: str) -> list[dict[str, Any]]:
+        rows = section_inputs.get(section, []) if isinstance(section_inputs, dict) else []
+        out: list[dict[str, Any]] = []
+        for row in rows[: row_limits[section]]:
+            if not isinstance(row, dict):
+                continue
+            statement = str(row.get("statement", "")).strip()
+            if not statement:
+                continue
+            out.append(
+                {
+                    "statement": _summary_fragment(statement, max_chars=360),
+                    "source_excerpt": _summary_fragment(str(row.get("source_excerpt", "")), max_chars=excerpt_chars),
+                    "anchors": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:4],
+                    "source": str(row.get("source", "")),
+                    "source_modality": _normalize_modality_name(str(row.get("source_modality", "text"))),
+                }
+            )
+        return out
+
+    def _build_payload() -> dict[str, Any]:
+        selected_details = _scientific_details_for_prompt(
+            scientific_details or [],
+            max_items=detail_limit,
+            statement_max_chars=360,
+            excerpt_max_chars=detail_excerpt_chars,
+        )
+        return {
+            "paper_type": paper_type,
+            "evidence_plan": _synthesis_evidence_plan(
+                paper_type=paper_type,
+                scientific_details=selected_details,
+                section_inputs=section_inputs,
+            ),
+            "scientific_detail_candidates": selected_details,
+            "sections": {section: _rows_for_section(section) for section in EXEC_REPORT_SECTION_ORDER},
+        }
+
+    def _payload_len(payload: dict[str, Any]) -> int:
+        return len(json.dumps(payload, indent=2))
+
+    payload = _build_payload()
+    for _ in range(80):
+        if _payload_len(payload) <= max_payload_chars:
+            return payload
+        if excerpt_chars > 260:
+            excerpt_chars = max(260, int(excerpt_chars * 0.75))
+        elif detail_excerpt_chars > 220:
+            detail_excerpt_chars = max(220, int(detail_excerpt_chars * 0.75))
+        elif detail_limit > 6:
+            detail_limit -= 1
+        else:
+            reducible_sections = [
+                section
+                for section in EXEC_REPORT_SECTION_ORDER
+                if row_limits[section] > min(
+                    len(section_inputs.get(section, []) or []),
+                    max(1, _section_synthesis_v2_min_inputs(section)),
+                )
+            ]
+            if reducible_sections:
+                section = max(reducible_sections, key=lambda key: row_limits[key])
+                row_limits[section] -= 1
+            elif excerpt_chars > 160:
+                excerpt_chars = max(160, int(excerpt_chars * 0.75))
+            elif detail_limit > 3:
+                detail_limit -= 1
+            else:
+                reducible_sections = [
+                    section for section in EXEC_REPORT_SECTION_ORDER if row_limits[section] > 1
+                ]
+                if not reducible_sections:
+                    return payload
+                section = max(reducible_sections, key=lambda key: row_limits[key])
+                row_limits[section] -= 1
+        payload = _build_payload()
+    return payload
+
+
+def _compact_evidence_plan_for_prompt(
+    evidence_plan: Any,
+    *,
+    focus_slot_limit: int,
+    focus_statement_chars: int,
+    include_supporting_candidates: bool = True,
+) -> dict[str, Any]:
+    if not isinstance(evidence_plan, dict):
+        return {}
+    compact = dict(evidence_plan)
+    compact["focus_slots"] = _compact_focus_slots_for_prompt(
+        compact.get("focus_slots", []),
+        max_items=focus_slot_limit,
+        statement_chars=focus_statement_chars,
+        include_supporting_candidates=include_supporting_candidates,
+    )
+    compact["critical_missing_focus_slots"] = _compact_missing_focus_slots_for_prompt(
+        compact.get("critical_missing_focus_slots", []),
+        max_items=min(8, max(1, focus_slot_limit)),
+    )
+    compact["quality_flags"] = [
+        str(flag).strip()
+        for flag in compact.get("quality_flags", [])
+        if str(flag).strip()
+    ][:8] if isinstance(compact.get("quality_flags"), list) else []
+    compact["missing_focus_slot_count"] = int(compact.get("missing_focus_slot_count", 0) or 0)
+    return compact
+
+
+def _compact_missing_focus_slots_for_prompt(slots: Any, *, max_items: int) -> list[dict[str, str]]:
+    if not isinstance(slots, list):
+        return []
+    compact: list[dict[str, str]] = []
+    for slot in slots[:max_items]:
+        if not isinstance(slot, dict):
+            continue
+        row = {
+            "slot_key": str(slot.get("slot_key", "") or ""),
+            "label": str(slot.get("label", "") or ""),
+        }
+        reason = _summary_fragment(str(slot.get("reason", "") or ""), max_chars=180)
+        if reason:
+            row["reason"] = reason
+        compact.append(row)
+    return compact
+
+
+def _compact_focus_slots_for_prompt(
+    slots: Any,
+    *,
+    max_items: int,
+    statement_chars: int,
+    include_supporting_candidates: bool,
+) -> list[dict[str, Any]]:
+    if not isinstance(slots, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for slot in slots[:max_items]:
+        if not isinstance(slot, dict):
+            continue
+        row = {
+            "slot_key": str(slot.get("slot_key", "")),
+            "label": str(slot.get("label", "")),
+            "status": str(slot.get("status", "")),
+        }
+        statement = _summary_fragment(str(slot.get("statement", "") or ""), max_chars=statement_chars)
+        if statement:
+            row["statement"] = statement
+        refs = [str(ref).strip() for ref in slot.get("evidence_refs", []) if str(ref).strip()]
+        if refs:
+            row["evidence_refs"] = refs[:2]
+        reason = _summary_fragment(str(slot.get("reason", "") or ""), max_chars=160)
+        if reason:
+            row["reason"] = reason
+        source_modality = _normalize_modality_name(str(slot.get("source_modality", "")))
+        if source_modality != "unknown":
+            row["source_modality"] = source_modality
+        section_label = str(slot.get("section_label", "") or "").strip().lower()
+        if section_label:
+            row["section_label"] = section_label
+        if include_supporting_candidates:
+            support = _compact_focus_slot_supporting_candidates(
+                slot.get("supporting_candidates", []),
+                max_items=SYNTHESIS_FOCUS_SUPPORT_LIMIT,
+                statement_chars=max(80, min(statement_chars, 220)),
+            )
+            if support:
+                row["supporting_candidates"] = support
+        compact.append(row)
+    return compact
+
+
+def _compact_focus_slot_supporting_candidates(
+    candidates: Any,
+    *,
+    max_items: int,
+    statement_chars: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(candidates, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for candidate in candidates[:max_items]:
+        if not isinstance(candidate, dict):
+            continue
+        statement = _summary_fragment(str(candidate.get("statement", "") or ""), max_chars=statement_chars)
+        refs = [str(ref).strip() for ref in candidate.get("evidence_refs", []) if str(ref).strip()][:2]
+        if not statement or not refs:
+            continue
+        row: dict[str, Any] = {
+            "source": str(candidate.get("source", "") or ""),
+            "statement": statement,
+            "evidence_refs": refs,
+        }
+        source_modality = _normalize_modality_name(str(candidate.get("source_modality", "")))
+        if source_modality != "unknown":
+            row["source_modality"] = source_modality
+        section_label = str(candidate.get("section_label", "") or "").strip().lower()
+        if section_label:
+            row["section_label"] = section_label
+        detail_types = [
+            str(item).strip()
+            for item in candidate.get("detail_types", [])
+            if str(item).strip()
+        ][:4]
+        if detail_types:
+            row["detail_types"] = detail_types
+        compact.append(row)
+    return compact
+
+
+def _compact_section_synthesis_prompt_payload(
+    payload: dict[str, Any],
+    *,
+    detail_limit: int,
+    rows_per_section: int,
+    focus_slot_limit: int,
+    focus_statement_chars: int,
+    include_supporting_candidates: bool = True,
+    strip_excerpts: bool = False,
+) -> dict[str, Any]:
+    compact_payload = dict(payload)
+    details: list[dict[str, Any]] = []
+    for detail in compact_payload.get("scientific_detail_candidates", [])[:detail_limit]:
+        if not isinstance(detail, dict):
+            continue
+        row = dict(detail)
+        if strip_excerpts:
+            row.pop("source_excerpt", None)
+        else:
+            row["source_excerpt"] = _summary_fragment(str(row.get("source_excerpt", "")), max_chars=180)
+        row["statement"] = _summary_fragment(str(row.get("statement", "")), max_chars=220)
+        details.append(row)
+    compact_payload["scientific_detail_candidates"] = details
+
+    compact_payload["evidence_plan"] = _compact_evidence_plan_for_prompt(
+        compact_payload.get("evidence_plan", {}),
+        focus_slot_limit=focus_slot_limit,
+        focus_statement_chars=focus_statement_chars,
+        include_supporting_candidates=include_supporting_candidates,
+    )
+
+    sections = compact_payload.get("sections", {})
+    if isinstance(sections, dict):
+        compact_sections: dict[str, list[dict[str, Any]]] = {}
+        for section, rows in sections.items():
+            compact_rows: list[dict[str, Any]] = []
+            for row in rows[:rows_per_section] if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                compact_row = dict(row)
+                compact_row["statement"] = _summary_fragment(str(compact_row.get("statement", "")), max_chars=220)
+                if strip_excerpts:
+                    compact_row.pop("source_excerpt", None)
+                else:
+                    compact_row["source_excerpt"] = _summary_fragment(
+                        str(compact_row.get("source_excerpt", "")),
+                        max_chars=160,
+                    )
+                compact_rows.append(compact_row)
+            compact_sections[str(section)] = compact_rows
+        compact_payload["sections"] = compact_sections
+    return compact_payload
+
+
+def _section_synthesis_v2_prompt_text(payload: dict[str, Any], *, max_chars: int) -> str:
+    prefix = "Write an experimental section-first paper readout from this JSON evidence payload.\nReturn only valid JSON.\n\n"
+    body = json.dumps(payload, indent=2)
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_synthesis_prompt_payload(
+            payload,
+            detail_limit=3,
+            rows_per_section=1,
+            focus_slot_limit=8,
+            focus_statement_chars=180,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_synthesis_prompt_payload(
+            payload,
+            detail_limit=2,
+            rows_per_section=1,
+            focus_slot_limit=5,
+            focus_statement_chars=120,
+            include_supporting_candidates=False,
+            strip_excerpts=True,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        compact_payload = _compact_section_synthesis_prompt_payload(
+            payload,
+            detail_limit=1,
+            rows_per_section=1,
+            focus_slot_limit=0,
+            focus_statement_chars=0,
+            strip_excerpts=True,
+        )
+        body = json.dumps(compact_payload, separators=(",", ":"))
+    return prefix + body
+
+
 def _build_section_synthesis_v2_fallback(
     *,
     section_inputs: dict[str, list[dict[str, Any]]],
@@ -5400,27 +7338,19 @@ def _llm_section_synthesis_v2(
     section_inputs: dict[str, list[dict[str, Any]]],
     paper_type: str,
     fallback_report: dict[str, Any],
+    scientific_details: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    prompt_sections: dict[str, list[dict[str, Any]]] = {}
-    for section in EXEC_REPORT_SECTION_ORDER:
-        rows = section_inputs.get(section, [])
-        prompt_sections[section] = [
-            {
-                "statement": str(row.get("statement", "")),
-                "source_excerpt": _summary_fragment(str(row.get("source_excerpt", "")), max_chars=520),
-                "anchors": [str(ref).strip() for ref in row.get("evidence_refs", []) if str(ref).strip()][:4],
-                "source": str(row.get("source", "")),
-            }
-            for row in rows[: _section_synthesis_v2_limit(section)]
-        ]
+    max_prompt_chars = max_chars_for_ctx(settings.llm_n_ctx)
+    prompt_payload = _section_synthesis_v2_prompt_payload(
+        section_inputs=section_inputs,
+        paper_type=paper_type,
+        scientific_details=scientific_details or [],
+        max_chars=max_prompt_chars,
+    )
+    prompt_sections = prompt_payload.get("sections", {})
     if not any(prompt_sections.values()):
         return {}
-    prompt = truncate_text(
-        "Write an experimental section-first paper readout from this JSON evidence payload.\n"
-        "Return only valid JSON.\n\n"
-        + json.dumps({"paper_type": paper_type, "sections": prompt_sections}, indent=2),
-        max_chars_for_ctx(settings.llm_n_ctx),
-    )
+    prompt = _section_synthesis_v2_prompt_text(prompt_payload, max_chars=max_prompt_chars)
     try:
         parsed = _run_deep_json_prompt(
             prompt=prompt,
@@ -5692,6 +7622,131 @@ def _coverage_gaps(coverage: dict[str, Any]) -> list[str]:
     return gaps
 
 
+def _supplement_availability_note(
+    *,
+    coverage: dict[str, Any],
+    supp_packets: list[dict[str, Any]],
+    text_chunk_records: list[dict[str, Any]],
+) -> str:
+    supp_figures = coverage.get("supp_figures", {}) if isinstance(coverage, dict) else {}
+    supp_tables = coverage.get("supp_tables", {}) if isinstance(coverage, dict) else {}
+    expected = _coverage_int(supp_figures, "expected") + _coverage_int(supp_tables, "expected")
+    extracted = _coverage_int(supp_figures, "extracted") + _coverage_int(supp_tables, "extracted")
+    missing_refs = _coverage_refs(supp_figures, "missing_refs") + _coverage_refs(supp_tables, "missing_refs")
+    packet_count = len([packet for packet in supp_packets if isinstance(packet, dict)])
+
+    if _source_appears_supplement_only(text_chunk_records):
+        return (
+            "Supplement availability: the parsed source appears to be supplementary material rather than the "
+            "main article; synthesis should not infer unavailable main-article sections from this source alone."
+        )
+    if expected == 0 and extracted == 0 and packet_count == 0:
+        return (
+            "Supplement availability: no supplementary figures or tables were detected in the parsed source; "
+            "synthesis is based on main-article evidence only."
+        )
+    if expected > 0 and extracted == 0 and packet_count == 0:
+        refs = f" Missing refs: {', '.join(missing_refs[:6])}." if missing_refs else ""
+        return (
+            f"Supplement availability: supplementary material was cited ({expected} cited supplementary "
+            f"figure/table refs) but was not extracted or reviewed.{refs}"
+        )
+    if extracted < expected:
+        refs = f" Missing refs: {', '.join(missing_refs[:6])}." if missing_refs else ""
+        return (
+            f"Supplement availability: supplementary evidence was only partially available "
+            f"({extracted}/{expected} cited supplementary figure/table refs extracted; "
+            f"{packet_count} supplement evidence packets).{refs}"
+        )
+    return (
+        f"Supplement availability: supplementary evidence was available to synthesis "
+        f"({extracted} cited supplementary figure/table refs extracted; {packet_count} supplement evidence packets)."
+    )
+
+
+def _coverage_refs(coverage_block: Any, key: str) -> list[str]:
+    if not isinstance(coverage_block, dict):
+        return []
+    values = coverage_block.get(key, [])
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    for raw in values:
+        text = str(raw or "").strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _source_appears_supplement_only(text_chunk_records: list[dict[str, Any]]) -> bool:
+    if not text_chunk_records:
+        return False
+    sample_parts: list[str] = []
+    for record in text_chunk_records[:4]:
+        if not isinstance(record, dict):
+            continue
+        sample_parts.append(str(record.get("content") or "")[:500])
+    sample = " ".join(sample_parts).strip().lower()
+    if not sample:
+        return False
+    return (
+        sample.startswith("supplementary material")
+        or sample.startswith("supplemental material")
+        or ("supplementary material provides" in sample[:800] and "table s" in sample[:1200])
+    )
+
+
+def _supplement_availability_note(
+    *,
+    coverage: dict[str, Any],
+    supp_packets: list[dict[str, Any]],
+    text_chunk_records: list[dict[str, Any]],
+) -> str:
+    if _source_appears_supplement_only(text_chunk_records):
+        return (
+            "The available source appears to be supplementary material rather than the main article; "
+            "interpret this report as supplement-only unless the primary paper is also loaded."
+        )
+    if supp_packets:
+        return ""
+
+    missing_refs: list[str] = []
+    expected_total = 0
+    for key in ("supp_figures", "supp_tables"):
+        block = coverage.get(key, {}) if isinstance(coverage, dict) else {}
+        if not isinstance(block, dict):
+            continue
+        try:
+            expected_total += int(block.get("expected", 0) or 0)
+        except Exception:
+            expected_total += 0
+        missing = block.get("missing_refs", []) or []
+        if isinstance(missing, list):
+            missing_refs.extend(str(item) for item in missing if str(item).strip())
+
+    if missing_refs:
+        return (
+            "Supplement availability: supplementary material was not extracted or reviewed completely; "
+            "missing supplementary refs: "
+            + ", ".join(missing_refs[:12])
+        )
+    if expected_total > 0:
+        return "Supplement availability: supplementary material was referenced but not extracted or reviewed."
+    return ""
+
+
+def _supplement_note_is_limitation(note: str) -> bool:
+    text = str(note or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "rather than the main article",
+            "not extracted or reviewed",
+            "only partially available",
+        )
+    )
+
+
 def _section_packet_counts(text_packets: list[dict[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for packet in text_packets:
@@ -5782,7 +7837,7 @@ def _ensure_executive_summary_components(draft: dict[str, Any], payload: dict[st
     sections_extracted = draft.get("sections_extracted")
     if not isinstance(sections_extracted, dict):
         sections_extracted = {}
-    if settings.analysis_section_extraction_enabled and not sections_extracted:
+    if settings.effective_analysis_section_extraction_llm_enabled and not sections_extracted:
         _trace_synthesis_step("ensure_summary:section_extract:start")
         sections_extracted = _llm_section_extraction(payload)
         _trace_synthesis_step("ensure_summary:section_extract:done")
@@ -5790,6 +7845,8 @@ def _ensure_executive_summary_components(draft: dict[str, Any], payload: dict[st
             draft["sections_extracted_version"] = 1
             draft["sections_extracted"] = sections_extracted
             _trace_synthesis_step("ensure_summary:section_extract:stored")
+    elif settings.analysis_section_extraction_enabled and not sections_extracted:
+        _trace_synthesis_step("ensure_summary:section_extract:skipped_local_evidence_first")
 
     sections_compact = draft.get("sections_compact")
     if not isinstance(sections_compact, dict):
@@ -5825,7 +7882,7 @@ def _ensure_executive_summary_components(draft: dict[str, Any], payload: dict[st
         sections_extracted=sections_extracted,
     )
     _trace_synthesis_step("ensure_summary:build_exec:done")
-    if settings.analysis_summary_polish_enabled:
+    if settings.effective_analysis_summary_polish_enabled:
         _trace_synthesis_step("ensure_summary:polish:start")
         rebuilt = _constrained_summary_polish(rebuilt, sections_compact)
         _trace_synthesis_step("ensure_summary:polish:done")

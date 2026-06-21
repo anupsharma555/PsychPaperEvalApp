@@ -39,9 +39,12 @@ data/
 test/*.pdf
 test/bench_review/
 test/bench_runs*/
+test/active_benchmark/
+test/multi_paper_benchmark/
 test/upstream_ab/
 test/text/*_app_extraction_*.md
 test/text/*_comparison_*.json
+.playwright-mcp/
 test/text/*_comparison_*.md
 test/text/*_information_retention_*.json
 test/text/*_model_benchmark_*.json

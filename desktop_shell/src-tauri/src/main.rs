@@ -71,7 +71,7 @@ impl DesktopState {
 
         let backend_python_path = resolve_backend_python(&root).display().to_string();
         let backend_command_fingerprint = fingerprint(&format!(
-            "{} scripts/run_app.py --api-only --force --backend-port {}",
+            "{} scripts/run_app.py --api-only --force --backend-port {} --llm-provider local",
             backend_python_path, BACKEND_PORT
         ));
 
@@ -249,7 +249,12 @@ impl DesktopState {
             .arg("--force")
             .arg("--backend-port")
             .arg(BACKEND_PORT.to_string())
+            .arg("--llm-provider")
+            .arg("local")
             .env("PAPER_EVAL_ROOT", &self.root)
+            .env("LLM_PROVIDER", "local")
+            .env("PAPER_EVAL_MANAGE_GROBID", "true")
+            .env("PAPER_EVAL_STOP_GROBID_ON_EXIT", "true")
             .stdout(Stdio::from(backend_log.try_clone().map_err(|err| {
                 format!("Failed to clone backend log handle: {err}")
             })?))

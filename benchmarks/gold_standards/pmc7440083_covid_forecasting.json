@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc7440083_covid_forecasting",
+  "source_pdf": "test/09_32843824_PMC7440083.pdf",
+  "source_sha256": "c281f019539967812efd109a254edec3d78a4b5fb30bb811512355759428d7be",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/09_32843824_PMC7440083.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "Time series forecasting of Covid-19 using deep learning models: India-USA comparative case study",
+    "domain": "machine_learning_public_health",
+    "study_type": "time-series forecasting methods study"
+  },
+  "final_report_expectations": {
+    "research_question": "Whether recurrent neural-network LSTM variants can forecast one-month-ahead COVID-19 confirmed and death case time series for India and the USA.",
+    "study_design": "Comparative machine-learning forecasting study using country-level time series and three LSTM-family models.",
+    "population_or_materials": "India and USA confirmed-case and death-case time series: India confirmed February 7-July 7, 2020; India deaths March 12-July 7, 2020; USA confirmed February 7-July 7, 2020; USA deaths February 26-July 7, 2020.",
+    "methods": [
+      "Compare Stacked LSTM, Bi-directional LSTM, and Convolutional LSTM.",
+      "Use MinMax scaling, three lag structures, 80/20 train-test splits, Adam optimizer, mean-square-error loss, and 500 epochs in described models.",
+      "Forecast confirmed and death cases one month ahead.",
+      "Evaluate with classification metrics and MAPE."
+    ],
+    "primary_findings": [
+      "ConvLSTM outperformed Stacked LSTM and Bi-directional LSTM across the four datasets.",
+      "ConvLSTM MAPE values were 2.17, 2.00, 3.33, and 2.50 for India confirmed, USA confirmed, India deaths, and USA deaths respectively.",
+      "The authors forecast increasing confirmed and death cases for both countries over the next month."
+    ],
+    "secondary_findings": [
+      "Table 2 reports confirmed-case classification metrics; Table 3 reports death-case classification metrics.",
+      "ConvLSTM accuracies were reported as 97.82%, 98.00%, 96.66%, and 97.50% across the four outcome/country combinations.",
+      "Discussion sections add public-health context on vaccination, recovery rate, testing, and airborne spread, but those are contextual rather than model-validation results."
+    ],
+    "sensitivity_analysis": [
+      "Model comparison across three architectures and four datasets is the main robustness check.",
+      "No external prospective validation or later real-world backtesting is reported.",
+      "The paper acknowledges limited COVID-19 data as a challenge for forecasting."
+    ],
+    "statistical_tests_used": [
+      "Accuracy, precision, recall, and F-measure.",
+      "Mean Absolute Percentage Error.",
+      "No conventional hypothesis tests are central to the results."
+    ],
+    "interpretation": [
+      "Frame the paper as early-pandemic ML forecasting, not clinical prediction.",
+      "Policy relevance should be cautious because forecasts depend on short historical time series and pandemic conditions in July-August 2020."
+    ],
+    "limitations": [
+      "Limited data availability is explicitly identified.",
+      "Forecasts are early-pandemic projections and should not be treated as current epidemiological facts.",
+      "The source formatting uses Indian-style digit grouping for forecast counts; preserve source values carefully."
+    ],
+    "tables_figures_supplements": [
+      "Table 1 gives date ranges for datasets.",
+      "Figures 10 and 11 show confirmed-case and death-case forecasts.",
+      "Tables 2-4 report classification metrics and MAPE.",
+      "No supplement was detected in the local PDF."
+    ],
+    "supplement_availability": "No supplementary material was detected in the parsed local PDF.",
+    "uniqueness": [
+      "India-USA comparative early COVID forecasting study.",
+      "Uses deep-learning model comparison rather than epidemiological compartment modeling.",
+      "Useful benchmark for preserving ML metrics without overstating biomedical validity."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "covid-forecast-001",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The study compared Stacked LSTM, Bi-directional LSTM, and ConvLSTM for India-USA confirmed/death case forecasting.",
+      "source_anchor": "Abstract, Methods 2.3, experiment section",
+      "expected_entities": [
+        "Stacked LSTM",
+        "Bi-directional LSTM",
+        "ConvLSTM",
+        "India",
+        "USA"
+      ],
+      "expected_numbers": [
+        {
+          "label": "model_count",
+          "value": 3,
+          "unit": "models"
+        },
+        {
+          "label": "dataset_count",
+          "value": 4,
+          "unit": "datasets"
+        }
+      ]
+    },
+    {
+      "claim_id": "covid-forecast-002",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The four input time series use country/outcome-specific date ranges ending July 7, 2020.",
+      "source_anchor": "Table 1",
+      "expected_entities": [
+        "Ministry of Health and Family Welfare",
+        "CDC",
+        "July 7, 2020"
+      ],
+      "expected_numbers": [
+        {
+          "label": "end_year",
+          "value": 2020
+        },
+        {
+          "label": "end_month",
+          "value": 7
+        },
+        {
+          "label": "end_day",
+          "value": 7
+        }
+      ]
+    },
+    {
+      "claim_id": "covid-forecast-003",
+      "section": "results",
+      "importance": "P0",
+      "claim": "ConvLSTM had the lowest MAPE values, ranging from 2.00 to 3.33 across all four datasets.",
+      "source_anchor": "Table 4 and Results discussion",
+      "expected_entities": [
+        "ConvLSTM",
+        "MAPE"
+      ],
+      "expected_numbers": [
+        {
+          "label": "min_convlstm_mape",
+          "value": 2.0,
+          "unit": "percent"
+        },
+        {
+          "label": "max_convlstm_mape",
+          "value": 3.33,
+          "unit": "percent"
+        }
+      ]
+    },
+    {
+      "claim_id": "covid-forecast-004",
+      "section": "results",
+      "importance": "P1",
+      "claim": "The paper reports one-month-ahead increases in confirmed and death cases for both India and the USA.",
+      "source_anchor": "Results 4.2 and Conclusion",
+      "expected_entities": [
+        "confirmed cases",
+        "death cases",
+        "one month"
+      ],
+      "expected_numbers": [
+        {
+          "label": "india_confirmed_forecast",
+          "value": 1282346,
+          "unit": "cumulative cases"
+        },
+        {
+          "label": "india_deaths_forecast",
+          "value": 24333,
+          "unit": "cumulative deaths"
+        },
+        {
+          "label": "usa_deaths_forecast",
+          "value": 171806,
+          "unit": "cumulative deaths"
+        }
+      ]
+    },
+    {
+      "claim_id": "covid-forecast-005",
+      "section": "conclusion",
+      "importance": "P1",
+      "claim": "The authors identify limited COVID-19 data as a challenge for time-series forecasting.",
+      "source_anchor": "Conclusion and future work",
+      "expected_entities": [
+        "COVID-19 data",
+        "time series forecasting"
+      ],
+      "expected_numbers": []
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not claim individual diagnosis, treatment prediction, or clinical validation.",
+    "Do not treat July-August 2020 forecasts as current facts.",
+    "Do not imply external validation beyond the reported time window."
+  ],
+  "scoring_focus": [
+    "Correct model names and forecast horizon.",
+    "Preserve Table 2-4 metrics.",
+    "Identify limited-data limitation.",
+    "Separate ML forecasting results from public-health commentary."
+  ]
+}

@@ -19,10 +19,19 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = ROOT / "backend"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.services.analysis.information_retention import AUDIT_STAGES, build_information_retention_audit
+from app.services.analysis.validity import build_run_validity
+from scripts.compare_evidence_to_gold import (
+    compare_evidence_to_gold,
+    evidence_metadata_from_payload,
+    evidence_packets_from_payload,
+)
+from scripts.validate_gold_standards import load_gold_standard
 
 SECTION_KEYS = ["introduction", "methods", "results", "discussion", "conclusion"]
 SECTION_HEADERS = {
@@ -105,6 +114,9 @@ CONCLUSION_RESCUE_RE = re.compile(
     re.IGNORECASE,
 )
 PAGE_ANCHOR_RE = re.compile(r"\bpage:(\d+)\b", re.IGNORECASE)
+NUMBER_VALUE_RE = re.compile(r"[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?", re.IGNORECASE)
+FIGURE_REF_RE = re.compile(r"\b(?:fig(?:ure)?s?\.?\s*)(S?\d+[A-Z]?)\b", re.IGNORECASE)
+TABLE_REF_RE = re.compile(r"\b(?:tables?\.?\s*)(S?\d+[A-Z]?)\b", re.IGNORECASE)
 
 
 def _normalize_text(value: Any) -> str:
@@ -1550,6 +1562,18 @@ def _build_quality_backend_audit(result: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(summary_json, dict):
         summary_json = {}
 
+    provider = str(result.get("provider") or result.get("llm_provider") or "local")
+    canonical_validity = build_run_validity(
+        summary_json=summary_json,
+        diagnostics=diagnostics,
+        job_status=result.get("job_status", "completed"),
+        provider=provider,
+        require_source_provenance=False,
+    )
+    canonical_quality = canonical_validity.get("quality_backend_audit")
+    if isinstance(canonical_quality, dict):
+        return canonical_quality
+
     model_usage = diagnostics.get("model_usage", {})
     if not isinstance(model_usage, dict):
         model_usage = summary_json.get("model_usage", {})
@@ -1583,6 +1607,457 @@ def _build_quality_backend_audit(result: dict[str, Any]) -> dict[str, Any]:
         "section_extraction_enabled": section_extraction_enabled,
         "section_extraction_counts": section_extraction_counts,
         "blockers": blockers,
+    }
+
+
+def _has_section_source_provenance(row: dict[str, Any]) -> bool:
+    for key in ("evidence_refs", "evidence", "anchors"):
+        values = row.get(key)
+        if isinstance(values, list) and any(str(value).strip() for value in values):
+            return True
+    for key in ("anchor", "source_anchor"):
+        if str(row.get(key) or "").strip():
+            return True
+    return False
+
+
+def _section_source_rows(summary_json: dict[str, Any]) -> list[dict[str, Any]]:
+    rows_out: list[dict[str, Any]] = []
+    section_sources = (
+        ("presentation_evidence", "statement"),
+        ("sections_compact", "statement"),
+    )
+    for source_key, text_key in section_sources:
+        source = summary_json.get(source_key, {})
+        if not isinstance(source, dict):
+            continue
+        for section in SECTION_KEYS:
+            rows = source.get(section, [])
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if source_key == "sections_compact" and _canonical(row.get("status")) != "found":
+                    continue
+                if _normalize_text(row.get(text_key)):
+                    rows_out.append(row)
+
+    sections = summary_json.get("sections", {})
+    if isinstance(sections, dict):
+        for section in SECTION_KEYS:
+            block = sections.get(section, {})
+            if not isinstance(block, dict):
+                continue
+            items = block.get("items", [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict) and _normalize_text(item.get("statement")):
+                    rows_out.append(item)
+    return rows_out
+
+
+def _build_source_provenance_audit(summary_json: dict[str, Any]) -> dict[str, Any]:
+    rows = _section_source_rows(summary_json)
+    missing_count = sum(1 for row in rows if not _has_section_source_provenance(row))
+    return {
+        "passed": bool(rows) and missing_count == 0,
+        "section_source_rows": len(rows),
+        "missing_provenance_rows": missing_count,
+    }
+
+
+def _build_benchmark_validity_gate(
+    result: dict[str, Any],
+    run_note: str,
+    *,
+    job_status: str | None = None,
+) -> dict[str, Any]:
+    diagnostics = result.get("diagnostics")
+    diagnostics_missing = not isinstance(diagnostics, dict) or not diagnostics
+    summary_json = result.get("summary_json", {})
+    if not isinstance(summary_json, dict):
+        summary_json = {}
+
+    provider = str(result.get("provider") or result.get("llm_provider") or "local")
+    canonical_validity = build_run_validity(
+        summary_json=summary_json,
+        diagnostics=diagnostics if isinstance(diagnostics, dict) else {},
+        run_note=run_note,
+        job_status=job_status if job_status is not None else result.get("job_status", "completed"),
+        provider=provider,
+        require_source_provenance=False,
+    )
+    fallback_audit = canonical_validity.get("fallback_audit", {})
+    if not isinstance(fallback_audit, dict):
+        fallback_audit = _build_fallback_audit(result, run_note)
+    quality_backend_audit = canonical_validity.get("quality_backend_audit", {})
+    if not isinstance(quality_backend_audit, dict):
+        quality_backend_audit = _build_quality_backend_audit(result)
+    source_provenance_audit = _build_source_provenance_audit(summary_json)
+
+    status = _canonical(job_status if job_status is not None else result.get("job_status", "completed"))
+    status_completed = status == "completed" or status.endswith(".completed")
+    canonical_blockers = (
+        dict(canonical_validity.get("blockers"))
+        if isinstance(canonical_validity.get("blockers"), dict)
+        else {}
+    )
+    blockers = {
+        **canonical_blockers,
+        "job_not_completed": not status_completed,
+        "fallback_engaged": not bool(fallback_audit.get("passed")),
+        "text_llm_calls_zero": bool(quality_backend_audit.get("blockers", {}).get("text_calls_zero"))
+        if isinstance(quality_backend_audit.get("blockers"), dict)
+        else False,
+        "section_extraction_disabled": bool(
+            quality_backend_audit.get("blockers", {}).get("section_extraction_disabled")
+        )
+        if isinstance(quality_backend_audit.get("blockers"), dict)
+        else False,
+        "diagnostics_missing": diagnostics_missing,
+        "source_provenance_missing": not bool(source_provenance_audit.get("passed")),
+    }
+    reasons = [key for key, value in blockers.items() if value]
+    valid = not reasons
+    return {
+        "valid": valid,
+        "run_validity": "valid" if valid else "invalid",
+        "benchmark_valid": valid,
+        "failure_type": None if valid else "infrastructure",
+        "reasons": reasons,
+        "blockers": blockers,
+        "canonical_run_validity": canonical_validity,
+        "fallback_audit": fallback_audit,
+        "quality_backend_audit": quality_backend_audit,
+        "source_provenance_audit": source_provenance_audit,
+    }
+
+
+def _format_benchmark_validity_failure(gate: dict[str, Any]) -> str:
+    reasons = gate.get("reasons", [])
+    if not isinstance(reasons, list):
+        reasons = []
+    reason_text = ", ".join(str(reason) for reason in reasons) or "unknown"
+    return f"Invalid benchmark run (infrastructure failure): {reason_text}"
+
+
+def _load_gold_claims_jsonl(path: Path | None) -> list[dict[str, Any]]:
+    if path is None or not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+def _default_gold_claims_path(reference_path: Path) -> Path | None:
+    if reference_path.name == "sharma_2017_chatgpt_extraction.md":
+        candidate = ROOT / "benchmarks" / "sharma_2017_gold_claims.jsonl"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _number_tokens_from_text(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw in NUMBER_VALUE_RE.findall(str(text or "")):
+        try:
+            number = float(raw)
+        except ValueError:
+            continue
+        if number.is_integer():
+            tokens.add(str(int(number)))
+        tokens.add(f"{number:.8g}")
+    return tokens
+
+
+def _number_tokens_from_lines(lines: list[str]) -> set[str]:
+    tokens: set[str] = set()
+    for line in lines:
+        tokens.update(_number_tokens_from_text(line))
+    return tokens
+
+
+def _number_tokens_from_gold_claims(gold_claims: list[dict[str, Any]]) -> set[str]:
+    tokens: set[str] = set()
+    for claim in gold_claims:
+        expected_numbers = claim.get("expected_numbers", [])
+        if not isinstance(expected_numbers, list):
+            continue
+        for item in expected_numbers:
+            if not isinstance(item, dict):
+                continue
+            tokens.update(_number_tokens_from_text(str(item.get("value", ""))))
+    return tokens
+
+
+def _collect_modality_refs(sections: dict[str, list[str]]) -> dict[str, set[str]]:
+    text = "\n".join(line for rows in sections.values() for line in rows)
+    figure_refs = {match.upper() for match in FIGURE_REF_RE.findall(text)}
+    table_refs = {match.upper() for match in TABLE_REF_RE.findall(text)}
+    return {
+        "figure": {ref for ref in figure_refs if not ref.startswith("S")},
+        "table": {ref for ref in table_refs if not ref.startswith("S")},
+        "supplement": {ref for ref in figure_refs | table_refs if ref.startswith("S")},
+    }
+
+
+def _recall_payload(expected: set[str], observed: set[str]) -> dict[str, Any]:
+    matched = sorted(expected & observed)
+    missing = sorted(expected - observed)
+    return {
+        "expected": len(expected),
+        "observed": len(observed),
+        "matched": len(matched),
+        "recall": round((len(matched) / len(expected)) if expected else 1.0, 3),
+        "missing_refs": missing[:12],
+    }
+
+
+def _top_unmatched_app_lines(
+    app_sections: dict[str, list[str]],
+    ref_sections: dict[str, list[str]],
+    *,
+    match_threshold: float,
+    max_items: int = 8,
+) -> list[dict[str, Any]]:
+    refs = [line for rows in ref_sections.values() for line in rows]
+    unsupported: list[dict[str, Any]] = []
+    for section, rows in app_sections.items():
+        for line in rows:
+            best_score = 0.0
+            best_ref = ""
+            for ref in refs:
+                score, _payload, _reason = _score_candidate_pair(
+                    ref,
+                    line,
+                    mode="lexical",
+                    component_weights={"lexical": 1.0, "keyword": 0.0, "embedding": 0.0},
+                )
+                if score > best_score:
+                    best_score = score
+                    best_ref = ref
+            if best_score < match_threshold:
+                unsupported.append(
+                    {
+                        "section": section,
+                        "statement": _normalize_text(line),
+                        "best_reference_score": round(best_score, 3),
+                        "best_reference": _normalize_text(best_ref),
+                    }
+                )
+    unsupported.sort(key=lambda item: float(item.get("best_reference_score", 0.0) or 0.0))
+    return unsupported[:max_items]
+
+
+def _match_gold_claims(
+    gold_claims: list[dict[str, Any]],
+    app_sections: dict[str, list[str]],
+    *,
+    match_threshold: float,
+) -> dict[str, Any]:
+    matched: list[str] = []
+    missing: list[dict[str, Any]] = []
+    for claim in gold_claims:
+        claim_id = str(claim.get("claim_id") or "")
+        section = _canonical(claim.get("section"))
+        reference = _normalize_text(claim.get("evidence_quote"))
+        if not reference:
+            continue
+        same_section_rows = app_sections.get(section, [])
+        any_section_rows = [line for rows in app_sections.values() for line in rows]
+        best_same = 0.0
+        best_any = 0.0
+        best_any_section = ""
+        for line in same_section_rows:
+            score, _payload, _reason = _score_candidate_pair(
+                reference,
+                line,
+                mode="lexical",
+                component_weights={"lexical": 1.0, "keyword": 0.0, "embedding": 0.0},
+            )
+            best_same = max(best_same, score)
+        for candidate_section, rows in app_sections.items():
+            for line in rows:
+                score, _payload, _reason = _score_candidate_pair(
+                    reference,
+                    line,
+                    mode="lexical",
+                    component_weights={"lexical": 1.0, "keyword": 0.0, "embedding": 0.0},
+                )
+                if score > best_any:
+                    best_any = score
+                    best_any_section = candidate_section
+        if best_same >= match_threshold:
+            matched.append(claim_id)
+        else:
+            missing.append(
+                {
+                    "claim_id": claim_id,
+                    "section": section,
+                    "priority": claim.get("priority"),
+                    "importance": claim.get("importance"),
+                    "best_same_section_score": round(best_same, 3),
+                    "best_any_section_score": round(best_any, 3),
+                    "best_any_section": best_any_section,
+                    "evidence_quote": reference,
+                }
+            )
+    total = len(gold_claims)
+    return {
+        "gold_claims_total": total,
+        "gold_claims_matched": len(matched),
+        "gold_claim_recall": round((len(matched) / total) if total else 0.0, 3),
+        "matched_claim_ids": matched[:50],
+        "missing_claims": missing[:10],
+    }
+
+
+def _build_evidence_gold_compatibility(summary_json: dict[str, Any], gold_standard_path: Path | None) -> dict[str, Any]:
+    if gold_standard_path is None:
+        return {"available": False, "compatible": False, "reason": "no gold-standard JSON provided"}
+    if not gold_standard_path.exists():
+        return {"available": False, "compatible": False, "reason": f"gold standard not found: {gold_standard_path}"}
+    try:
+        gold_payload = load_gold_standard(gold_standard_path)
+        packets = evidence_packets_from_payload(summary_json)
+        metadata = evidence_metadata_from_payload(summary_json)
+        return {"available": True, **compare_evidence_to_gold(packets, gold_payload, evidence_metadata=metadata)}
+    except Exception as exc:
+        return {"available": False, "compatible": False, "reason": str(exc)}
+
+
+def _retention_stage_rate(retention_summary: dict[str, Any], stage: str) -> float | None:
+    stage_metrics = retention_summary.get("stage_metrics", [])
+    if not isinstance(stage_metrics, list):
+        return None
+    for item in stage_metrics:
+        if isinstance(item, dict) and item.get("stage") == stage:
+            try:
+                return float(item.get("retained_rate"))
+            except Exception:
+                return None
+    return None
+
+
+def _build_failure_mode_metrics(
+    *,
+    comparison: dict[str, Any],
+    app_sections: dict[str, list[str]],
+    ref_sections: dict[str, list[str]],
+    information_retention_summary: dict[str, Any],
+    gold_claims: list[dict[str, Any]],
+    match_threshold: float,
+) -> dict[str, Any]:
+    section_payload = comparison.get("sections", {})
+    if not isinstance(section_payload, dict):
+        section_payload = {}
+    per_section = {
+        section: {
+            "claim_recall": float((section_payload.get(section, {}) or {}).get("recall", 0.0) or 0.0),
+            "section_fidelity": float((section_payload.get(section, {}) or {}).get("section_fidelity", 0.0) or 0.0),
+            "inclusion_precision": float((section_payload.get(section, {}) or {}).get("inclusion_precision", 0.0) or 0.0),
+        }
+        for section in SECTION_KEYS
+    }
+
+    gold_metrics = _match_gold_claims(gold_claims, app_sections, match_threshold=match_threshold) if gold_claims else {}
+    claim_recall = (
+        float(gold_metrics.get("gold_claim_recall", 0.0))
+        if gold_metrics
+        else float(comparison.get("overall_recall", 0.0) or 0.0)
+    )
+
+    unsupported_top = _top_unmatched_app_lines(
+        app_sections,
+        ref_sections,
+        match_threshold=max(0.1, match_threshold - 0.12),
+    )
+    app_line_count = sum(len(rows) for rows in app_sections.values())
+    unsupported_rate = round((len(unsupported_top) / app_line_count) if app_line_count else 0.0, 3)
+
+    expected_numbers = _number_tokens_from_gold_claims(gold_claims)
+    if not expected_numbers:
+        expected_numbers = _number_tokens_from_lines([line for rows in ref_sections.values() for line in rows])
+    observed_numbers = _number_tokens_from_lines([line for rows in app_sections.values() for line in rows])
+    matched_numbers = expected_numbers & observed_numbers
+    numeric_fidelity = round((len(matched_numbers) / len(expected_numbers)) if expected_numbers else 1.0, 3)
+
+    expected_refs = _collect_modality_refs(ref_sections)
+    observed_refs = _collect_modality_refs(app_sections)
+    modality_recall = {
+        key: _recall_payload(expected_refs[key], observed_refs[key])
+        for key in ("figure", "table", "supplement")
+    }
+    table_figure_supplement_recall = round(
+        (
+            modality_recall["figure"]["recall"]
+            + modality_recall["table"]["recall"]
+            + modality_recall["supplement"]["recall"]
+        )
+        / 3.0,
+        3,
+    )
+
+    synthesis_retention = _retention_stage_rate(information_retention_summary, "executive_report")
+    if synthesis_retention is None:
+        synthesis_retention = _retention_stage_rate(information_retention_summary, "sections")
+
+    top_missing_claims = list(gold_metrics.get("missing_claims", [])) if gold_metrics else []
+    if not top_missing_claims:
+        for section in SECTION_KEYS:
+            payload = section_payload.get(section, {})
+            if not isinstance(payload, dict):
+                continue
+            for item in payload.get("missing_top", [])[:3]:
+                if isinstance(item, dict):
+                    top_missing_claims.append({"section": section, **item})
+            if len(top_missing_claims) >= 10:
+                break
+
+    cross_section_top: list[dict[str, Any]] = []
+    for section in SECTION_KEYS:
+        payload = section_payload.get(section, {})
+        if isinstance(payload, dict):
+            for item in payload.get("cross_section_top", [])[:3]:
+                if isinstance(item, dict):
+                    cross_section_top.append({"section": section, **item})
+
+    aggregate = float(comparison.get("overall_recall", 0.0) or 0.0)
+    return {
+        "aggregate_score": round(aggregate, 3),
+        "primary_dimensions": {
+            "parser_recall": float(comparison.get("overall_sentence_inclusion_any_section_recall", 0.0) or 0.0),
+            "section_assignment": float(comparison.get("overall_section_fidelity", 0.0) or 0.0),
+            "claim_recall": round(claim_recall, 3),
+            "claim_precision": float(comparison.get("overall_inclusion_precision", 0.0) or 0.0),
+            "numeric_fidelity": numeric_fidelity,
+            "unsupported_claim_rate": unsupported_rate,
+            "table_figure_supplement_recall": table_figure_supplement_recall,
+            "synthesis_retention": round(float(synthesis_retention), 3) if synthesis_retention is not None else None,
+        },
+        "per_section": per_section,
+        "gold_claims": gold_metrics,
+        "numeric_fidelity": {
+            "expected_numbers": len(expected_numbers),
+            "matched_numbers": len(matched_numbers),
+            "missing_numbers": sorted(expected_numbers - observed_numbers)[:20],
+            "score": numeric_fidelity,
+        },
+        "modality_recall": modality_recall,
+        "top_missing_claims": top_missing_claims[:10],
+        "top_unsupported_claims": unsupported_top,
+        "top_cross_section_misassignments": cross_section_top[:10],
     }
 
 
@@ -1641,16 +2116,16 @@ def _build_extraction_audit(
 
     fallback_audit = _build_fallback_audit(result, run_note)
     quality_backend_audit = _build_quality_backend_audit(result)
+    quality_blockers = (
+        quality_backend_audit.get("blockers", {})
+        if isinstance(quality_backend_audit.get("blockers"), dict)
+        else {}
+    )
     blockers = {
         "fallback_present": not bool(fallback_audit.get("passed")),
-        "text_calls_zero": bool(quality_backend_audit.get("blockers", {}).get("text_calls_zero"))
-        if isinstance(quality_backend_audit.get("blockers"), dict)
-        else False,
-        "section_extraction_disabled": bool(
-            quality_backend_audit.get("blockers", {}).get("section_extraction_disabled")
-        )
-        if isinstance(quality_backend_audit.get("blockers"), dict)
-        else False,
+        "text_calls_zero": bool(quality_blockers.get("text_calls_zero")),
+        "section_extraction_disabled": bool(quality_blockers.get("section_extraction_disabled")),
+        "narrative_synthesis_calls_zero": bool(quality_blockers.get("narrative_synthesis_calls_zero")),
         "empty_relevant_sections": empty_relevant_sections,
         "low_sentence_recall_sections": low_sentence_recall_sections,
         "cross_section_loss_sections": cross_section_loss_sections,
@@ -1658,8 +2133,7 @@ def _build_extraction_audit(
     }
     passed = (
         not blockers["fallback_present"]
-        and not blockers["text_calls_zero"]
-        and not blockers["section_extraction_disabled"]
+        and bool(quality_backend_audit.get("passed"))
         and not empty_relevant_sections
         and not low_sentence_recall_sections
         and not cross_section_loss_sections
@@ -1744,6 +2218,50 @@ def _write_comparison_markdown(path: Path, comparison: dict[str, Any], runtime_m
             for cause in likely_causes:
                 lines.append(f"  - {cause}")
         lines.append("")
+    failure_mode_metrics = comparison.get("failure_mode_metrics", {})
+    if isinstance(failure_mode_metrics, dict) and failure_mode_metrics:
+        lines.append("## Failure Mode Metrics")
+        dimensions = failure_mode_metrics.get("primary_dimensions", {})
+        if isinstance(dimensions, dict):
+            for key in (
+                "parser_recall",
+                "section_assignment",
+                "claim_recall",
+                "claim_precision",
+                "numeric_fidelity",
+                "unsupported_claim_rate",
+                "table_figure_supplement_recall",
+                "synthesis_retention",
+            ):
+                lines.append(f"- {key}: {dimensions.get(key)}")
+        lines.append(f"- aggregate_score: {failure_mode_metrics.get('aggregate_score')}")
+        missing_claims = failure_mode_metrics.get("top_missing_claims", [])
+        if isinstance(missing_claims, list) and missing_claims:
+            lines.append("- top_missing_claims:")
+            for item in missing_claims[:5]:
+                if not isinstance(item, dict):
+                    continue
+                claim_id = item.get("claim_id")
+                section = item.get("section")
+                text = item.get("evidence_quote") or item.get("reference")
+                prefix = f"{claim_id}: " if claim_id else ""
+                lines.append(f"  - {section}: {prefix}{_normalize_text(text)}")
+        unsupported = failure_mode_metrics.get("top_unsupported_claims", [])
+        if isinstance(unsupported, list) and unsupported:
+            lines.append("- top_unsupported_claims:")
+            for item in unsupported[:5]:
+                if isinstance(item, dict):
+                    lines.append(f"  - {item.get('section')}: {_normalize_text(item.get('statement'))}")
+        cross_section = failure_mode_metrics.get("top_cross_section_misassignments", [])
+        if isinstance(cross_section, list) and cross_section:
+            lines.append("- top_cross_section_misassignments:")
+            for item in cross_section[:5]:
+                if isinstance(item, dict):
+                    lines.append(
+                        f"  - {item.get('section')} -> {item.get('best_any_section')}: "
+                        f"{_normalize_text(item.get('reference'))}"
+                    )
+        lines.append("")
     extraction_audit = comparison.get("extraction_audit", {})
     if isinstance(extraction_audit, dict):
         fallback_audit = extraction_audit.get("fallback_audit", {})
@@ -1775,6 +2293,85 @@ def _write_comparison_markdown(path: Path, comparison: dict[str, Any], runtime_m
                 values = blockers.get(key, [])
                 if values:
                     lines.append(f"- {key}: {', '.join(str(v) for v in values)}")
+        lines.append("")
+    benchmark_validity = comparison.get("benchmark_validity", {})
+    if isinstance(benchmark_validity, dict):
+        lines.append("## Benchmark Validity")
+        lines.append(f"- valid: {benchmark_validity.get('valid')}")
+        failure_type = benchmark_validity.get("failure_type")
+        if failure_type:
+            lines.append(f"- failure_type: {failure_type}")
+        reasons = benchmark_validity.get("reasons", [])
+        if isinstance(reasons, list) and reasons:
+            lines.append(f"- reasons: {', '.join(str(reason) for reason in reasons)}")
+        lines.append("")
+    evidence_gold = comparison.get("evidence_gold_compatibility", {})
+    if isinstance(evidence_gold, dict) and evidence_gold:
+        lines.append("## Evidence/Gold Compatibility")
+        lines.append(f"- available: {evidence_gold.get('available')}")
+        lines.append(f"- compatible: {evidence_gold.get('compatible')}")
+        if evidence_gold.get("reason"):
+            lines.append(f"- reason: {evidence_gold.get('reason')}")
+        failure_reasons = evidence_gold.get("failure_reasons", [])
+        if isinstance(failure_reasons, list) and failure_reasons:
+            lines.append(f"- failure_reasons: {', '.join(str(reason) for reason in failure_reasons)}")
+        thresholds = evidence_gold.get("thresholds", {})
+        if isinstance(thresholds, dict) and thresholds:
+            threshold_parts = [
+                f"{key}={value}"
+                for key, value in thresholds.items()
+            ]
+            lines.append(f"- thresholds: {', '.join(threshold_parts)}")
+        for key in (
+            "usable_packet_rate",
+            "section_coverage_rate",
+            "critical_claim_candidate_rate",
+            "expected_entity_observability_rate",
+            "expected_number_observability_rate",
+            "expected_detail_type_observability_rate",
+        ):
+            if key in evidence_gold:
+                lines.append(f"- {key}: {evidence_gold.get(key)}")
+        gaps = evidence_gold.get("schema_gaps", [])
+        if isinstance(gaps, list) and gaps:
+            lines.append(f"- schema_gaps: {', '.join(str(gap) for gap in gaps)}")
+        requirement_gaps = evidence_gold.get("claim_requirement_gaps", [])
+        if isinstance(requirement_gaps, list) and requirement_gaps:
+            lines.append("- claim_requirement_gaps:")
+            for gap in requirement_gaps[:5]:
+                if not isinstance(gap, dict):
+                    continue
+                parts = [
+                    f"claim_id={gap.get('claim_id')}",
+                    f"section={gap.get('section')}",
+                ]
+                missing_entities = gap.get("missing_entities", [])
+                if isinstance(missing_entities, list) and missing_entities:
+                    parts.append(f"missing_entities={', '.join(str(item) for item in missing_entities[:5])}")
+                missing_numbers = gap.get("missing_numbers", [])
+                if isinstance(missing_numbers, list) and missing_numbers:
+                    parts.append(f"missing_numbers={', '.join(str(item) for item in missing_numbers[:5])}")
+                missing_detail_types = gap.get("missing_detail_types", [])
+                if isinstance(missing_detail_types, list) and missing_detail_types:
+                    parts.append(f"missing_detail_types={', '.join(str(item) for item in missing_detail_types[:5])}")
+                lines.append(f"  - {'; '.join(parts)}")
+        synthesis_diagnostics = evidence_gold.get("synthesis_evidence_diagnostics", {})
+        if isinstance(synthesis_diagnostics, dict):
+            packet_coverage = synthesis_diagnostics.get("evidence_packet_coverage", {})
+            if isinstance(packet_coverage, dict) and packet_coverage.get("available"):
+                lines.append("- evidence_packet_coverage:")
+                for key in ("packet_total", "usable_packets", "usable_packet_rate", "cross_modal_packet_count", "typed_packet_count"):
+                    if key in packet_coverage:
+                        lines.append(f"  - {key}: {packet_coverage.get(key)}")
+                for key in ("sections_present", "missing_core_sections", "quality_flags"):
+                    values = packet_coverage.get(key, [])
+                    if isinstance(values, list) and values:
+                        lines.append(f"  - {key}: {', '.join(str(item) for item in values[:8])}")
+                for key in ("by_section", "by_modality", "by_detail_type"):
+                    counts = packet_coverage.get(key, {})
+                    if isinstance(counts, dict) and counts:
+                        count_parts = [f"{name}={count}" for name, count in list(counts.items())[:10]]
+                        lines.append(f"  - {key}: {', '.join(count_parts)}")
         lines.append("")
     retention_summary = comparison.get("information_retention_summary", {})
     if isinstance(retention_summary, dict) and retention_summary:
@@ -2836,6 +3433,16 @@ def main() -> None:
         help="Number of timestamped artifact sets to keep per PDF in out-dir (0 keeps all history).",
     )
     parser.add_argument(
+        "--gold-claims-jsonl",
+        default="",
+        help="Optional structured gold-claims JSONL file for claim and numeric fidelity scoring.",
+    )
+    parser.add_argument(
+        "--gold-standard-json",
+        default="",
+        help="Optional final-report gold-standard JSON for evidence-packet compatibility scoring.",
+    )
+    parser.add_argument(
         "--allow-fallback-probes",
         action="store_true",
         default=os.getenv("ALLOW_FALLBACK_PROBES", "").strip().lower() in {"1", "true", "yes", "on"},
@@ -2974,6 +3581,10 @@ def main() -> None:
                 )
 
     summary_json = result["summary_json"]
+    benchmark_validity = _build_benchmark_validity_gate(result, run_note)
+    if not benchmark_validity["valid"]:
+        raise SystemExit(_format_benchmark_validity_failure(benchmark_validity))
+
     app_sections = _extract_app_sections(summary_json)
     ref_sections = _parse_reference_markdown(ref_path)
     comparison = _compare_sections(
@@ -2990,6 +3601,7 @@ def main() -> None:
         result,
         run_note,
     )
+    comparison["benchmark_validity"] = benchmark_validity
     information_retention_audit = _build_comparator_information_retention_audit(
         pdf_path=pdf_path,
         result=result,
@@ -2999,6 +3611,24 @@ def main() -> None:
     comparison["information_retention_summary"] = (
         information_retention_summary if isinstance(information_retention_summary, dict) else {}
     )
+    gold_claims_path = Path(args.gold_claims_jsonl).expanduser().resolve() if args.gold_claims_jsonl else None
+    if gold_claims_path is None:
+        gold_claims_path = _default_gold_claims_path(ref_path)
+    gold_claims = _load_gold_claims_jsonl(gold_claims_path)
+    comparison["failure_mode_metrics"] = _build_failure_mode_metrics(
+        comparison=comparison,
+        app_sections=app_sections,
+        ref_sections=ref_sections,
+        information_retention_summary=comparison["information_retention_summary"],
+        gold_claims=gold_claims,
+        match_threshold=float(args.matching_threshold),
+    )
+    if gold_claims_path is not None:
+        comparison["failure_mode_metrics"]["gold_claims_path"] = str(gold_claims_path)
+    gold_standard_path = Path(args.gold_standard_json).expanduser().resolve() if args.gold_standard_json else None
+    comparison["evidence_gold_compatibility"] = _build_evidence_gold_compatibility(summary_json, gold_standard_path)
+    if gold_standard_path is not None:
+        comparison["evidence_gold_compatibility"]["gold_standard_path"] = str(gold_standard_path)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     app_md_path = out_dir / f"{pdf_path.stem}_app_extraction_{stamp}.md"
@@ -3038,7 +3668,9 @@ def main() -> None:
                 "comparison_md": str(cmp_md_path),
                 "comparison_json": str(cmp_json_path),
                 "information_retention_json": str(info_json_path),
+                "summary_json": summary_json,
                 "analysis_diagnostics": result.get("diagnostics", {}),
+                "benchmark_validity": comparison.get("benchmark_validity", {}),
                 "extraction_audit": comparison.get("extraction_audit", {}),
                 "information_retention_audit": comparison.get("information_retention_summary", {}),
             },

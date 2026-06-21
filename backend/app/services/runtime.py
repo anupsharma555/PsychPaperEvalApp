@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -19,6 +19,9 @@ def _run_dir() -> Path:
 
 
 def _pid_file() -> Path:
+    configured = os.environ.get("PAPER_EVAL_PID_FILE", "").strip()
+    if configured:
+        return Path(configured)
     return _run_dir() / "pids.json"
 
 
@@ -64,7 +67,7 @@ def read_pids() -> dict:
 def log_runtime_event(event: str, details: dict[str, Any] | None = None) -> None:
     payload = {
         "event": event,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "details": details or {},
     }
     path = _events_file()

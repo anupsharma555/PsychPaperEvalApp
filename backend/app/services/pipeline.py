@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import fcntl
 import json
+import os
 import traceback
 from pathlib import Path
 from time import monotonic
@@ -11,11 +13,41 @@ from sqlmodel import Session
 from app.core.config import settings
 from app.db.models import Job, JobStatus
 from app.db.session import engine
+from app.services.analysis.latency import build_latency_profile
 from app.services.analysis.runner import run_full_analysis
 from app.services.parser import parse_document_assets
 from app.services.report_retention import enforce_report_retention
 from app.services.storage import artifacts_dir
 from app.services.timing import TimelineRecorder, utc_timestamp
+
+
+def _acquire_job_execution_lock(job_id: int, document_id: int):
+    lock_dir = artifacts_dir(document_id)
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"job_{job_id}.lock"
+    handle = lock_path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    except OSError:
+        handle.close()
+        raise
+    handle.seek(0)
+    handle.truncate()
+    handle.write(json.dumps({"job_id": job_id, "document_id": document_id, "pid": os.getpid(), "ts": utc_timestamp()}))
+    handle.flush()
+    return handle
+
+
+def _release_job_execution_lock(handle) -> None:
+    if handle is None:
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def _friendly_job_failure_message(exc: Exception, error_path: Path) -> str:
@@ -66,7 +98,12 @@ def run_pipeline(job_id: int) -> None:
         job = session.get(Job, job_id)
         if not job:
             return
+        lock_handle = _acquire_job_execution_lock(job.id, job.document_id)
+        if lock_handle is None:
+            return
         try:
+            if job.status not in {JobStatus.queued, JobStatus.running}:
+                return
             with timeline.step("prepare_analysis", job_id=job.id, document_id=job.document_id):
                 job.status = JobStatus.running
                 job.progress = 0.05
@@ -87,6 +124,7 @@ def run_pipeline(job_id: int) -> None:
                 parse_counts = parse_document_assets(session, job.document_id)
             parse_seconds = monotonic() - parse_started_at
             parse_ended_ts = utc_timestamp()
+            parser_status_summary = _parser_asset_status_summary(job.document_id)
             _write_artifact(
                 job.document_id,
                 "parse_diagnostics.json",
@@ -96,6 +134,7 @@ def run_pipeline(job_id: int) -> None:
                     "started_at": parse_started_ts,
                     "ended_at": parse_ended_ts,
                     "counts": parse_counts,
+                    **parser_status_summary,
                     "ts": utc_timestamp(),
                 },
             )
@@ -127,8 +166,13 @@ def run_pipeline(job_id: int) -> None:
                     "parse_total_seconds": round(parse_seconds, 4),
                     "started_at": parse_started_ts,
                     "ended_at": parse_ended_ts,
+                    **parser_status_summary,
                 }
                 analysis_diag["pipeline_timeline"] = timeline.snapshot()
+                analysis_diag["latency_profile"] = build_latency_profile(
+                    analysis_diag,
+                    document_id=job.document_id,
+                )
             _log_model_timing(job.id, analysis_diag)
             with timeline.step("write_analysis_diagnostics", job_id=job.id, document_id=job.document_id):
                 _write_artifact(
@@ -140,6 +184,16 @@ def run_pipeline(job_id: int) -> None:
                         "ts": utc_timestamp(),
                     },
                 )
+                if isinstance(analysis_diag, dict) and isinstance(analysis_diag.get("latency_profile"), dict):
+                    _write_artifact(
+                        job.document_id,
+                        "latency_profile.json",
+                        {
+                            "document_id": job.document_id,
+                            "latency_profile": analysis_diag["latency_profile"],
+                            "ts": utc_timestamp(),
+                        },
+                    )
 
             with timeline.step("mark_job_completed", job_id=job.id, document_id=job.document_id):
                 job.status = JobStatus.completed
@@ -177,6 +231,8 @@ def run_pipeline(job_id: int) -> None:
             session.commit()
             print("[pipeline] job failed:", exc)
             print(error_text)
+        finally:
+            _release_job_execution_lock(lock_handle)
 
 
 def _write_artifact(document_id: int, filename: str, payload: dict) -> None:
@@ -186,6 +242,39 @@ def _write_artifact(document_id: int, filename: str, payload: dict) -> None:
         path.write_text(json.dumps(payload, indent=2))
     except Exception:
         return
+
+
+def _parser_asset_status_summary(document_id: int) -> dict:
+    path = artifacts_dir(document_id) / "parser_asset_diagnostics.json"
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return {}
+    assets = payload.get("assets") if isinstance(payload, dict) else None
+    if not isinstance(assets, list):
+        return {}
+    status_counts: dict[str, int] = {}
+    reused_assets = 0
+    parser_reuse = False
+    for entry in assets:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status") or "").strip()
+        if status:
+            status_counts[status] = status_counts.get(status, 0) + 1
+        if status == "reused":
+            parser_reuse = True
+            if entry.get("asset_id") is not None:
+                reused_assets += 1
+        if str(entry.get("stage") or "") == "parser_reuse":
+            parser_reuse = True
+    if not status_counts and not parser_reuse:
+        return {}
+    return {
+        "parser_reuse": parser_reuse,
+        "reused_assets": reused_assets,
+        "asset_status_counts": status_counts,
+    }
 
 
 def _log_model_timing(job_id: int, analysis_diag: dict) -> None:

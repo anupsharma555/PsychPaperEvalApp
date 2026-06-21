@@ -29,29 +29,23 @@ class JobRunner:
         self._executor: Optional[ProcessPoolExecutor] = None
         self._futures: dict[Future[None], int] = {}
         self._max_inflight = max(1, settings.analysis_workers)
-        self._stale_jobs_recovered = _recover_stale_running_jobs()
-        self._last_recovery_at = datetime.utcnow().isoformat() if self._stale_jobs_recovered else None
+        self._stale_jobs_recovered = 0
+        self._last_recovery_at = None
         self._last_orphan_cleanup: dict | None = None
         self._last_error: str | None = None
-        if settings.analysis_use_process_pool:
-            try:
-                self._executor = ProcessPoolExecutor(max_workers=self._max_inflight)
-            except Exception as exc:
-                # Some constrained environments (sandboxed desktop contexts) can
-                # block process semaphore initialization. Fall back gracefully.
-                self._executor = None
-                self._max_inflight = 1
-                self._last_error = f"Process pool disabled, fallback to inline worker: {exc}"
-        else:
-            self._max_inflight = 1
-        if settings.analysis_cleanup_orphans:
-            self._last_orphan_cleanup = _cleanup_orphan_workers()
 
     def start(self) -> None:
         self._stop.clear()
         self._paused.clear()
         if self._thread and self._thread.is_alive():
             return
+        recovered = _recover_stale_running_jobs()
+        if recovered:
+            self._stale_jobs_recovered += recovered
+            self._last_recovery_at = datetime.utcnow().isoformat()
+        if settings.analysis_cleanup_orphans:
+            self._last_orphan_cleanup = _cleanup_orphan_workers()
+        self._ensure_executor()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -82,6 +76,22 @@ class JobRunner:
             self.start()
         else:
             self._paused.clear()
+
+    def _ensure_executor(self) -> None:
+        if self._executor is not None:
+            return
+        self._max_inflight = max(1, settings.analysis_workers)
+        if settings.analysis_use_process_pool:
+            try:
+                self._executor = ProcessPoolExecutor(max_workers=self._max_inflight)
+            except Exception as exc:
+                # Some constrained environments (sandboxed desktop contexts) can
+                # block process semaphore initialization. Fall back gracefully.
+                self._executor = None
+                self._max_inflight = 1
+                self._last_error = f"Process pool disabled, fallback to inline worker: {exc}"
+        else:
+            self._max_inflight = 1
 
     def status(self) -> dict:
         with self._lock:

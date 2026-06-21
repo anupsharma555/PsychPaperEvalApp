@@ -1,0 +1,4 @@
+interface:
+  display_name: "PaperEval Benchmark"
+  short_description: "Validate and run PaperEval benchmark/reference workflows."
+  default_prompt: "Validate the PaperEval benchmark manifest, summarize scored and diagnostic cases, and run benchmark-focused checks."

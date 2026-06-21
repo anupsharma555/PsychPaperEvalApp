@@ -158,7 +158,7 @@ def main() -> None:
 
     ui_hash = hash_tree(desktop_ui / "dist")
     backend_hash = sha256_text(
-        f"{root / '.venv' / 'bin' / 'python'} scripts/run_app.py --api-only --force --backend-port 8000"
+        f"{root / '.venv' / 'bin' / 'python'} scripts/run_app.py --api-only --force --backend-port 8000 --llm-provider local"
     )
     shell_hash = hash_tree(desktop_shell / "src-tauri")
     manifest_path = write_build_manifest(

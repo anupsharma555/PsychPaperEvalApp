@@ -9,7 +9,7 @@ from setuptools import setup
 ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = os.environ.get("PAPER_EVAL_APP_NAME", "PaperEval")
 APP_SCRIPT = str(ROOT / "scripts" / "paper_eval_gui.py")
-ICON_PATH = str(ROOT / "PaperEval.icns")
+ICON_PATH = str(ROOT / "assets" / "icons" / "PaperEval.icns")
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

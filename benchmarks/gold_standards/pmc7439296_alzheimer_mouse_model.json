@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc7439296_alzheimer_mouse_model",
+  "source_pdf": "test/05_32832679_PMC7439296.pdf",
+  "source_sha256": "f95ed8aa93a12abca31fc46fb50d71de5efe76074ffedd920be692bc0bacf2ed",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/05_32832679_PMC7439296.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "Gut dysbiosis contributes to amyloid pathology, associated with C/EBP beta/AEP signaling activation in Alzheimer's disease mouse model",
+    "domain": "preclinical_neuroscience_microbiome",
+    "study_type": "mouse-model mechanistic study"
+  },
+  "final_report_expectations": {
+    "research_question": "Whether gut dysbiosis contributes to amyloid pathology in Alzheimer's disease mouse models through activation of C/EBP beta/AEP signaling, and whether antibiotics, R13, or Lactobacillus salivarius modulate this pathway.",
+    "study_design": "Original preclinical mouse study using age-dependent microbiome profiling, 5xFAD and 3xTg AD models, cohousing/dirty-bedding microbiome exposure, chronic antibiotic treatment, R13 treatment, probiotic feeding, brain/gut pathology assays, and behavior tests.",
+    "population_or_materials": "5xFAD mice, 3xTg mice, wild-type mice, fecal/stool microbiome samples, antibiotic-treated mice, R13-treated mice, live or boiled Lactobacillus salivarius, brain and colon tissues.",
+    "methods": [
+      "16S rRNA V4 sequencing used Illumina MiSeq with QIIME/UPARSE/Greengenes analysis.",
+      "Young 3xTg mice were exposed by cohousing/dirty bedding to aged 3xTg or aged WT mouse microbiota.",
+      "5xFAD mice received antibiotic cocktail treatment.",
+      "R13 dosing and live/boiled L. salivarius probiotic experiments were performed.",
+      "Assays included immunoblotting, immunofluorescence/IHC, ELISA, AEP enzymatic assays, FITC-dextran gut permeability, thioflavin S staining, electron microscopy, Golgi staining, Morris water maze, and fear conditioning."
+    ],
+    "primary_findings": [
+      "5xFAD mice developed age-dependent gut dysbiosis associated with activation of C/EBP beta/AEP signaling in gut tissue.",
+      "Microbiota from aged 3xTg mice, unlike aged WT microbiota, accelerated brain AD pathology and cognitive dysfunction in young 3xTg mice.",
+      "Antibiotic treatment suppressed C/EBP beta/AEP signaling, reduced amyloidogenic processing/pathology, and improved cognitive outcomes in 5xFAD mice.",
+      "R13 blunted gut C/EBP beta/AEP signaling and reduced gut amyloid pathology, while R13-associated L. salivarius contributed to reduced gut leakage and oxidative stress."
+    ],
+    "secondary_findings": [
+      "Microbiome changes included decreased diversity and shifts in Firmicutes, Bacteroidetes, Proteobacteria, Helicobacter, Prevotella, Sutterella, and related taxa.",
+      "R13 reduced Helicobacter hepaticus expansion and increased beneficial taxa including L. salivarius and Bacteroides ovatus.",
+      "Live L. salivarius, more than boiled control, suppressed C/EBP beta/AEP signaling and gut leakage but was not sufficient alone to reverse cognitive deficits."
+    ],
+    "sensitivity_analysis": [
+      "No formal sensitivity analysis was reported.",
+      "Design-level checks included age comparisons, WT versus AD-model comparisons, aged 3xTg versus aged WT microbiota exposure, vehicle versus antibiotic/R13/probiotic treatments, and live versus boiled L. salivarius controls.",
+      "Investigators were blinded to group allocation during animal experiments according to methods."
+    ],
+    "statistical_tests_used": [
+      "Data were expressed as mean +/- SEM from three or more independent experiments.",
+      "Student's t test was used for two-group comparisons.",
+      "One-way ANOVA followed by least significant difference post hoc test was used for more than two groups.",
+      "p < 0.05 was considered statistically significant."
+    ],
+    "interpretation": [
+      "The paper supports a mouse-model gut-brain-axis mechanism in which dysbiosis activates C/EBP beta/AEP signaling linked to amyloid/Tau pathology.",
+      "R13 should be described as a preclinical intervention with multiple proposed mechanisms, not as proven human AD therapy."
+    ],
+    "limitations": [
+      "Mouse-model evidence only; human clinical efficacy is not established.",
+      "R13 was noted as under phase 1 clinical trial, but this paper's efficacy evidence is preclinical.",
+      "The paper acknowledges uncertainty about exactly how gut microbiota alteration mediates brain BDNF levels."
+    ],
+    "tables_figures_supplements": [
+      "Figures 1-7 cover microbiome shifts, cohousing effects, gut C/EBP beta/AEP activation, antibiotic treatment, R13 treatment, R13 microbiome effects, and L. salivarius effects.",
+      "Supplementary figures S1-S7 are cited for additional microbiome, pathway, antibiotic, R13, and probiotic analyses."
+    ],
+    "supplement_availability": "The PDF states supplementary material is available through the Science Advances article page; extracted main-PDF text cites multiple supplementary figures but does not include full supplement content.",
+    "uniqueness": [
+      "Links gut dysbiosis to AD-like amyloid pathology through the C/EBP beta/AEP pathway.",
+      "Combines microbiome profiling, microbiota exposure, gut permeability, brain pathology, and behavior.",
+      "Separates antibiotic, R13, and probiotic mechanisms within one preclinical gut-brain-axis model."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "ad-microbiome-001",
+      "section": "results",
+      "importance": "P0",
+      "claim": "Gut dysbiosis occurred in 5xFAD mice in an age-dependent manner and was associated with activation of C/EBP beta/AEP signaling.",
+      "source_anchor": "Abstract and Figure 1 / Figure 3 sections",
+      "expected_entities": [
+        "5xFAD",
+        "gut dysbiosis",
+        "C/EBP beta",
+        "AEP",
+        "Firmicutes",
+        "Proteobacteria"
+      ],
+      "expected_detail_types": [
+        "model_system",
+        "assay_readout"
+      ],
+      "expected_numbers": [
+        {
+          "label": "microbiome_sequencing_sample_size",
+          "value": 5,
+          "unit": "mice per group"
+        }
+      ]
+    },
+    {
+      "claim_id": "ad-microbiome-002",
+      "section": "results",
+      "importance": "P0",
+      "claim": "Aged 3xTg microbiota exposure increased gut leakage, activated brain C/EBP beta/AEP signaling, reduced synapses, and impaired cognition in young 3xTg mice compared with aged WT microbiota exposure.",
+      "source_anchor": "Figure 2 and cohousing results",
+      "expected_entities": [
+        "3xTg",
+        "aged WT",
+        "FITC-dextran",
+        "AEP",
+        "Morris water maze"
+      ],
+      "expected_detail_types": [
+        "model_system",
+        "intervention_or_exposure",
+        "assay_readout",
+        "outcome_measure"
+      ],
+      "expected_numbers": [
+        {
+          "label": "young_3xtg_starting_age",
+          "value": 6,
+          "unit": "weeks"
+        },
+        {
+          "label": "cohousing_dirty_bedding_duration",
+          "value": 5,
+          "unit": "months"
+        }
+      ]
+    },
+    {
+      "claim_id": "ad-microbiome-003",
+      "section": "results",
+      "importance": "P1",
+      "claim": "Chronic antibiotic treatment reduced C/EBP beta/AEP signaling and amyloid/Tau pathology markers and improved behavioral outcomes in 5xFAD mice.",
+      "source_anchor": "Figure 4 and antibiotic treatment results",
+      "expected_entities": [
+        "antibiotic cocktail",
+        "5xFAD",
+        "APP N585",
+        "APP N373",
+        "Tau N368",
+        "A beta 42",
+        "Morris water maze",
+        "fear conditioning"
+      ],
+      "expected_detail_types": [
+        "model_system",
+        "intervention_or_exposure",
+        "assay_readout",
+        "outcome_measure"
+      ],
+      "expected_numbers": [
+        {
+          "label": "antibiotic_treatment_duration",
+          "value": 5,
+          "unit": "months"
+        }
+      ]
+    },
+    {
+      "claim_id": "ad-microbiome-004",
+      "section": "results",
+      "importance": "P1",
+      "claim": "R13 decreased gut C/EBP beta/AEP signaling, gut A beta signals, AEP activity, gut leakage, and IL-6 in 5xFAD mice.",
+      "source_anchor": "Figure 5 and R13 results",
+      "expected_entities": [
+        "R13",
+        "7,8-DHF",
+        "TrkB",
+        "C/EBP beta",
+        "AEP",
+        "IL-6"
+      ],
+      "expected_detail_types": [
+        "model_system",
+        "intervention_or_exposure",
+        "dose_schedule",
+        "assay_readout"
+      ],
+      "expected_numbers": [
+        {
+          "label": "r13_low_dose",
+          "value": 7.25,
+          "unit": "mg/kg/day"
+        },
+        {
+          "label": "r13_mid_dose",
+          "value": 21.8,
+          "unit": "mg/kg/day"
+        },
+        {
+          "label": "r13_high_dose",
+          "value": 43.6,
+          "unit": "mg/kg/day"
+        }
+      ]
+    },
+    {
+      "claim_id": "ad-microbiome-005",
+      "section": "discussion",
+      "importance": "P2",
+      "claim": "R13 increased L. salivarius, and live L. salivarius reduced C/EBP beta/AEP signaling, gut leakage, and oxidative stress, but probiotic treatment alone did not reverse cognitive deficits.",
+      "source_anchor": "Figures 6-7 and discussion",
+      "expected_entities": [
+        "Lactobacillus salivarius",
+        "Helicobacter hepaticus",
+        "live probiotic",
+        "boiled probiotic",
+        "4-HNE"
+      ],
+      "expected_numbers": [
+        {
+          "label": "h_hepaticus_increase_vehicle_5xfad",
+          "value": 3.15,
+          "unit": "fold"
+        },
+        {
+          "label": "r13_h_hepaticus_inhibition",
+          "value": 2.2,
+          "unit": "fold"
+        },
+        {
+          "label": "probiotic_dose",
+          "value": 500000000,
+          "unit": "CFU/ml"
+        }
+      ]
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not claim R13, antibiotics, or L. salivarius is clinically proven to treat human Alzheimer's disease.",
+    "Do not omit that the evidence is from mouse models and mechanistic assays.",
+    "Do not state that probiotic treatment alone reversed cognitive deficits."
+  ],
+  "scoring_focus": [
+    "Preserve the C/EBP beta/AEP mechanistic axis.",
+    "Differentiate 5xFAD age/dysbiosis, 3xTg cohousing, antibiotic, R13, and L. salivarius experiments.",
+    "Reward correct handling of supplement-dependent supporting evidence and preclinical limits."
+  ]
+}

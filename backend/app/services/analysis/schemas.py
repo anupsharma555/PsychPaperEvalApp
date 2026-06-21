@@ -9,14 +9,22 @@ ModalityName = Literal["text", "table", "figure", "supplement"]
 SectionLabel = Literal["introduction", "methods", "results", "discussion", "conclusion", "unknown"]
 SectionSource = Literal[
     "meta",
+    "explicit_heading",
     "structured_abstract",
     "anchor",
     "statement_prefix",
     "category",
     "semantic",
     "heading",
+    "heading_style",
     "position",
     "lexical",
+    "llm_section_extract",
+    "llm_narrative_summary",
+    "llm_narrative_study_purpose",
+    "llm_narrative_study_hypothesis",
+    "llm_narrative_central_finding",
+    "section_boundary_ledger",
     "fallback",
 ]
 ResultEvidenceType = Literal["text_primary", "media_support"]
@@ -27,6 +35,7 @@ class ModalityEvidence(BaseModel):
     modality: ModalityName
     anchor: str
     statement: str
+    source_excerpt: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
     confidence: float = 0.0
     quality_flags: list[str] = Field(default_factory=list)
@@ -107,6 +116,26 @@ class MethodologyDetail(BaseModel):
     statement: str
     category: str = "other"
     evidence_refs: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+    @field_validator("confidence")
+    @classmethod
+    def _clamp_confidence(cls, value: float) -> float:
+        if value < 0:
+            return 0.0
+        if value > 1:
+            return 1.0
+        return float(value)
+
+
+class ScientificDetail(BaseModel):
+    detail_types: list[str] = Field(default_factory=list)
+    statement: str
+    source_excerpt: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    source_modality: ModalityName = "text"
+    section_label: SectionLabel = "unknown"
+    category: str = "other"
     confidence: float = 0.0
 
     @field_validator("confidence")
@@ -213,6 +242,10 @@ class StructuredDossierV2(BaseModel):
     )
     cross_modal_claims: list[CrossModalClaim] = Field(default_factory=list)
     discrepancies: list[DiscrepancyV2] = Field(default_factory=list)
+    evidence_packets_version: int = 0
+    evidence_packets: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_packet_coverage_version: int = 0
+    evidence_packet_coverage: dict[str, Any] = Field(default_factory=dict)
     executive_summary: str = ""
     extractive_evidence_version: int = 0
     extractive_evidence: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
@@ -229,11 +262,14 @@ class StructuredDossierV2(BaseModel):
     sections_extracted: dict[str, list[SectionExtractedBullet]] = Field(default_factory=dict)
     sections_extracted_version: int = 0
     methodology_details: list[MethodologyDetail] = Field(default_factory=list)
+    scientific_details_version: int = 0
+    scientific_details: list[ScientificDetail] = Field(default_factory=list)
     sections: DetailedSections = Field(default_factory=DetailedSections)
     section_diagnostics: dict = Field(default_factory=dict)
     sections_fallback_used: bool = False
     sections_fallback_notes: list[str] = Field(default_factory=list)
     coverage_snapshot_line: str = ""
+    supplement_availability_note: str = ""
     reproducibility_ethics: list[str] = Field(default_factory=list)
     uncertainty_gaps: list[str] = Field(default_factory=list)
     overall_confidence: float = 0.0

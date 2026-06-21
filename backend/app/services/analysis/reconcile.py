@@ -14,7 +14,6 @@ from app.services.analysis.utils import (
     extract_json,
     extract_refs_from_text,
     max_chars_for_ctx,
-    truncate_text,
 )
 
 POSITIVE_WORDS = {"increase", "improve", "higher", "reduction", "benefit", "better", "positive", "significant"}
@@ -279,11 +278,10 @@ def _severity_for_reason(reason: str) -> str:
 def _llm_reconcile_unresolved(unresolved_inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not unresolved_inputs:
         return []
-    prompt = (
-        "Review non-supported cross-modal claims and return only discrepancies that are strongly justified.\n\n"
-        + json.dumps({"claim_reviews": unresolved_inputs[:20]}, indent=2)
+    prompt = _reconcile_prompt_text(
+        {"claim_reviews": unresolved_inputs[:20]},
+        max_chars=max_chars_for_ctx(settings.llm_n_ctx),
     )
-    prompt = truncate_text(prompt, max_chars_for_ctx(settings.llm_n_ctx))
     data = _run_reconcile_prompt(prompt)
     if not isinstance(data, dict):
         return []
@@ -305,6 +303,70 @@ def _llm_reconcile_unresolved(unresolved_inputs: list[dict[str, Any]]) -> list[d
         if discrepancy:
             output.append(discrepancy)
     return output
+
+
+def _compact_reconcile_prompt_payload(
+    payload: dict[str, Any],
+    *,
+    claim_limit: int,
+    related_limit: int,
+    text_chars: int,
+) -> dict[str, Any]:
+    reviews = payload.get("claim_reviews", [])
+    compact_reviews: list[dict[str, Any]] = []
+    for review in reviews[:claim_limit] if isinstance(reviews, list) else []:
+        if not isinstance(review, dict):
+            continue
+        row = dict(review)
+        row["claim"] = _compact_text(str(row.get("claim", "")), max_chars=text_chars)
+        row["evidence"] = [str(ref).strip() for ref in row.get("evidence", []) if str(ref).strip()][:4]
+        row["related_packets"] = [
+            _compact_reconcile_related_packet(packet, max_chars=text_chars)
+            for packet in row.get("related_packets", [])[:related_limit]
+            if isinstance(packet, dict)
+        ] if isinstance(row.get("related_packets"), list) else []
+        compact_reviews.append(row)
+    return {"claim_reviews": compact_reviews}
+
+
+def _compact_reconcile_related_packet(packet: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
+    return {
+        "finding_id": str(packet.get("finding_id", "")),
+        "statement": _compact_text(str(packet.get("statement", "")), max_chars=max_chars),
+        "evidence_refs": [str(ref).strip() for ref in packet.get("evidence_refs", []) if str(ref).strip()][:4],
+        "modality": str(packet.get("modality", "")),
+        "confidence": clamp_confidence(packet.get("confidence", 0.0)),
+    }
+
+
+def _compact_text(value: str, *, max_chars: int) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 3)].rstrip() + "..."
+
+
+def _reconcile_prompt_text(payload: dict[str, Any], *, max_chars: int) -> str:
+    prefix = "Review non-supported cross-modal claims and return only discrepancies that are strongly justified.\n\n"
+    body = json.dumps(payload, indent=2)
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(payload, separators=(",", ":"))
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(
+            _compact_reconcile_prompt_payload(payload, claim_limit=12, related_limit=4, text_chars=260),
+            separators=(",", ":"),
+        )
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(
+            _compact_reconcile_prompt_payload(payload, claim_limit=6, related_limit=2, text_chars=160),
+            separators=(",", ":"),
+        )
+    if len(prefix) + len(body) > max_chars:
+        body = json.dumps(
+            _compact_reconcile_prompt_payload(payload, claim_limit=3, related_limit=1, text_chars=100),
+            separators=(",", ":"),
+        )
+    return prefix + body
 
 
 def _llm_reconcile_worker(prompt: str, out_queue: Any) -> None:

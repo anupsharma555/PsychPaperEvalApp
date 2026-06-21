@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    env:
+      ANALYSIS_FORCE_NONTEXT_LLM_FOR_OPENAI: "false"
+      ANALYSIS_NONTEXT_LLM_ENABLED: "false"
+      ANALYSIS_TEXT_LLM_ENABLED: "false"
+      LLM_PROVIDER: local
+      PAPER_EVAL_MANAGE_GROBID: "false"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: Run backend test suite
+        run: make backend-test
+
+  benchmark-fixtures:
+    name: Benchmark fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate multi-paper benchmark manifest
+        run: |
+          python scripts/run_multi_paper_benchmark.py --tier release --include-unscored --validate-only
+          python scripts/run_multi_paper_benchmark.py --tier deep --include-unscored --validate-only
+
+      - name: Validate gold fixtures
+        run: |
+          python scripts/validate_gold_claims.py benchmarks/sharma_2017_gold_claims.jsonl
+          python scripts/validate_gold_standards.py benchmarks/gold_standards/*.json
+
+  desktop-ui:
+    name: Desktop UI and Tauri shell
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop_ui/package-lock.json
+
+      - name: Install desktop UI dependencies
+        run: npm ci --prefix desktop_ui
+
+      - name: Build desktop UI
+        run: npm --prefix desktop_ui run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Tauri shell
+        run: cargo check --manifest-path desktop_shell/src-tauri/Cargo.toml --locked

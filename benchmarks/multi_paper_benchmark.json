@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "papereval_multi_paper_v1",
+  "standard": "benchmarks/app_evaluation_standard.json",
+  "description": "Multi-paper benchmark manifest for PsychPaperEvalApp. Each case has one final-report gold-standard JSON target. Reference-scored cases also use compare_pdf_against_reference.py; diagnostic coverage cases define the release/deep corpus and reviewed reference backlog.",
+  "defaults": {
+    "mode": "pipeline",
+    "parser_engine": "validated",
+    "backend_profile": "section-sensitive",
+    "matching_mode": "hybrid",
+    "matching_threshold": 0.42,
+    "retain_runs": 1,
+    "out_dir": "test/multi_paper_benchmark",
+    "db_dir": "/tmp"
+  },
+  "reference_thresholds": {
+    "overall_recall_min": 0.68,
+    "methods_recall_min": 0.55,
+    "results_recall_min": 0.55,
+    "section_recall_floor": 0.35
+  },
+  "known_gaps": [
+    {
+      "id": "supplement_heavy_reference_case",
+      "status": "needed",
+      "needed_for": ["release", "deep"],
+      "processing_stages": ["supplement_analysis"],
+      "paper_components": ["supplements"],
+      "reason": "The benchmark standard scores supplement handling, but the current public fixture manifest does not yet include a reference-scored supplement-heavy case."
+    },
+    {
+      "id": "additional_reference_scored_cases",
+      "status": "needed",
+      "needed_for": ["release", "deep"],
+      "reason": "Release and deep tiers define a multi-paper corpus with draft final-report gold standards, but most current cases remain diagnostic coverage cases until sectioned reference markdown is authored and reviewed."
+    }
+  ],
+  "tiers": {
+    "smoke": {
+      "minimum_cases": 1,
+      "requires_reference_scored_cases": 1
+    },
+    "release": {
+      "minimum_cases": 5,
+      "requires_reference_scored_cases": 1,
+      "target_reference_scored_cases": 5
+    },
+    "deep": {
+      "minimum_cases": 8,
+      "requires_reference_scored_cases": 1,
+      "target_reference_scored_cases": 8
+    }
+  },
+  "cases": [
+    {
+      "id": "sharma_2017_reward_deficits",
+      "title": "Common dimensional reward deficits across mood and psychotic disorders: a connectome-wide association study",
+      "pdf": "test/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association.pdf",
+      "reference_md": "test/text/sharma_2017_chatgpt_extraction.md",
+      "scoring": "reference_comparison",
+      "reference_status": "available",
+      "gold_standard": "benchmarks/gold_standards/sharma_2017_reward_deficits.json",
+      "gold_standard_status": "reviewed_reference_available",
+      "tiers": ["smoke", "release", "deep"],
+      "domains": ["psychiatry", "neuroimaging", "methods_heavy"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "table_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics", "desktop_operator_review"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "tables", "figures", "references_metadata"],
+      "expected_stressors": ["section_fidelity", "methods_results_boundary", "statistical_findings"],
+      "notes": "Primary public psychiatric benchmark fixture with section-level reference markdown."
+    },
+    {
+      "id": "pmc7439296_alzheimer_mouse_model",
+      "title": "Gut dysbiosis contributes to amyloid pathology in an Alzheimer's disease mouse model",
+      "pdf": "test/05_32832679_PMC7439296.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc7439296_alzheimer_mouse_model.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["release", "deep"],
+      "domains": ["neuroscience", "figure_heavy", "preclinical"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "figures", "references_metadata"],
+      "expected_stressors": ["figure_caption_handling", "mechanistic_results", "nonhuman_model"],
+      "notes": "Public neuroscience fixture for multimodal and mechanistic-report coverage; add reference markdown before treating as fully scored."
+    },
+    {
+      "id": "pmc7439333_hbv_hcc_polymorphisms",
+      "title": "Association between CXCL2 polymorphisms and HBV-related hepatocellular carcinoma risk",
+      "pdf": "test/06_32267022_PMC7439333.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc7439333_hbv_hcc_polymorphisms.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["release", "deep"],
+      "domains": ["clinical_epidemiology", "genetics", "table_heavy"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "table_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "tables", "references_metadata"],
+      "expected_stressors": ["table_extraction", "odds_ratios", "cohort_methods"],
+      "notes": "Small public PDF useful for table/statistical extraction coverage."
+    },
+    {
+      "id": "pmc7440080_covid_economic_policy",
+      "title": "Economic, social and political issues raised by the COVID-19 pandemic",
+      "pdf": "test/07_32843816_PMC7440080.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc7440080_covid_economic_policy.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["deep"],
+      "domains": ["economics", "policy", "out_of_domain_control"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "figures", "references_metadata"],
+      "expected_stressors": ["policy_review_structure", "out_of_domain_control", "figure_refs"],
+      "notes": "Deep-tier non-biomedical control included to keep executable coverage aligned with the 10-paper fixture."
+    },
+    {
+      "id": "pmc7440026_rare_events_long_run_risks",
+      "title": "Rare events and long-run risks",
+      "pdf": "test/08_32843834_PMC7440026.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc7440026_rare_events_long_run_risks.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["deep"],
+      "domains": ["economics", "modeling", "table_heavy", "out_of_domain_control"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "table_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "tables", "figures", "references_metadata"],
+      "expected_stressors": ["economic_modeling", "table_extraction", "out_of_domain_control"],
+      "notes": "Deep-tier table/modeling control included to keep executable coverage aligned with the 10-paper fixture."
+    },
+    {
+      "id": "pmc7435222_pneumococcal_pneumonia",
+      "title": "Potential role of pneumococcal conjugate vaccine in reducing acute respiratory inflammation",
+      "pdf": "test/03_32814590_PMC7435222.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc7435222_pneumococcal_pneumonia.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["release", "deep"],
+      "domains": ["clinical", "biomedical", "review_or_mechanistic"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "figures", "references_metadata"],
+      "expected_stressors": ["clinical_claims", "mechanism_vs_outcome", "source_grounding"],
+      "notes": "Clinical biomedical coverage case for source grounding outside psychiatry."
+    },
+    {
+      "id": "pmc7440083_covid_forecasting",
+      "title": "Time series forecasting of Covid-19 using deep learning models: India-USA comparative case study",
+      "pdf": "test/09_32843824_PMC7440083.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc7440083_covid_forecasting.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["release", "deep"],
+      "domains": ["methods_heavy", "modeling", "out_of_domain_control"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "table_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "tables", "figures", "references_metadata"],
+      "expected_stressors": ["methods_summary", "model_results", "nonclinical_methods"],
+      "notes": "Out-of-domain methods-heavy control that should not be overinterpreted as psychiatric evidence."
+    },
+    {
+      "id": "pmc5742137_deae_dextran_tumorigenesis",
+      "title": "Role of beta-interferon inducer in tumorigenesis by VEGF and NOTCH1 inhibition",
+      "pdf": "test/01_29311933_PMC5742137.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc5742137_deae_dextran_tumorigenesis.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["deep"],
+      "domains": ["preclinical", "figure_heavy", "mechanistic"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "figures", "references_metadata"],
+      "expected_stressors": ["figure_results", "molecular_mechanism", "nonpsychiatric_control"],
+      "notes": "Deep-tier figure/mechanism stress case."
+    },
+    {
+      "id": "pmc6168235_muscarinic_allostery",
+      "title": "Toward understanding structural basis of allostery in muscarinic acetylcholine receptors",
+      "pdf": "test/02_30190312_PMC6168235.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc6168235_muscarinic_allostery.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["deep"],
+      "domains": ["neuroscience", "structural_biology", "review"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "figures", "references_metadata"],
+      "expected_stressors": ["review_structure", "mechanistic_language", "figure_caption_handling"],
+      "notes": "Deep-tier neuroscience-adjacent review/structure case."
+    },
+    {
+      "id": "pmc7437112_covid_logistic_growth",
+      "title": "Generalized logistic growth modeling of the COVID-19 outbreak",
+      "pdf": "test/04_32836822_PMC7437112.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc7437112_covid_logistic_growth.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["deep"],
+      "domains": ["modeling", "methods_heavy", "out_of_domain_control"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "table_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "tables", "figures", "references_metadata"],
+      "expected_stressors": ["equations", "model_assumptions", "regional_results"],
+      "notes": "Deep-tier mathematical/modeling control."
+    },
+    {
+      "id": "pmc7441062_double_flp_in",
+      "title": "A double-Flp-in method for stable overexpression of two genes",
+      "pdf": "test/10_32820202_PMC7441062.pdf",
+      "reference_md": "",
+      "scoring": "diagnostic_coverage",
+      "reference_status": "needed",
+      "gold_standard": "benchmarks/gold_standards/pmc7441062_double_flp_in.json",
+      "gold_standard_status": "codex_drafted_needs_review",
+      "tiers": ["deep"],
+      "domains": ["methods", "molecular_biology", "figure_heavy"],
+      "processing_stages": ["source_ingestion", "source_manifest", "parsing", "text_analysis", "figure_analysis", "reconcile", "synthesis", "diagnostics"],
+      "paper_components": ["title_abstract", "introduction", "methods", "results", "discussion", "conclusion", "figures", "references_metadata"],
+      "expected_stressors": ["protocol_methods", "figure_results", "nonclinical_methods"],
+      "notes": "Deep-tier methods/protocol stress case."
+    }
+  ]
+}

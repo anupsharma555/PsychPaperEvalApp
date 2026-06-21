@@ -1,0 +1,4 @@
+interface:
+  display_name: "PaperEval Slack Integration QA"
+  short_description: "Test headless Keystone Slack PaperEval runs"
+  default_prompt: "Use $papereval-slack-integration-qa to validate the headless Keystone Slack integration for PsychPaperEvalApp."

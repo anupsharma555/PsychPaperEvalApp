@@ -55,6 +55,13 @@ class DesktopModelReadiness(_SchemaModel):
     vision_model_exists: bool = False
     vision_mmproj_path: str = ""
     vision_mmproj_exists: bool = False
+    local_gpu_mode: str = "unknown"
+    local_gpu_preferred_layers: int = 0
+    local_gpu_effective_layers: int = 0
+    local_gpu_metal_devices: str = ""
+    local_gpu_smoke_status: str = "not_run"
+    local_gpu_fallback_reason: str = ""
+    local_gpu_status: dict[str, Any] = Field(default_factory=dict)
 
 
 class DesktopProcessingStatus(_SchemaModel):
@@ -97,6 +104,12 @@ class DesktopReportSummary(_SchemaModel):
     modality_cards: list[DesktopModalityCard] = Field(default_factory=list)
     methods_card: list[str] = Field(default_factory=list)
     sections_card: list[str] = Field(default_factory=list)
+    scientific_card: list[str] = Field(default_factory=list)
+    report_warnings: list[str] = Field(default_factory=list)
+    synthesis_quality_flags: list[str] = Field(default_factory=list)
+    critical_missing_focus_slots: list[dict[str, str]] = Field(default_factory=list)
+    latency_profile: dict[str, Any] | None = None
+    report_validity: dict[str, Any] | None = None
     rerun_recommended: bool = False
     report_capabilities: dict[str, bool] = Field(default_factory=dict)
     discrepancy_count: int = 0

@@ -9,7 +9,7 @@ pillow==10.4.0
 pandas==2.2.2
 numpy==2.1.1
 docling==2.8.3
-llama-cpp-python==0.3.16
+llama-cpp-python==0.3.31
 huggingface_hub==0.24.5
 transformers>=4.38.0
 torch>=2.1.0

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 import json
 from typing import Optional
 
 from sqlmodel import Field, SQLModel
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class JobStatus(str, Enum):
@@ -20,7 +24,7 @@ class Document(SQLModel, table=True):
     title: Optional[str] = None
     source_url: Optional[str] = None
     doi: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class Asset(SQLModel, table=True):
@@ -30,7 +34,7 @@ class Asset(SQLModel, table=True):
     filename: str
     content_type: Optional[str] = None
     path: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class Job(SQLModel, table=True):
@@ -39,8 +43,8 @@ class Job(SQLModel, table=True):
     status: JobStatus = Field(default=JobStatus.queued)
     progress: float = 0.0
     message: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class Chunk(SQLModel, table=True):
@@ -59,7 +63,7 @@ class SourceManifest(SQLModel, table=True):
     source_type: str = Field(index=True)  # url|upload
     status: str = Field(index=True)  # resolved|uploaded|failed
     payload: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class Finding(SQLModel, table=True):
@@ -84,7 +88,7 @@ class Report(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     document_id: int = Field(index=True)
     payload: str  # json string for executive summary + scores
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
     @property
     def schema_version(self) -> int:

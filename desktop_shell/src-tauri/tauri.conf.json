@@ -5,7 +5,7 @@
   "identifier": "com.papereval.desktop",
   "build": {
     "beforeDevCommand": "npm --prefix ../desktop_ui run dev",
-    "devUrl": "http://127.0.0.1:5174",
+    "devUrl": "http://127.0.0.1:5184",
     "beforeBuildCommand": "npm --prefix ../desktop_ui run build",
     "frontendDist": "../../desktop_ui/dist"
   },

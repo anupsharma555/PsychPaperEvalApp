@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 import json
 from functools import lru_cache
 import os
@@ -84,6 +85,8 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".gif", ".webp"}
 TEXT_EXTS = {".txt"}
 HTML_EXTS = {".html", ".htm", ".xhtml"}
 DOCLING_DIRECT_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".rtf", ".md", ".xml", ".html", ".htm", ".xhtml"}
+PARSER_REUSE_MANIFEST = "parser_reuse_manifest.json"
+PARSER_SIGNATURE_VERSION = 1
 
 
 
@@ -444,11 +447,195 @@ def _write_parser_asset_diagnostics(document_id: int, diagnostics: list[dict[str
         return
 
 
+def _parser_reuse_manifest_path(document_id: int) -> Path:
+    return artifacts_dir(document_id) / PARSER_REUSE_MANIFEST
+
+
+def _parser_settings_signature() -> dict[str, Any]:
+    return {
+        "signature_version": PARSER_SIGNATURE_VERSION,
+        "parser_engine": str(settings.parser_engine),
+        "archive_max_members": int(settings.archive_max_members),
+        "archive_max_uncompressed_bytes": int(settings.archive_max_uncompressed_bytes),
+        "docling_enable_ocr": bool(settings.docling_enable_ocr),
+        "docling_ocr_lang": str(settings.docling_ocr_lang),
+        "docling_extract_figures": bool(settings.docling_extract_figures),
+        "docling_table_structure_enabled": bool(settings.docling_table_structure_enabled),
+        "doctr_enabled": bool(settings.doctr_enabled),
+        "doctr_det_arch": str(settings.doctr_det_arch),
+        "doctr_reco_arch": str(settings.doctr_reco_arch),
+        "doctr_max_chars": int(settings.doctr_max_chars),
+        "figure_ocr_enabled": bool(settings.figure_ocr_enabled),
+        "figure_ocr_langs": str(settings.figure_ocr_langs),
+        "figure_ocr_max_chars": int(settings.figure_ocr_max_chars),
+        "figure_ocr_parse_enabled": bool(settings.figure_ocr_parse_enabled),
+        "figure_fallback_max_pages": int(settings.figure_fallback_max_pages),
+        "figure_fallback_scale": float(settings.figure_fallback_scale),
+        "grobid_consolidate_header": bool(settings.grobid_consolidate_header),
+        "grobid_consolidate_citations": bool(settings.grobid_consolidate_citations),
+        "grobid_include_coordinates": bool(settings.grobid_include_coordinates),
+        "pdffigures2_cmd": str(settings.pdffigures2_cmd or ""),
+        "pdffigures2_jar": str(settings.pdffigures2_jar or ""),
+        "pdffigures2_timeout_sec": int(settings.pdffigures2_timeout_sec),
+        "pdffigures2_headless": bool(settings.pdffigures2_headless),
+    }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _asset_parse_signature(asset: Asset, file_path: Path) -> dict[str, Any] | None:
+    if not file_path.exists():
+        return None
+    try:
+        stat = file_path.stat()
+        digest = _file_sha256(file_path)
+    except Exception:
+        return None
+    return {
+        "asset_id": asset.id,
+        "kind": asset.kind,
+        "filename": asset.filename,
+        "content_type": asset.content_type,
+        "path": str(file_path),
+        "extension": file_path.suffix.lower(),
+        "bytes": int(stat.st_size),
+        "sha256": digest,
+    }
+
+
+def _document_parse_signature(assets: list[Asset]) -> dict[str, Any] | None:
+    asset_signatures: list[dict[str, Any]] = []
+    for asset in assets:
+        signature = _asset_parse_signature(asset, Path(asset.path))
+        if signature is None:
+            return None
+        asset_signatures.append(signature)
+    asset_signatures.sort(
+        key=lambda item: (
+            str(item.get("kind") or ""),
+            str(item.get("filename") or ""),
+            int(item.get("asset_id") or 0),
+        )
+    )
+    return {
+        "schema_version": 1,
+        "parser_settings": _parser_settings_signature(),
+        "assets": asset_signatures,
+    }
+
+
+def _read_parser_reuse_manifest(document_id: int) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(_parser_reuse_manifest_path(document_id).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _chunk_counts_for_document(session: Session, document_id: int) -> dict[str, int]:
+    counts = {"text": 0, "table": 0, "figure": 0, "supp": 0}
+    chunks = session.exec(select(Chunk).where(Chunk.document_id == document_id)).all()
+    for chunk in chunks:
+        modality = str(chunk.modality or "")
+        if modality in counts:
+            counts[modality] += 1
+    return counts
+
+
+def _matching_parser_reuse_counts(
+    session: Session,
+    document_id: int,
+    signature: dict[str, Any] | None,
+) -> dict[str, int] | None:
+    if not signature or not bool(settings.parser_reuse_unchanged_assets_enabled):
+        return None
+    manifest = _read_parser_reuse_manifest(document_id)
+    if not manifest or manifest.get("signature") != signature:
+        return None
+    counts = _chunk_counts_for_document(session, document_id)
+    if not any(counts.values()):
+        return None
+    stored_counts = manifest.get("counts")
+    if isinstance(stored_counts, dict):
+        try:
+            normalized = {key: int(stored_counts.get(key, 0) or 0) for key in counts}
+        except Exception:
+            normalized = {}
+        if normalized and normalized != counts:
+            return None
+    return counts
+
+
+def _write_parser_reuse_manifest(
+    document_id: int,
+    *,
+    signature: dict[str, Any] | None,
+    counts: dict[str, int],
+) -> None:
+    if not signature or not bool(settings.parser_reuse_unchanged_assets_enabled):
+        return
+    payload = {
+        "schema_version": 1,
+        "created_at": datetime.utcnow().isoformat(),
+        "signature": signature,
+        "counts": {key: int(counts.get(key, 0) or 0) for key in ("text", "table", "figure", "supp")},
+    }
+    try:
+        path = _parser_reuse_manifest_path(document_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    except Exception:
+        return
+
+
+def _parser_reuse_diagnostics(assets: list[Asset], counts: dict[str, int]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for asset in assets:
+        file_path = Path(asset.path)
+        asset_diag: dict[str, Any] = {
+            "asset_id": asset.id,
+            "kind": asset.kind,
+            "filename": asset.filename,
+            "content_type": asset.content_type,
+            "path": str(file_path),
+            "extension": file_path.suffix.lower(),
+            "status": "reused",
+            "reuse_reason": "unchanged_asset_signature",
+        }
+        if file_path.exists():
+            asset_diag["sniffed_kind"] = _sniff_file_kind(file_path)
+            try:
+                asset_diag["bytes"] = file_path.stat().st_size
+            except Exception:
+                pass
+        diagnostics.append(asset_diag)
+    diagnostics.append(
+        {
+            "status": "reused",
+            "stage": "parser_reuse",
+            "reuse_reason": "unchanged_asset_signature",
+            "counts": {key: int(counts.get(key, 0) or 0) for key in ("text", "table", "figure", "supp")},
+        }
+    )
+    return diagnostics
+
+
 def parse_document_assets(session: Session, document_id: int) -> dict[str, int]:
     counts = {"text": 0, "table": 0, "figure": 0, "supp": 0}
     document = session.get(Document, document_id)
     base_url = str(document.source_url or "").strip() if document else ""
     assets = session.exec(select(Asset).where(Asset.document_id == document_id)).all()
+    parse_signature = _document_parse_signature(assets)
+    reused_counts = _matching_parser_reuse_counts(session, document_id, parse_signature)
+    if reused_counts is not None:
+        _write_parser_asset_diagnostics(document_id, _parser_reuse_diagnostics(assets, reused_counts))
+        return reused_counts
     session.exec(delete(Chunk).where(Chunk.document_id == document_id))
     session.commit()
     diagnostics: list[dict[str, Any]] = []
@@ -517,6 +704,7 @@ def parse_document_assets(session: Session, document_id: int) -> dict[str, int]:
             }
         )
     _write_parser_asset_diagnostics(document_id, diagnostics)
+    _write_parser_reuse_manifest(document_id, signature=parse_signature, counts=counts)
     return counts
 
 

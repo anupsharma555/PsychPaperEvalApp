@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import hashlib
 import json
 import multiprocessing as mp
 import os
+from pathlib import Path
 from queue import Empty as QueueEmpty
 import re
 from time import monotonic
@@ -30,6 +32,8 @@ from app.services.analysis.supp_analysis import analyze_supplements
 from app.services.analysis.table_analysis import analyze_tables
 from app.services.analysis.text_analysis import analyze_text
 from app.services.analysis.utils import extract_expected_refs, extract_refs_from_text
+from app.services.analysis.validity import build_run_validity
+from app.services.local_gpu import ensure_local_gpu_ready
 from app.services.storage import artifacts_dir
 from app.services.timing import utc_timestamp
 
@@ -37,6 +41,10 @@ SUPPLEMENT_MARKER_RE = re.compile(
     r"\b(supplement(?:ary|al)?|suppl|appendix|extended data|supporting (?:information|info|data))\b",
     re.IGNORECASE,
 )
+MODALITY_PROGRESS_HEARTBEAT_SECONDS = 30.0
+LOCAL_TEXT_ANALYSIS_CACHE_FILE = "local_text_analysis_cache.json"
+LOCAL_TEXT_ANALYSIS_CACHE_VERSION = 1
+LOCAL_TEXT_ANALYSIS_GLOBAL_CACHE_DIR = "analysis_cache/local_text"
 
 
 def run_full_analysis(
@@ -48,6 +56,7 @@ def run_full_analysis(
     _analysis_trace("run_full_analysis:start")
     reset_model_usage_counters()
     set_openai_usage_context(job_id=job_id, document_id=document_id, stage="startup")
+    local_gpu_status = ensure_local_gpu_ready(reason="analysis_start")
     analysis_started_at = monotonic()
     stage_timings: dict[str, float] = {}
     stage_timeline: list[dict[str, Any]] = []
@@ -157,23 +166,45 @@ def run_full_analysis(
         set_openai_usage_context(job_id=job_id, document_id=document_id, stage=stage)
         stage_started = monotonic()
         stage_started_at = utc_timestamp()
-        report, usage, fallback = guarded_fn(
-            inputs,
-            job_id=job_id,
-            document_id=document_id,
+        cache_hit = False
+        cache_source = ""
+        cached_report, cached_usage, cached_fallback, cache_decisions = (
+            _maybe_read_local_text_analysis_cache(document_id, inputs)
+            if stage == "text"
+            else (None, _empty_usage_payload(), "", [])
         )
+        if cached_report is not None:
+            report, usage, fallback = cached_report, cached_usage, cached_fallback
+            cache_hit = True
+            cache_diagnostics = report.get("diagnostics", {}).get("local_text_analysis_cache")
+            if isinstance(cache_diagnostics, dict):
+                cache_source = str(cache_diagnostics.get("source") or "")
+        else:
+            report, usage, fallback = guarded_fn(
+                inputs,
+                job_id=job_id,
+                document_id=document_id,
+            )
+            if stage == "text" and not fallback:
+                _write_local_text_analysis_cache(document_id, inputs, report)
         duration = monotonic() - stage_started
+        event_metadata = {
+            "input_chunks": len(inputs),
+            "evidence_packets": len(report.get("evidence_packets", [])),
+            "fallback_reason": fallback,
+            "cache_hit": cache_hit,
+        }
+        if cache_decisions:
+            event_metadata["cache_decisions"] = cache_decisions
+        if cache_source:
+            event_metadata["cache_source"] = cache_source
         event = {
             "stage": stage,
             "started_at": stage_started_at,
             "ended_at": utc_timestamp(),
             "duration_seconds": round(duration, 4),
             "status": "completed",
-            "metadata": {
-                "input_chunks": len(inputs),
-                "evidence_packets": len(report.get("evidence_packets", [])),
-                "fallback_reason": fallback,
-            },
+            "metadata": event_metadata,
         }
         _analysis_trace(f"run_full_analysis:{stage}:done packets={len(report.get('evidence_packets', []))}")
         return {
@@ -183,6 +214,7 @@ def run_full_analysis(
             "fallback": fallback,
             "duration": duration,
             "event": event,
+            "cache_hit": cache_hit,
         }
 
     def _apply_modality_result(result: dict[str, Any]) -> None:
@@ -207,6 +239,35 @@ def run_full_analysis(
         if isinstance(event, dict):
             stage_timeline.append(event)
 
+    def _run_modality_stage_with_heartbeat(
+        spec: dict[str, Any],
+        *,
+        next_progress: float,
+    ) -> dict[str, Any]:
+        stage = str(spec["stage"])
+        start_progress = float(spec["start_progress"])
+        stage_started = monotonic()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run_modality_stage, spec)
+            while True:
+                done, _pending = wait(
+                    {future},
+                    timeout=MODALITY_PROGRESS_HEARTBEAT_SECONDS,
+                    return_when=FIRST_COMPLETED,
+                )
+                if done:
+                    return future.result()
+                elapsed_seconds = monotonic() - stage_started
+                _emit_progress(
+                    progress_callback,
+                    _modality_stage_heartbeat_progress(
+                        start_progress,
+                        next_progress,
+                        elapsed_seconds=elapsed_seconds,
+                    ),
+                    _modality_heartbeat_message([stage], elapsed_seconds=elapsed_seconds),
+                )
+
     text_report: dict[str, Any]
     table_report: dict[str, Any]
     figure_report: dict[str, Any]
@@ -217,24 +278,52 @@ def run_full_analysis(
         worker_count = min(len(modality_specs), max(1, int(settings.analysis_parallel_modality_workers or 1)))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {executor.submit(_run_modality_stage, spec): str(spec["stage"]) for spec in modality_specs}
+            pending = set(futures)
             completed = 0
-            for future in as_completed(futures):
-                result = future.result()
-                _apply_modality_result(result)
-                modality_results[str(result["stage"])] = result
-                completed += 1
-                _emit_progress(
-                    progress_callback,
-                    0.56 + (0.28 * completed / max(1, len(futures))),
-                    f"Completed {result['stage']} modality analysis",
+            modality_started = monotonic()
+            while pending:
+                done, pending = wait(
+                    pending,
+                    timeout=MODALITY_PROGRESS_HEARTBEAT_SECONDS,
+                    return_when=FIRST_COMPLETED,
                 )
+                if not done:
+                    _emit_progress(
+                        progress_callback,
+                        0.56 + (0.28 * completed / max(1, len(futures))),
+                        _modality_heartbeat_message(
+                            [futures[future] for future in pending],
+                            elapsed_seconds=monotonic() - modality_started,
+                        ),
+                    )
+                    continue
+                for future in done:
+                    result = future.result()
+                    _apply_modality_result(result)
+                    modality_results[str(result["stage"])] = result
+                    completed += 1
+                    _emit_progress(
+                        progress_callback,
+                        0.56 + (0.28 * completed / max(1, len(futures))),
+                        f"Completed {result['stage']} modality analysis",
+                    )
         stage_timeline.sort(key=lambda event: str(event.get("started_at", "")))
     else:
-        for spec in modality_specs:
+        for idx, spec in enumerate(modality_specs):
             _emit_progress(progress_callback, float(spec["start_progress"]), str(spec["start_message"]))
-            result = _run_modality_stage(spec)
+            next_progress = (
+                float(modality_specs[idx + 1]["start_progress"])
+                if idx + 1 < len(modality_specs)
+                else 0.84
+            )
+            result = _run_modality_stage_with_heartbeat(spec, next_progress=next_progress)
             _apply_modality_result(result)
             modality_results[str(result["stage"])] = result
+            _emit_progress(
+                progress_callback,
+                max(float(spec["start_progress"]), next_progress - 0.005),
+                f"Completed {result['stage']} modality analysis",
+            )
 
     text_report = modality_results["text"]["report"]
     table_report = modality_results["table"]["report"]
@@ -298,6 +387,7 @@ def run_full_analysis(
         ),
         [],
     )
+    synthesis_usage = _merge_synthesis_report_usage(synthesis_usage, summary)
     stage_usage_samples["synthesis"] = synthesis_usage
     stage_timings["synthesis"] = monotonic() - stage_started
     _record_stage_timing(
@@ -348,6 +438,18 @@ def run_full_analysis(
         ocr_calls += int(figure_diag.get("ocr_fallback_calls", 0) or 0)
     if isinstance(supp_diag, dict):
         ocr_calls += int(supp_diag.get("ocr_fallback_calls", 0) or 0)
+    multimodal_quality = _build_multimodal_quality_summary(
+        figure_report=figure_report,
+        supp_report=supp_report,
+    )
+    prompt_budget_diagnostics = _build_prompt_budget_diagnostics(
+        text_report=text_report,
+        table_report=table_report,
+        figure_report=figure_report,
+        supp_report=supp_report,
+    )
+    synthesis_deep_calls = int(float(synthesis_usage.get("deep_calls", 0) or 0))
+    synthesis_deep_errors = int(float(synthesis_usage.get("deep_errors", 0) or 0))
     analysis_timing = {
         "text": round(stage_timings.get("text", 0.0), 4),
         "table": round(stage_timings.get("table", 0.0), 4),
@@ -358,7 +460,7 @@ def run_full_analysis(
         "store": round(stage_timings.get("store", 0.0), 4),
         "analysis_total_seconds": round(stage_timings.get("analysis_total_seconds", 0.0), 4),
     }
-    return {
+    diagnostics_payload = {
         "analysis_timing": analysis_timing,
         "analysis_timeline": stage_timeline,
         "coverage": coverage,
@@ -392,15 +494,333 @@ def run_full_analysis(
             "supplement": len(supp_report.get("evidence_packets", [])),
         },
         "model_usage": model_usage,
+        "synthesis_diagnostics": {
+            "narrative_overrides_enabled": bool(settings.effective_analysis_narrative_overrides_enabled),
+            "narrative_synthesis_required": bool(settings.effective_analysis_narrative_overrides_enabled),
+            "narrative_synthesis_deep_calls": synthesis_deep_calls,
+            "narrative_synthesis_deep_errors": synthesis_deep_errors,
+            "narrative_synthesis_ran": synthesis_deep_calls > 0,
+        },
+        "local_gpu": local_gpu_status,
         "openai_usage": openai_usage,
         "vision_input_diagnostics": {
             "figure": figure_report.get("diagnostics", {}),
             "supplement": supp_report.get("diagnostics", {}),
         },
+        "multimodal_quality": multimodal_quality,
+        "prompt_budget_diagnostics": prompt_budget_diagnostics,
         "stage_model_usage": stage_usage_samples,
         "reconcile": reconcile_report.get("stats", {}),
         "information_retention_audit": information_retention_summary,
     }
+    diagnostics_payload["run_validity"] = build_run_validity(
+        summary_json=summary,
+        diagnostics=diagnostics_payload,
+        job_status="completed",
+        provider=settings.llm_provider_normalized,
+        require_source_provenance=False,
+    )
+    return diagnostics_payload
+
+
+def _build_prompt_budget_diagnostics(
+    *,
+    text_report: dict[str, Any],
+    table_report: dict[str, Any],
+    figure_report: dict[str, Any],
+    supp_report: dict[str, Any],
+) -> dict[str, Any]:
+    by_modality = {
+        "text": _prompt_budget_modality_block(text_report),
+        "table": _prompt_budget_modality_block(table_report),
+        "figure": _prompt_budget_modality_block(figure_report),
+        "supplement": _prompt_budget_modality_block(supp_report),
+    }
+    total_prompt_calls = sum(int(block.get("prompt_calls", 0) or 0) for block in by_modality.values())
+    total_prompt_chars = sum(int(block.get("total_prompt_chars", 0) or 0) for block in by_modality.values())
+    total_prompt_seconds = round(
+        sum(float(block.get("total_prompt_seconds", 0.0) or 0.0) for block in by_modality.values()),
+        4,
+    )
+    max_prompt_chars = max([int(block.get("max_prompt_chars", 0) or 0) for block in by_modality.values()] or [0])
+    max_prompt_seconds = max(
+        [float(block.get("max_prompt_seconds", 0.0) or 0.0) for block in by_modality.values()] or [0.0]
+    )
+    max_prompt_modality = ""
+    max_prompt_seconds_modality = ""
+    for modality, block in by_modality.items():
+        if int(block.get("max_prompt_chars", 0) or 0) == max_prompt_chars and max_prompt_chars:
+            max_prompt_modality = modality
+            break
+    for modality, block in by_modality.items():
+        if float(block.get("max_prompt_seconds", 0.0) or 0.0) == max_prompt_seconds and max_prompt_seconds:
+            max_prompt_seconds_modality = modality
+            break
+    totals = {
+        "prompt_calls": total_prompt_calls,
+        "total_prompt_chars": total_prompt_chars,
+        "total_prompt_seconds": total_prompt_seconds,
+        "max_prompt_chars": max_prompt_chars,
+        "max_prompt_modality": max_prompt_modality,
+        "max_prompt_seconds": round(max_prompt_seconds, 4),
+        "max_prompt_seconds_modality": max_prompt_seconds_modality,
+        "average_prompt_chars": round(total_prompt_chars / total_prompt_calls, 1) if total_prompt_calls else 0.0,
+        "average_prompt_seconds": round(total_prompt_seconds / total_prompt_calls, 4) if total_prompt_calls else 0.0,
+    }
+    return {
+        "by_modality": by_modality,
+        "totals": totals,
+        "quality_flags": _prompt_budget_quality_flags(by_modality, totals),
+    }
+
+
+def _prompt_budget_modality_block(report: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = report.get("diagnostics", {}) if isinstance(report, dict) else {}
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    prompt_chars = _int_list(
+        diagnostics.get("llm_prompt_chars")
+        or diagnostics.get("prompt_chars")
+        or ([diagnostics.get("text_prompt_chars")] if diagnostics.get("text_prompt_chars") is not None else [])
+    )
+    prompt_blocks = _int_list(
+        diagnostics.get("llm_prompt_blocks")
+        or diagnostics.get("prompt_blocks")
+        or ([diagnostics.get("text_prompt_blocks")] if diagnostics.get("text_prompt_blocks") is not None else [])
+    )
+    prompt_seconds = _float_list(
+        diagnostics.get("llm_batch_seconds")
+        or diagnostics.get("prompt_seconds")
+        or ([diagnostics.get("text_prompt_seconds")] if diagnostics.get("text_prompt_seconds") is not None else [])
+    )
+    prompt_calls = len(prompt_chars)
+    total_chars = sum(prompt_chars)
+    total_seconds = round(sum(prompt_seconds), 4)
+    max_seconds = max(prompt_seconds) if prompt_seconds else 0.0
+    return {
+        "prompt_calls": prompt_calls,
+        "prompt_chars": prompt_chars[:24],
+        "prompt_blocks": prompt_blocks[:24],
+        "prompt_seconds": prompt_seconds[:24],
+        "total_prompt_chars": total_chars,
+        "total_prompt_seconds": total_seconds,
+        "max_prompt_chars": max(prompt_chars) if prompt_chars else 0,
+        "max_prompt_seconds": round(max_seconds, 4),
+        "average_prompt_chars": round(total_chars / prompt_calls, 1) if prompt_calls else 0.0,
+        "average_prompt_seconds": round(total_seconds / prompt_calls, 4) if prompt_calls else 0.0,
+        "max_prompt_blocks": max(prompt_blocks) if prompt_blocks else 0,
+        "slowest_prompt_batch": _slowest_prompt_batch(diagnostics, max_seconds),
+    }
+
+
+def _prompt_budget_quality_flags(
+    by_modality: dict[str, dict[str, Any]],
+    totals: dict[str, Any],
+) -> list[str]:
+    flags: list[str] = []
+    if int(totals.get("prompt_calls", 0) or 0) >= 8:
+        flags.append("many_local_prompt_batches")
+    for modality, block in by_modality.items():
+        if int(block.get("max_prompt_chars", 0) or 0) >= 12000:
+            flags.append(f"{modality}_large_prompt")
+        if int(block.get("prompt_calls", 0) or 0) >= 6:
+            flags.append(f"{modality}_many_batches")
+        if float(block.get("max_prompt_seconds", 0.0) or 0.0) >= 120.0:
+            flags.append(f"{modality}_slow_prompt_call")
+    return flags
+
+
+def _build_multimodal_quality_summary(
+    *,
+    figure_report: dict[str, Any],
+    supp_report: dict[str, Any],
+) -> dict[str, Any]:
+    by_modality = {
+        "figure": _modality_quality_block(figure_report),
+        "supplement": _modality_quality_block(supp_report),
+    }
+    totals = {
+        "evidence_packets": sum(int(block.get("evidence_packets", 0) or 0) for block in by_modality.values()),
+        "vision_calls": sum(int(block.get("vision_calls", 0) or 0) for block in by_modality.values()),
+        "vision_failures": sum(int(block.get("vision_failures", 0) or 0) for block in by_modality.values()),
+        "caption_only_calls": sum(int(block.get("caption_only_calls", 0) or 0) for block in by_modality.values()),
+        "caption_first_skipped_vision": sum(
+            int(block.get("caption_first_skipped_vision", 0) or 0) for block in by_modality.values()
+        ),
+        "ocr_fallback_calls": sum(int(block.get("ocr_fallback_calls", 0) or 0) for block in by_modality.values()),
+        "missing_or_skipped_assets": sum(
+            int(block.get("missing_or_skipped_assets", 0) or 0) for block in by_modality.values()
+        ),
+    }
+    total_media_attempts = (
+        totals["vision_calls"]
+        + totals["caption_only_calls"]
+        + totals["caption_first_skipped_vision"]
+        + totals["ocr_fallback_calls"]
+    )
+    totals["ocr_dependency_rate"] = _rate(totals["ocr_fallback_calls"], total_media_attempts)
+    totals["vision_failure_rate"] = _rate(totals["vision_failures"], totals["vision_calls"])
+    return {
+        "by_modality": by_modality,
+        "totals": totals,
+        "quality_flags": _multimodal_quality_flags(by_modality, totals),
+    }
+
+
+def _modality_quality_block(report: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = report.get("diagnostics", {}) if isinstance(report, dict) else {}
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    skipped = _int_map(diagnostics.get("vision_skipped", {}))
+    raw_source_by_anchor = diagnostics.get("downstream_text_source_by_anchor", {})
+    source_by_anchor = (
+        {
+            str(anchor): str(source)
+            for anchor, source in raw_source_by_anchor.items()
+            if str(anchor)
+        }
+        if isinstance(raw_source_by_anchor, dict)
+        else {}
+    )
+    ocr_dependent_anchors = sorted(
+        anchor
+        for anchor, source in source_by_anchor.items()
+        if source in {"ocr_fallback", "caption_plus_ocr_fallback"}
+    )
+    caption_anchored = sorted(anchor for anchor, source in source_by_anchor.items() if source == "caption")
+    missing_text_anchors = sorted(anchor for anchor, source in source_by_anchor.items() if source == "missing")
+    return {
+        "evidence_packets": len(report.get("evidence_packets", [])) if isinstance(report, dict) else 0,
+        "vision_calls": int(diagnostics.get("vision_calls", 0) or 0),
+        "vision_success": int(diagnostics.get("vision_success", 0) or 0),
+        "vision_failures": int(diagnostics.get("vision_failures", 0) or 0),
+        "caption_only_calls": int(diagnostics.get("caption_only_calls", 0) or 0),
+        "caption_first_skipped_vision": int(diagnostics.get("caption_first_skipped_vision", 0) or 0),
+        "ocr_fallback_calls": int(diagnostics.get("ocr_fallback_calls", 0) or 0),
+        "downstream_text_sources": _int_map(diagnostics.get("downstream_text_sources", {})),
+        "vision_input_sources": _int_map(diagnostics.get("vision_input_sources", {})),
+        "skipped_assets": skipped,
+        "missing_or_skipped_assets": sum(skipped.values()),
+        "caption_anchored_count": len(caption_anchored),
+        "ocr_dependent_count": len(ocr_dependent_anchors),
+        "missing_text_count": len(missing_text_anchors),
+        "caption_anchored_anchors": caption_anchored[:12],
+        "ocr_dependent_anchors": ocr_dependent_anchors[:12],
+        "missing_text_anchors": missing_text_anchors[:12],
+        "ocr_dependency_rate": _rate(len(ocr_dependent_anchors), len(source_by_anchor)),
+        "vision_failure_rate": _rate(
+            int(diagnostics.get("vision_failures", 0) or 0),
+            int(diagnostics.get("vision_calls", 0) or 0),
+        ),
+    }
+
+
+def _multimodal_quality_flags(
+    by_modality: dict[str, dict[str, Any]],
+    totals: dict[str, Any],
+) -> list[str]:
+    flags: list[str] = []
+    if (
+        float(totals.get("vision_failure_rate", 0.0) or 0.0) >= 0.5
+        and int(totals.get("vision_calls", 0) or 0) > 0
+    ):
+        flags.append("high_vision_failure_rate")
+    if (
+        float(totals.get("ocr_dependency_rate", 0.0) or 0.0) >= 0.5
+        and int(totals.get("ocr_fallback_calls", 0) or 0) > 0
+    ):
+        flags.append("high_ocr_dependency")
+    if int(totals.get("missing_or_skipped_assets", 0) or 0) > 0:
+        flags.append("media_assets_skipped")
+    for modality, block in by_modality.items():
+        if int(block.get("evidence_packets", 0) or 0) == 0 and (
+            int(block.get("vision_calls", 0) or 0)
+            or int(block.get("caption_only_calls", 0) or 0)
+            or int(block.get("ocr_fallback_calls", 0) or 0)
+        ):
+            flags.append(f"{modality}_analysis_produced_no_evidence")
+    return flags
+
+
+def _int_map(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, raw in value.items():
+        try:
+            count = int(raw or 0)
+        except Exception:
+            continue
+        out[str(key)] = count
+    return out
+
+
+def _slowest_prompt_batch(diagnostics: dict[str, Any], max_seconds: float) -> dict[str, Any]:
+    if max_seconds <= 0:
+        return {}
+    raw_details = diagnostics.get("llm_batch_details")
+    if not isinstance(raw_details, list):
+        return {}
+    for detail in raw_details:
+        if not isinstance(detail, dict):
+            continue
+        try:
+            duration = float(detail.get("duration_seconds", 0.0) or 0.0)
+        except Exception:
+            continue
+        if round(duration, 4) != round(max_seconds, 4):
+            continue
+        return {
+            key: value
+            for key, value in {
+                "batch_index": detail.get("batch_index"),
+                "duration_seconds": round(duration, 4),
+                "prompt_chars": detail.get("prompt_chars"),
+                "prompt_blocks": detail.get("prompt_blocks"),
+                "first_anchor": detail.get("first_anchor"),
+                "last_anchor": detail.get("last_anchor"),
+            }.items()
+            if value not in {None, "", 0, 0.0}
+        }
+    return {}
+
+
+def _int_list(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        value = [value] if value is not None else []
+    out: list[int] = []
+    for raw in value:
+        try:
+            count = int(float(raw or 0))
+        except Exception:
+            continue
+        if count >= 0:
+            out.append(count)
+    return out
+
+
+def _float_list(value: Any) -> list[float]:
+    if not isinstance(value, list):
+        value = [value] if value is not None else []
+    out: list[float] = []
+    for raw in value:
+        try:
+            count = float(raw or 0.0)
+        except Exception:
+            continue
+        if count >= 0.0:
+            out.append(round(count, 4))
+    return out
+
+
+def _rate(numerator: int | float, denominator: int | float) -> float:
+    try:
+        denom = float(denominator)
+        if denom <= 0:
+            return 0.0
+        return round(float(numerator) / denom, 4)
+    except Exception:
+        return 0.0
 
 
 def _analysis_trace(step: str) -> None:
@@ -414,10 +834,285 @@ def _analysis_trace(step: str) -> None:
         return
 
 
+def _stable_json_hash(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _file_hash(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def _analysis_source_hashes() -> dict[str, str]:
+    source_files = {
+        "text_analysis": Path(analyze_text.__code__.co_filename),
+        "prompts": Path(__file__).with_name("prompts.py"),
+        "utils": Path(__file__).with_name("utils.py"),
+    }
+    return {key: _file_hash(path) for key, path in source_files.items()}
+
+
+def _local_text_analysis_settings_signature() -> dict[str, Any]:
+    return {
+        "cache_version": LOCAL_TEXT_ANALYSIS_CACHE_VERSION,
+        "llm_provider": settings.llm_provider_normalized,
+        "llm_text_model_path": str(settings.llm_text_model_path or ""),
+        "llm_text_chat_format": str(settings.llm_text_chat_format or ""),
+        "llm_n_ctx": int(settings.llm_n_ctx),
+        "llm_n_threads": int(settings.llm_n_threads),
+        "llm_n_batch": int(settings.llm_n_batch),
+        "llm_n_gpu_layers": int(settings.llm_n_gpu_layers),
+        "llm_text_max_tokens": int(settings.llm_text_max_tokens),
+        "analysis_text_llm_enabled": bool(settings.analysis_text_llm_enabled),
+        "analysis_max_text_chars": int(settings.analysis_max_text_chars),
+        "analysis_text_llm_batch_max_chars": int(settings.analysis_text_llm_batch_max_chars),
+        "analysis_local_text_llm_batch_max_chars": int(settings.analysis_local_text_llm_batch_max_chars),
+        "analysis_local_text_preselection_enabled": bool(settings.analysis_local_text_preselection_enabled),
+        "analysis_local_text_preselection_max_chunks": int(settings.analysis_local_text_preselection_max_chunks),
+        "analysis_local_text_preselection_min_chunks_per_section": int(
+            settings.analysis_local_text_preselection_min_chunks_per_section
+        ),
+        "source_hashes": _analysis_source_hashes(),
+    }
+
+
+def _local_text_analysis_cache_signature(chunks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not bool(settings.analysis_local_text_cache_enabled):
+        return None
+    if settings.llm_provider_normalized != "local":
+        return None
+    if not bool(settings.analysis_text_llm_enabled):
+        return None
+    return {
+        "schema_version": 1,
+        "settings": _local_text_analysis_settings_signature(),
+        "chunks_hash": _stable_json_hash(chunks),
+        "chunk_count": len(chunks),
+    }
+
+
+def _local_text_analysis_cache_path(document_id: int) -> Path:
+    return artifacts_dir(document_id) / LOCAL_TEXT_ANALYSIS_CACHE_FILE
+
+
+def _local_text_analysis_global_cache_path(signature: dict[str, Any]) -> Path:
+    digest = _stable_json_hash(signature)
+    return settings.data_dir / LOCAL_TEXT_ANALYSIS_GLOBAL_CACHE_DIR / f"{digest}.json"
+
+
+def _local_text_analysis_cache_read_paths(
+    document_id: int,
+    signature: dict[str, Any],
+) -> list[tuple[str, Path]]:
+    paths = [("document", _local_text_analysis_cache_path(document_id))]
+    if bool(settings.analysis_local_text_global_cache_enabled):
+        paths.append(("global", _local_text_analysis_global_cache_path(signature)))
+    return paths
+
+
+def _maybe_read_local_text_analysis_cache(
+    document_id: int,
+    chunks: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any], str, list[dict[str, Any]]]:
+    signature = _local_text_analysis_cache_signature(chunks)
+    if not signature:
+        return None, _empty_usage_payload(), "", []
+    decisions: list[dict[str, Any]] = []
+    for source, path in _local_text_analysis_cache_read_paths(document_id, signature):
+        cached, decision = _read_local_text_analysis_cache_payload(path, signature, chunks, source=source)
+        if decision:
+            decisions.append(decision)
+        if cached is not None:
+            return cached, _empty_usage_payload(), "", decisions
+    return None, _empty_usage_payload(), "", decisions
+
+
+def _read_local_text_analysis_cache_payload(
+    path: Path,
+    signature: dict[str, Any],
+    chunks: list[dict[str, Any]],
+    *,
+    source: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not path.exists():
+        return None, None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, {"source": source, "status": "read_failed", "cache_version": LOCAL_TEXT_ANALYSIS_CACHE_VERSION}
+    if not isinstance(parsed, dict) or parsed.get("signature") != signature:
+        return None, {
+            "source": source,
+            "status": "signature_mismatch",
+            "cache_version": LOCAL_TEXT_ANALYSIS_CACHE_VERSION,
+        }
+    report = parsed.get("report")
+    if not isinstance(report, dict):
+        return None, {"source": source, "status": "invalid_payload", "cache_version": LOCAL_TEXT_ANALYSIS_CACHE_VERSION}
+    cache_quality = _local_text_analysis_cache_quality(report)
+    if not bool(cache_quality.get("accepted")):
+        return None, {
+            "source": source,
+            "status": "rejected_quality",
+            "cache_version": LOCAL_TEXT_ANALYSIS_CACHE_VERSION,
+            "quality": cache_quality,
+        }
+    diagnostics = report.setdefault("diagnostics", {})
+    if isinstance(diagnostics, dict):
+        cached_prompt_diagnostics = {
+            key: diagnostics.get(key)
+            for key in (
+                "llm_batches",
+                "llm_prompt_chars",
+                "llm_prompt_blocks",
+                "llm_batch_seconds",
+                "llm_batch_details",
+                "llm_input_chunks",
+            )
+            if key in diagnostics
+        }
+        diagnostics["llm_batches"] = 0
+        diagnostics["llm_prompt_chars"] = []
+        diagnostics["llm_prompt_blocks"] = []
+        diagnostics["llm_batch_seconds"] = []
+        diagnostics["llm_batch_details"] = []
+        diagnostics["local_text_analysis_cache"] = {
+            "hit": True,
+            "source": source,
+            "cache_version": LOCAL_TEXT_ANALYSIS_CACHE_VERSION,
+            "chunk_count": len(chunks),
+            "quality": cache_quality,
+            "cached_prompt_diagnostics": cached_prompt_diagnostics,
+        }
+    return report, {
+        "source": source,
+        "status": "accepted",
+        "cache_version": LOCAL_TEXT_ANALYSIS_CACHE_VERSION,
+        "quality": cache_quality,
+    }
+
+
+def _local_text_analysis_cache_quality(report: dict[str, Any]) -> dict[str, Any]:
+    packets = report.get("evidence_packets") if isinstance(report.get("evidence_packets"), list) else []
+    packet_count = len([packet for packet in packets if isinstance(packet, dict)])
+    section_labels: set[str] = set()
+    missing_evidence = 0
+    for packet in packets:
+        if not isinstance(packet, dict):
+            continue
+        section = str(packet.get("section_label") or packet.get("section") or "").strip().lower()
+        if section and section != "unknown":
+            section_labels.add(section)
+        for ref in packet.get("evidence_refs", []) if isinstance(packet.get("evidence_refs"), list) else []:
+            section_from_ref = _local_text_analysis_section_from_ref(ref)
+            if section_from_ref:
+                section_labels.add(section_from_ref)
+        flags = packet.get("quality_flags")
+        if isinstance(flags, list) and any(str(flag).strip().lower() == "missing_evidence" for flag in flags):
+            missing_evidence += 1
+    try:
+        min_packets = max(0, int(settings.analysis_local_text_cache_min_packets or 0))
+    except Exception:
+        min_packets = 8
+    try:
+        min_sections = max(0, int(settings.analysis_local_text_cache_min_sections or 0))
+    except Exception:
+        min_sections = 3
+    try:
+        max_missing_rate = max(0.0, min(float(settings.analysis_local_text_cache_max_missing_evidence_rate), 1.0))
+    except Exception:
+        max_missing_rate = 0.25
+    missing_rate = (missing_evidence / packet_count) if packet_count else 1.0
+    reject_reasons: list[str] = []
+    if packet_count < min_packets:
+        reject_reasons.append("too_few_packets")
+    if len(section_labels) < min_sections:
+        reject_reasons.append("too_few_sections")
+    if missing_rate > max_missing_rate:
+        reject_reasons.append("missing_evidence_rate_high")
+    return {
+        "accepted": not reject_reasons,
+        "reject_reasons": reject_reasons,
+        "packet_count": packet_count,
+        "section_count": len(section_labels),
+        "sections": sorted(section_labels),
+        "missing_evidence_rate": round(missing_rate, 3),
+        "thresholds": {
+            "min_packets": min_packets,
+            "min_sections": min_sections,
+            "max_missing_evidence_rate": max_missing_rate,
+        },
+    }
+
+
+def _local_text_analysis_section_from_ref(ref: Any) -> str:
+    value = str(ref or "").strip().lower()
+    if not value.startswith("section:"):
+        return ""
+    parts = value.split(":", 2)
+    if len(parts) < 2:
+        return ""
+    section = parts[1].strip().lower()
+    section_aliases = {
+        "background": "introduction",
+        "intro": "introduction",
+        "method": "methods",
+        "materials and methods": "methods",
+        "findings": "results",
+        "result": "results",
+        "interpretation": "discussion",
+        "conclusions": "conclusion",
+    }
+    section = section_aliases.get(section, section)
+    if section in {"introduction", "methods", "results", "discussion", "conclusion"}:
+        return section
+    return ""
+
+
+def _write_local_text_analysis_cache(
+    document_id: int,
+    chunks: list[dict[str, Any]],
+    report: dict[str, Any],
+) -> None:
+    signature = _local_text_analysis_cache_signature(chunks)
+    if not signature or not isinstance(report, dict):
+        return
+    try:
+        json.dumps(report, sort_keys=True, default=str)
+    except Exception:
+        return
+    payload = {
+        "schema_version": 1,
+        "created_at": utc_timestamp(),
+        "signature": signature,
+        "report": report,
+    }
+    try:
+        path = _local_text_analysis_cache_path(document_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, default=str), encoding="utf-8")
+    except Exception:
+        pass
+    if bool(settings.analysis_local_text_global_cache_enabled):
+        try:
+            global_path = _local_text_analysis_global_cache_path(signature)
+            global_path.parent.mkdir(parents=True, exist_ok=True)
+            global_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, default=str), encoding="utf-8")
+        except Exception:
+            return
+
+
 def _modalities_can_run_parallel() -> bool:
+    provider_allows_parallel = (
+        settings.llm_provider_normalized == "openai"
+        or bool(settings.analysis_local_evidence_first_active)
+    )
     return bool(
         settings.analysis_parallel_modalities_enabled
-        and settings.llm_provider_normalized == "openai"
+        and provider_allows_parallel
         and settings.analysis_text_subprocess_guard_enabled
         and settings.analysis_modality_subprocess_guard_enabled
         and int(settings.analysis_parallel_modality_workers or 0) > 1
@@ -443,19 +1138,58 @@ def _snapshot_counter_delta(before: dict[str, Any], after: dict[str, Any]) -> di
     text_seconds = max(0.0, _read_float(after, "text_total_seconds") - _read_float(before, "text_total_seconds"))
     deep_seconds = max(0.0, _read_float(after, "deep_total_seconds") - _read_float(before, "deep_total_seconds"))
     vision_seconds = max(0.0, _read_float(after, "vision_total_seconds") - _read_float(before, "vision_total_seconds"))
+    text_load_seconds = max(
+        0.0,
+        _read_float(after, "text_model_load_seconds") - _read_float(before, "text_model_load_seconds"),
+    )
+    deep_load_seconds = max(
+        0.0,
+        _read_float(after, "deep_model_load_seconds") - _read_float(before, "deep_model_load_seconds"),
+    )
+    vision_load_seconds = max(
+        0.0,
+        _read_float(after, "vision_model_load_seconds") - _read_float(before, "vision_model_load_seconds"),
+    )
     return {
         "text_calls": text_calls,
         "text_errors": max(0, _read_int(after, "text_errors") - _read_int(before, "text_errors")),
         "text_total_seconds": round(text_seconds, 4),
         "text_avg_seconds": round((text_seconds / text_calls), 4) if text_calls else 0.0,
+        "text_model_load_calls": max(
+            0,
+            _read_int(after, "text_model_load_calls") - _read_int(before, "text_model_load_calls"),
+        ),
+        "text_model_load_errors": max(
+            0,
+            _read_int(after, "text_model_load_errors") - _read_int(before, "text_model_load_errors"),
+        ),
+        "text_model_load_seconds": round(text_load_seconds, 4),
         "deep_calls": deep_calls,
         "deep_errors": max(0, _read_int(after, "deep_errors") - _read_int(before, "deep_errors")),
         "deep_total_seconds": round(deep_seconds, 4),
         "deep_avg_seconds": round((deep_seconds / deep_calls), 4) if deep_calls else 0.0,
+        "deep_model_load_calls": max(
+            0,
+            _read_int(after, "deep_model_load_calls") - _read_int(before, "deep_model_load_calls"),
+        ),
+        "deep_model_load_errors": max(
+            0,
+            _read_int(after, "deep_model_load_errors") - _read_int(before, "deep_model_load_errors"),
+        ),
+        "deep_model_load_seconds": round(deep_load_seconds, 4),
         "vision_calls": vision_calls,
         "vision_errors": max(0, _read_int(after, "vision_errors") - _read_int(before, "vision_errors")),
         "vision_total_seconds": round(vision_seconds, 4),
         "vision_avg_seconds": round((vision_seconds / vision_calls), 4) if vision_calls else 0.0,
+        "vision_model_load_calls": max(
+            0,
+            _read_int(after, "vision_model_load_calls") - _read_int(before, "vision_model_load_calls"),
+        ),
+        "vision_model_load_errors": max(
+            0,
+            _read_int(after, "vision_model_load_errors") - _read_int(before, "vision_model_load_errors"),
+        ),
+        "vision_model_load_seconds": round(vision_load_seconds, 4),
     }
 
 
@@ -465,25 +1199,48 @@ def _merge_usage_counts(usages: list[dict[str, Any]]) -> dict[str, Any]:
         "text_errors": 0,
         "text_total_seconds": 0.0,
         "text_avg_seconds": 0.0,
+        "text_model_load_calls": 0,
+        "text_model_load_errors": 0,
+        "text_model_load_seconds": 0.0,
         "deep_calls": 0,
         "deep_errors": 0,
         "deep_total_seconds": 0.0,
         "deep_avg_seconds": 0.0,
+        "deep_model_load_calls": 0,
+        "deep_model_load_errors": 0,
+        "deep_model_load_seconds": 0.0,
         "vision_calls": 0,
         "vision_errors": 0,
         "vision_total_seconds": 0.0,
         "vision_avg_seconds": 0.0,
+        "vision_model_load_calls": 0,
+        "vision_model_load_errors": 0,
+        "vision_model_load_seconds": 0.0,
     }
+    execution_attempts: list[dict[str, Any]] = []
     for usage in usages:
         if not isinstance(usage, dict):
             continue
+        execution = usage.get("execution")
+        if isinstance(execution, dict):
+            execution_attempts.append(execution)
+        raw_attempts = usage.get("execution_attempts")
+        if isinstance(raw_attempts, list):
+            execution_attempts.extend(attempt for attempt in raw_attempts if isinstance(attempt, dict))
         for key in total:
             current = usage.get(key, 0)
             try:
                 total[key] = float(total[key]) + float(current)
             except Exception:
                 total[key] = float(total[key])
-    for key in ("text_total_seconds", "deep_total_seconds", "vision_total_seconds"):
+    for key in (
+        "text_total_seconds",
+        "deep_total_seconds",
+        "vision_total_seconds",
+        "text_model_load_seconds",
+        "deep_model_load_seconds",
+        "vision_model_load_seconds",
+    ):
         total[key] = round(float(total[key]), 4)
     text_calls = float(total.get("text_calls", 0) or 0)
     deep_calls = float(total.get("deep_calls", 0) or 0)
@@ -491,7 +1248,38 @@ def _merge_usage_counts(usages: list[dict[str, Any]]) -> dict[str, Any]:
     total["text_avg_seconds"] = round(float(total["text_total_seconds"]) / text_calls, 4) if text_calls else 0.0
     total["deep_avg_seconds"] = round(float(total["deep_total_seconds"]) / deep_calls, 4) if deep_calls else 0.0
     total["vision_avg_seconds"] = round(float(total["vision_total_seconds"]) / vision_calls, 4) if vision_calls else 0.0
+    if execution_attempts:
+        total["execution_attempts"] = execution_attempts
     return total
+
+
+def _merge_synthesis_report_usage(usage: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(usage) if isinstance(usage, dict) else _empty_usage_payload()
+    section_diagnostics = summary.get("section_diagnostics") if isinstance(summary.get("section_diagnostics"), dict) else {}
+    narrative_usage = (
+        section_diagnostics.get("narrative_synthesis_usage")
+        if isinstance(section_diagnostics.get("narrative_synthesis_usage"), dict)
+        else {}
+    )
+    if not narrative_usage:
+        return merged
+
+    def _number(payload: dict[str, Any], key: str) -> float:
+        try:
+            return float(payload.get(key, 0) or 0)
+        except Exception:
+            return 0.0
+
+    for key in ("deep_calls", "deep_errors", "deep_total_seconds"):
+        existing = _number(merged, key)
+        observed = _number(narrative_usage, key)
+        if existing <= 0 and observed > 0:
+            merged[key] = int(observed) if key != "deep_total_seconds" else round(observed, 4)
+    deep_calls = _number(merged, "deep_calls")
+    deep_seconds = _number(merged, "deep_total_seconds")
+    merged["deep_avg_seconds"] = round(deep_seconds / deep_calls, 4) if deep_calls else 0.0
+    merged["narrative_synthesis_usage"] = narrative_usage
+    return merged
 
 
 def _aggregate_section_confidence_distribution(sections_payload: Any) -> dict[str, Any]:
@@ -639,14 +1427,23 @@ def _empty_usage_payload() -> dict[str, Any]:
         "text_errors": 0,
         "text_total_seconds": 0.0,
         "text_avg_seconds": 0.0,
+        "text_model_load_calls": 0,
+        "text_model_load_errors": 0,
+        "text_model_load_seconds": 0.0,
         "deep_calls": 0,
         "deep_errors": 0,
         "deep_total_seconds": 0.0,
         "deep_avg_seconds": 0.0,
+        "deep_model_load_calls": 0,
+        "deep_model_load_errors": 0,
+        "deep_model_load_seconds": 0.0,
         "vision_calls": 0,
         "vision_errors": 0,
         "vision_total_seconds": 0.0,
         "vision_avg_seconds": 0.0,
+        "vision_model_load_calls": 0,
+        "vision_model_load_errors": 0,
+        "vision_model_load_seconds": 0.0,
     }
 
 
@@ -696,8 +1493,10 @@ def _run_analysis_subprocess(
     context = mp.get_context("spawn")
     out_queue = context.Queue(maxsize=1)
     proc = context.Process(target=_analysis_worker, args=(kind, chunks, out_queue, job_id, document_id))
+    started = monotonic()
     proc.start()
     proc.join(timeout_seconds)
+    elapsed_seconds = monotonic() - started
 
     timed_out = proc.is_alive()
     if timed_out:
@@ -711,11 +1510,13 @@ def _run_analysis_subprocess(
         )
 
     payload: dict[str, Any] = {}
+    payload_received = False
     if not timed_out and int(proc.exitcode or 0) == 0:
         try:
             maybe_payload = out_queue.get_nowait()
             if isinstance(maybe_payload, dict):
                 payload = maybe_payload
+                payload_received = True
         except QueueEmpty:
             payload = {}
         except Exception:
@@ -724,6 +1525,20 @@ def _run_analysis_subprocess(
     usage = payload.get("model_usage", {})
     if not isinstance(usage, dict):
         usage = {}
+    usage = {
+        **usage,
+        "execution": _subprocess_execution_diagnostics(
+            kind=kind,
+            chunk_count=len(chunks),
+            timeout_seconds=timeout_seconds,
+            elapsed_seconds=elapsed_seconds,
+            timed_out=timed_out,
+            exitcode=int(proc.exitcode or 0),
+            payload_received=payload_received,
+            ok=bool(payload.get("ok")),
+            error=payload.get("error"),
+        ),
+    }
 
     if payload.get("ok") and isinstance(payload.get("report"), dict):
         return payload["report"], usage, ""
@@ -732,6 +1547,34 @@ def _run_analysis_subprocess(
     if payload.get("error"):
         fail_reason = f"{fail_reason}; {payload.get('error')}"
     return {}, usage, fail_reason
+
+
+def _subprocess_execution_diagnostics(
+    *,
+    kind: str,
+    chunk_count: int,
+    timeout_seconds: int,
+    elapsed_seconds: float,
+    timed_out: bool,
+    exitcode: int,
+    payload_received: bool,
+    ok: bool,
+    error: Any = None,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "mode": "subprocess_guard",
+        "kind": str(kind or "").strip().lower(),
+        "chunk_count": int(chunk_count),
+        "timeout_seconds": int(timeout_seconds),
+        "elapsed_seconds": round(float(elapsed_seconds or 0.0), 4),
+        "timed_out": bool(timed_out),
+        "exitcode": int(exitcode),
+        "payload_received": bool(payload_received),
+        "ok": bool(ok),
+    }
+    if error:
+        diagnostics["error"] = str(error)
+    return diagnostics
 
 
 def _empty_modality_report(kind: str, fail_reason: str) -> dict[str, Any]:
@@ -758,7 +1601,10 @@ def _analyze_text_guarded(
         report, usage = _run_analysis_sync(analyze_text, chunks, stage="text", job_id=job_id, document_id=document_id)
         return report, usage, ""
 
-    timeout_seconds = max(15, int(settings.analysis_text_subprocess_timeout_sec or 0))
+    if settings.llm_provider_normalized == "openai":
+        timeout_seconds = max(15, int(settings.analysis_text_subprocess_timeout_sec or 0))
+    else:
+        timeout_seconds = max(15, int(settings.analysis_local_text_subprocess_timeout_sec or 0))
     report, usage, fail_reason = _run_analysis_subprocess(
         "text",
         chunks,
@@ -771,7 +1617,13 @@ def _analyze_text_guarded(
 
     retry_usage: dict[str, Any] = {}
     retry_fail_reason = ""
-    if "timeout" in str(fail_reason or "").lower():
+    if (
+        "timeout" in str(fail_reason or "").lower()
+        and (
+            settings.llm_provider_normalized == "openai"
+            or bool(settings.analysis_local_text_subprocess_retry_enabled)
+        )
+    ):
         retry_timeout_seconds = max(timeout_seconds + 180, timeout_seconds * 2)
         retry_report, retry_usage, retry_fail_reason = _run_analysis_subprocess(
             "text",
@@ -824,6 +1676,11 @@ def _analyze_tables_guarded(
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     if not chunks:
         return {"findings": [], "results": [], "evidence_packets": []}, _empty_usage_payload(), ""
+    if not settings.effective_analysis_nontext_stage_enabled:
+        return _empty_modality_report("table", "non-text llm disabled"), _empty_usage_payload(), ""
+    if settings.analysis_local_evidence_first_active:
+        report, usage = _run_analysis_sync(analyze_tables, chunks, stage="table", job_id=job_id, document_id=document_id)
+        return report, usage, "local_evidence_first"
     if not settings.effective_analysis_nontext_llm_enabled:
         return _empty_modality_report("table", "non-text llm disabled"), _empty_usage_payload(), ""
     if not settings.analysis_modality_subprocess_guard_enabled:
@@ -855,6 +1712,11 @@ def _analyze_figures_guarded(
             "evidence_packets": [],
             "diagnostics": {},
         }, _empty_usage_payload(), ""
+    if not settings.effective_analysis_nontext_stage_enabled:
+        return _empty_modality_report("figure", "non-text llm disabled"), _empty_usage_payload(), ""
+    if settings.analysis_local_evidence_first_active:
+        report, usage = _run_analysis_sync(analyze_figures, chunks, stage="figure", job_id=job_id, document_id=document_id)
+        return report, usage, "local_evidence_first"
     if not settings.effective_analysis_nontext_llm_enabled:
         return _empty_modality_report("figure", "non-text llm disabled"), _empty_usage_payload(), ""
     if not settings.analysis_modality_subprocess_guard_enabled:
@@ -886,6 +1748,17 @@ def _analyze_supplements_guarded(
             "evidence_packets": [],
             "diagnostics": {},
         }, _empty_usage_payload(), ""
+    if not settings.effective_analysis_nontext_stage_enabled:
+        return _empty_modality_report("supplement", "non-text llm disabled"), _empty_usage_payload(), ""
+    if settings.analysis_local_evidence_first_active:
+        report, usage = _run_analysis_sync(
+            analyze_supplements,
+            chunks,
+            stage="supplement",
+            job_id=job_id,
+            document_id=document_id,
+        )
+        return report, usage, "local_evidence_first"
     if not settings.effective_analysis_nontext_llm_enabled:
         return _empty_modality_report("supplement", "non-text llm disabled"), _empty_usage_payload(), ""
     if not settings.analysis_modality_subprocess_guard_enabled:
@@ -917,6 +1790,32 @@ def _emit_progress(progress_callback: Callable[[float, str], None] | None, progr
         progress_callback(progress, message)
     except Exception:
         return
+
+
+def _modality_heartbeat_message(active_stages: list[str], *, elapsed_seconds: float) -> str:
+    active = ", ".join(sorted({str(stage) for stage in active_stages if str(stage).strip()}))
+    if not active:
+        active = "modality"
+    elapsed_minutes = max(1, int(elapsed_seconds // 60))
+    return f"Still analyzing {active} with local model/runtime ({elapsed_minutes} min elapsed)"
+
+
+def _modality_stage_heartbeat_progress(
+    start_progress: float,
+    next_progress: float,
+    *,
+    elapsed_seconds: float,
+) -> float:
+    start = max(0.0, min(float(start_progress or 0.0), 1.0))
+    next_stage = max(start, min(float(next_progress or start), 1.0))
+    if next_stage <= start:
+        return start
+    reserved_end = max(start, next_stage - 0.01)
+    stage_span = max(0.0, reserved_end - start)
+    if stage_span <= 0:
+        return start
+    elapsed_fraction = min(0.85, max(0.0, float(elapsed_seconds or 0.0)) / 600.0)
+    return round(start + (stage_span * elapsed_fraction), 4)
 
 
 def _chunk_to_dict(chunk: Chunk, asset_kind: dict[int, str], document_source_url: str = "") -> dict[str, Any]:

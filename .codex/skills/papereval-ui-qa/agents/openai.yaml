@@ -1,0 +1,4 @@
+interface:
+  display_name: "PaperEval UI QA"
+  short_description: "Review PaperEval desktop/web UI behavior, layout, accessibility, and error states."
+  default_prompt: "Run PaperEval UI QA with static checks and, if the app is open, Computer Use or browser inspection for core workflow UX."

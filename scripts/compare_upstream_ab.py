@@ -30,6 +30,17 @@ SECTION_KEYS = ["introduction", "methods", "results", "discussion", "conclusion"
 EXPLICIT_SECTION_SOURCES = {"heading", "anchor", "structured_abstract", "meta"}
 OCR_ARTIFACT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]|(?:\b[a-z]{12,}\b)|(?:\d+\s+[46]\s+\d+)")
 GENERIC_CAPTION_RE = re.compile(r"^\s*(?:fig(?:ure)?\.?\s*)?\d+[a-z]?\s*$", re.IGNORECASE)
+UPSTREAM_AB_REGRESSION_THRESHOLDS = {
+    "section_boundary_ledger_mean_wrong_section_rate_max": 0.24,
+    "section_boundary_ledger_document_wrong_section_rate_max": 0.40,
+    "clean_caption_first_mean_artifact_text_rate_max": 0.46,
+}
+MEDIA_RECALL_KEYS = (
+    "figure_ref_recall",
+    "table_ref_recall",
+    "supplementary_figure_ref_recall",
+    "supplementary_table_ref_recall",
+)
 
 
 def main() -> None:
@@ -669,6 +680,14 @@ def _media_metrics(chunks: list[dict[str, Any]], *, mode: str) -> dict[str, Any]
         "extracted_table_ids": sorted(table_ids),
         "table_ref_recall": round(len(matched_tables) / len(table_refs_expected), 3) if table_refs_expected else 1.0,
         "missing_table_refs": sorted(table_refs_expected - table_ids),
+        "supplementary_figure_ref_recall": _ref_recall(
+            {ref for ref in figure_refs_expected if ref.startswith("S")},
+            {ref for ref in figure_ids if ref.startswith("S")},
+        ),
+        "supplementary_table_ref_recall": _ref_recall(
+            {ref for ref in table_refs_expected if ref.startswith("S")},
+            {ref for ref in table_ids if ref.startswith("S")},
+        ),
         "caption_nonempty_rate": round(captions / len(figures), 3) if figures else 0.0,
         "usable_figure_rate": round(usable / len(figures), 3) if figures else 0.0,
         "artifact_text_count": artifact_rows,
@@ -676,6 +695,62 @@ def _media_metrics(chunks: list[dict[str, Any]], *, mode: str) -> dict[str, Any]
         "total_downstream_text_chars": total_downstream_chars,
         "mean_downstream_text_chars": round(total_downstream_chars / len(figures), 1) if figures else 0.0,
     }
+
+
+def evaluate_regression_thresholds(
+    payload: dict[str, Any],
+    thresholds: dict[str, float] | None = None,
+) -> list[str]:
+    limits = dict(UPSTREAM_AB_REGRESSION_THRESHOLDS)
+    if thresholds:
+        limits.update(thresholds)
+
+    failures: list[str] = []
+    aggregate = payload.get("aggregate", {}) if isinstance(payload.get("aggregate"), dict) else {}
+    section_variants = aggregate.get("section_variants", {}) if aggregate else payload.get("variants", {})
+    media_variants = aggregate.get("media_variants", {}) if aggregate else payload.get("media_variants", {})
+
+    ledger_metrics = section_variants.get("section_boundary_ledger", {})
+    ledger_parsed = ledger_metrics.get("parsed_chunks", ledger_metrics) if isinstance(ledger_metrics, dict) else {}
+    ledger_rate_key = "mean_wrong_section_rate" if aggregate else "wrong_section_rate"
+    ledger_rate = _optional_float(ledger_parsed.get(ledger_rate_key))
+    ledger_max = limits["section_boundary_ledger_mean_wrong_section_rate_max"]
+    if ledger_rate is None:
+        failures.append("section_boundary_ledger wrong_section_rate metric is missing")
+    elif ledger_rate > ledger_max:
+        failures.append(f"section_boundary_ledger wrong_section_rate {ledger_rate:.3f} > {ledger_max:.3f}")
+
+    per_doc_max = limits["section_boundary_ledger_document_wrong_section_rate_max"]
+    for row in payload.get("documents", []) if isinstance(payload.get("documents"), list) else []:
+        parsed = (
+            row.get("variants", {})
+            .get("section_boundary_ledger", {})
+            .get("parsed_chunks", {})
+        )
+        doc_rate = _optional_float(parsed.get("wrong_section_rate"))
+        if doc_rate is not None and doc_rate > per_doc_max:
+            failures.append(
+                f"document {row.get('document_id')} section_boundary_ledger wrong_section_rate "
+                f"{doc_rate:.3f} > {per_doc_max:.3f}"
+            )
+
+    clean_media = media_variants.get("clean_caption_first", {})
+    for key in MEDIA_RECALL_KEYS:
+        aggregate_key = f"mean_{key}"
+        if aggregate and aggregate_key not in clean_media:
+            failures.append(f"clean_caption_first {aggregate_key} metric is missing")
+        elif not aggregate and key not in clean_media:
+            failures.append(f"clean_caption_first {key} metric is missing")
+
+    artifact_key = "mean_artifact_text_rate" if aggregate else "artifact_text_rate"
+    artifact_rate = _optional_float(clean_media.get(artifact_key))
+    artifact_max = limits["clean_caption_first_mean_artifact_text_rate_max"]
+    if artifact_rate is None:
+        failures.append(f"clean_caption_first {artifact_key} metric is missing")
+    elif artifact_rate > artifact_max:
+        failures.append(f"clean_caption_first artifact_text_rate {artifact_rate:.3f} > {artifact_max:.3f}")
+
+    return failures
 
 
 def _comparison_delta(variant_metrics: dict[str, Any], media_metrics: dict[str, Any]) -> dict[str, Any]:
@@ -737,6 +812,8 @@ def _render_markdown(payload: dict[str, Any]) -> str:
             "- "
             f"{name}: figure_recall={metrics.get('figure_ref_recall')}, "
             f"table_recall={metrics.get('table_ref_recall')}, "
+            f"supp_figure_recall={metrics.get('supplementary_figure_ref_recall')}, "
+            f"supp_table_recall={metrics.get('supplementary_table_ref_recall')}, "
             f"usable_figures={metrics.get('usable_figure_rate')}, "
             f"artifact_rate={metrics.get('artifact_text_rate')}, "
             f"mean_chars={metrics.get('mean_downstream_text_chars')}, "
@@ -821,6 +898,10 @@ def _normalize_ref_token(value: Any) -> str:
     return str(int(re.sub(r"[^0-9]", "", token) or 0))
 
 
+def _ref_recall(expected: set[str], extracted: set[str]) -> float:
+    return round(len(expected & extracted) / len(expected), 3) if expected else 1.0
+
+
 def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
@@ -851,6 +932,13 @@ def _float(value: Any, *, default: float) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 if __name__ == "__main__":

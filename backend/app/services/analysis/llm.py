@@ -14,6 +14,7 @@ from typing import Any, Iterable
 import httpx
 
 from app.core.config import settings
+from app.services.local_gpu import ensure_local_metal_device_env, local_llama_runtime_blocked_reason
 from app.services.analysis.openai_usage import (
     estimate_input_tokens,
     record_openai_result,
@@ -45,6 +46,11 @@ def snapshot_model_usage_counters() -> dict[str, int | float | str]:
             "deep": round(deep_seconds, 4),
             "vision": round(vision_seconds, 4),
         }
+        load_seconds = {
+            "text": round(float(_usage_durations.get("text_model_load_seconds", 0.0)), 4),
+            "deep": round(float(_usage_durations.get("deep_model_load_seconds", 0.0)), 4),
+            "vision": round(float(_usage_durations.get("vision_model_load_seconds", 0.0)), 4),
+        }
         slowest_model = max(timing_seconds, key=timing_seconds.get)
         slowest_seconds = float(timing_seconds[slowest_model])
         if slowest_seconds <= 0.0:
@@ -54,14 +60,23 @@ def snapshot_model_usage_counters() -> dict[str, int | float | str]:
             "text_errors": int(_usage_counts.get("text_errors", 0)),
             "text_total_seconds": timing_seconds["text"],
             "text_avg_seconds": round(text_seconds / text_calls, 4) if text_calls else 0.0,
+            "text_model_load_calls": int(_usage_counts.get("text_model_load_calls", 0)),
+            "text_model_load_errors": int(_usage_counts.get("text_model_load_errors", 0)),
+            "text_model_load_seconds": load_seconds["text"],
             "deep_calls": deep_calls,
             "deep_errors": int(_usage_counts.get("deep_errors", 0)),
             "deep_total_seconds": timing_seconds["deep"],
             "deep_avg_seconds": round(deep_seconds / deep_calls, 4) if deep_calls else 0.0,
+            "deep_model_load_calls": int(_usage_counts.get("deep_model_load_calls", 0)),
+            "deep_model_load_errors": int(_usage_counts.get("deep_model_load_errors", 0)),
+            "deep_model_load_seconds": load_seconds["deep"],
             "vision_calls": vision_calls,
             "vision_errors": int(_usage_counts.get("vision_errors", 0)),
             "vision_total_seconds": timing_seconds["vision"],
             "vision_avg_seconds": round(vision_seconds / vision_calls, 4) if vision_calls else 0.0,
+            "vision_model_load_calls": int(_usage_counts.get("vision_model_load_calls", 0)),
+            "vision_model_load_errors": int(_usage_counts.get("vision_model_load_errors", 0)),
+            "vision_model_load_seconds": load_seconds["vision"],
             "slowest_model": slowest_model,
             "slowest_seconds": slowest_seconds if slowest_model != "none" else 0.0,
             "openai_estimated_cost_usd": round(float(_usage_counts.get("openai_estimated_cost_usd", 0.0)), 8),
@@ -82,6 +97,16 @@ def _record_duration(counter_key: str, elapsed_seconds: float) -> None:
     safe_elapsed = max(0.0, float(elapsed_seconds))
     with _usage_lock:
         _usage_durations[counter_key] += safe_elapsed
+
+
+def _record_model_load(kind: str, elapsed_seconds: float, *, ok: bool) -> None:
+    prefix = str(kind or "").strip().lower()
+    if prefix not in {"text", "deep", "vision"}:
+        return
+    _record_usage(f"{prefix}_model_load_calls")
+    if not ok:
+        _record_usage(f"{prefix}_model_load_errors")
+    _record_duration(f"{prefix}_model_load_seconds", elapsed_seconds)
 
 
 def set_openai_usage_context(
@@ -387,6 +412,21 @@ def _content_to_text(content: Any) -> str:
 
 @lru_cache(maxsize=1)
 def _load_text_model():
+    started = monotonic()
+    ok = False
+    try:
+        model = _load_text_model_uncached()
+        ok = True
+        return model
+    finally:
+        _record_model_load("text", monotonic() - started, ok=ok)
+
+
+def _load_text_model_uncached():
+    ensure_local_metal_device_env()
+    blocked_reason = local_llama_runtime_blocked_reason()
+    if blocked_reason:
+        raise RuntimeError(blocked_reason)
     model_path = settings.resolved_llm_text_model_path
     if not model_path.exists():
         raise RuntimeError(f"Text model file not found: {model_path}")
@@ -411,6 +451,21 @@ def _load_text_model():
 
 @lru_cache(maxsize=1)
 def _load_deep_model():
+    started = monotonic()
+    ok = False
+    try:
+        model = _load_deep_model_uncached()
+        ok = True
+        return model
+    finally:
+        _record_model_load("deep", monotonic() - started, ok=ok)
+
+
+def _load_deep_model_uncached():
+    ensure_local_metal_device_env()
+    blocked_reason = local_llama_runtime_blocked_reason()
+    if blocked_reason:
+        raise RuntimeError(blocked_reason)
     model_path = settings.resolved_llm_deep_model_path
     if not model_path.exists():
         raise RuntimeError(f"Deep model file not found: {model_path}")
@@ -435,6 +490,21 @@ def _load_deep_model():
 
 @lru_cache(maxsize=1)
 def _load_vision_model():
+    started = monotonic()
+    ok = False
+    try:
+        model = _load_vision_model_uncached()
+        ok = True
+        return model
+    finally:
+        _record_model_load("vision", monotonic() - started, ok=ok)
+
+
+def _load_vision_model_uncached():
+    ensure_local_metal_device_env()
+    blocked_reason = local_llama_runtime_blocked_reason()
+    if blocked_reason:
+        raise RuntimeError(blocked_reason)
     model_path = settings.resolved_llm_vision_model_path
     mmproj_path = settings.resolved_llm_vision_mmproj_path
     if not model_path.exists():
@@ -571,6 +641,16 @@ def _chat_completion(
     return response["choices"][0]["message"]["content"]
 
 
+def _local_max_tokens(default_value: int, local_value: int) -> int:
+    if _use_openai_provider():
+        return default_value
+    try:
+        value = int(local_value or 0)
+    except Exception:
+        value = 0
+    return value if value > 0 else default_value
+
+
 def chat_text_fast(prompt: str, system: str | None = None, temperature: float = 0.2) -> str:
     messages: list[dict[str, Any]] = []
     if system:
@@ -588,7 +668,12 @@ def chat_text_fast(prompt: str, system: str | None = None, temperature: float = 
                 max_tokens=settings.llm_text_max_tokens,
             )
         llm = _load_text_model()
-        return _chat_completion(llm, messages, temperature, max_tokens=settings.llm_text_max_tokens)
+        return _chat_completion(
+            llm,
+            messages,
+            temperature,
+            max_tokens=_local_max_tokens(settings.llm_text_max_tokens, settings.llm_local_text_max_tokens),
+        )
     except Exception:
         _record_usage("text_errors")
         raise
@@ -613,7 +698,12 @@ def chat_text_deep(prompt: str, system: str | None = None, temperature: float = 
                 max_tokens=settings.llm_deep_max_tokens,
             )
         llm = _load_deep_model()
-        return _chat_completion(llm, messages, temperature, max_tokens=settings.llm_deep_max_tokens)
+        return _chat_completion(
+            llm,
+            messages,
+            temperature,
+            max_tokens=_local_max_tokens(settings.llm_deep_max_tokens, settings.llm_local_deep_max_tokens),
+        )
     except Exception:
         _record_usage("deep_errors")
         raise
@@ -651,7 +741,12 @@ def chat_with_images(
                 max_tokens=settings.llm_vision_max_tokens,
             )
         llm = _load_vision_model()
-        return _chat_completion(llm, messages, temperature, max_tokens=settings.llm_vision_max_tokens)
+        return _chat_completion(
+            llm,
+            messages,
+            temperature,
+            max_tokens=_local_max_tokens(settings.llm_vision_max_tokens, settings.llm_local_vision_max_tokens),
+        )
     except Exception:
         _record_usage("vision_errors")
         raise

@@ -1,0 +1,267 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc7440026_rare_events_long_run_risks",
+  "source_pdf": "test/08_32843834_PMC7440026.pdf",
+  "source_sha256": "e0610f9c31203531854ead8e72b518696b267629785f323000bf09c4c7d44496",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/08_32843834_PMC7440026.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "Rare events and long-run risks",
+    "domain": "macroeconomics_asset_pricing",
+    "study_type": "econometric macro-finance modeling study"
+  },
+  "final_report_expectations": {
+    "research_question": "Can rare events and long-run risks be jointly estimated from long-run consumption data, distinguished empirically, and used to explain asset-pricing moments such as the risk-free rate, equity premium, equity-return volatility, and Sharpe ratio?",
+    "study_design": "Econometric macro-finance modeling paper using Bayesian MCMC estimation of a latent-variable time-series model and simulation-based asset-pricing comparisons.",
+    "population_or_materials": "Annual real per capita personal consumer expenditure data for 42 economies, with uninterrupted series between 1851 and 2012 and 4814 country-year observations; asset-return comparisons use long-term data for 17 countries.",
+    "methods": [
+      "Specifies consumption as potential consumption, event gaps from rare events, long-run growth-rate variation, stochastic volatility, and measurement error.",
+      "Models world and country disaster-state transition probabilities and disaster shocks with temporary and permanent components.",
+      "Estimates the model using Bayesian Markov-Chain Monte Carlo with nearly flat or weakly informative priors.",
+      "Decomposes consumption growth into rare-event, long-run-growth/LRR, and error components.",
+      "Applies the estimated consumption process to asset pricing with Epstein-Zin-Weil preferences, calibrating risk aversion and discounting under alternative matching criteria."
+    ],
+    "primary_findings": [
+      "Rare events and long-run risks are complementary but empirically distinct: rare events are sporadic and drastic, while long-run risks are smoother, persistent growth-rate and volatility processes.",
+      "The estimated world disaster probability is high during World War I, the Great Depression, and World War II; the 2008-10 global financial crisis does not register as a world disaster in the model.",
+      "Rare events account for a larger share of consumption-growth variation than long-run risks: Table 3 attributes 53% of variance to RE and 10% to the long-run growth-rate component, with 36% error.",
+      "Matching the observed average risk-free rate and equity premium in the baseline RE and LRR model requires relative risk aversion around 5.9 and discount factor around 0.973.",
+      "Most of the equity-premium explanation comes from rare events, while long-run risks contribute moderately and help with the Sharpe ratio; the model still understates equity-return volatility."
+    ],
+    "secondary_findings": [
+      "The estimated world transition probability from normal to disaster is 2.9% per year, while persistence in a world disaster is 65.8%.",
+      "Countries are estimated to spend 9.8% of time in disaster states, with average country disaster duration of 4.2 years.",
+      "A first year of disaster lowers consumption by about 8% on average, and the permanent component lowers long-run consumption by about 3% per disaster year on average.",
+      "Simulations imply a mean cumulative disaster effect of 22%, or 28% when conditioning on cumulative contractions of at least 10%, with average recovery of 44% of the prior decline.",
+      "Under the alternative criterion matching the Sharpe ratio as well as returns, the model fits the Sharpe ratio but implies a much lower equity premium, about 0.021 versus observed 0.0715."
+    ],
+    "sensitivity_analysis": [
+      "Compares baseline RE and LRR, RE-only, LRR-only, RE and LRR without stochastic volatility, and RE permanent-shocks-only models.",
+      "Varies consumption-process parameters around posterior means in Tables 5a and 5b; implied equity premiums remain near the baseline range of roughly 0.0678 to 0.0769.",
+      "Varies preference and leverage parameters in Table 6, showing strong sensitivity of the equity premium to risk aversion and debt-equity ratio and moderate sensitivity to IES.",
+      "Uses an alternative loss function that includes the Sharpe ratio; results fit Sharpe ratio well but reduce implied equity premium substantially.",
+      "Discusses time-varying disaster probability as a future extension to improve volatility and Sharpe-ratio fit."
+    ],
+    "statistical_tests_used": [
+      "Bayesian MCMC estimation with Gibbs-sampler-style simulation chains.",
+      "Posterior means, posterior standard deviations, and 5% and 95% posterior percentiles for parameters.",
+      "Latent-state decomposition of consumption growth and posterior disaster probabilities.",
+      "Simulation-based asset-pricing calculations using Epstein-Zin-Weil preferences.",
+      "Loss-function model comparison for alternative asset-pricing matching criteria."
+    ],
+    "interpretation": [
+      "Reports should treat this as an economics/modeling benchmark, not a biomedical or COVID-19 paper, despite the Elsevier COVID repository notice and one discussion of coronavirus as a possible rare disaster.",
+      "The correct interpretation is balanced: the joint RE and LRR model improves macro-finance explanation but does not fully solve volatility, equity-premium, and Sharpe-ratio fit simultaneously.",
+      "Rare events dominate the equity-premium mechanism, but long-run risks remain useful for joint modeling and Sharpe-ratio behavior."
+    ],
+    "limitations": [
+      "The model depends on latent-variable assumptions, prior choices, and the specification of disaster processes, recoveries, preferences, and leverage.",
+      "The baseline model omits time-varying disaster probability and a separate dividend process, both identified by the authors as likely extensions.",
+      "The joint model substantially understates observed equity-return volatility.",
+      "Good simultaneous matching of the equity premium and Sharpe ratio remains challenging."
+    ],
+    "tables_figures_supplements": [
+      "Table 1: estimated model parameters and posterior summaries.",
+      "Fig. 1: posterior world rare-event probability from 1851 to 2012.",
+      "Table 2: country-years with posterior disaster probability at least 25% outside global event years.",
+      "Table 3: decomposition of consumption growth into RE, long-run growth/LRR, and error components.",
+      "Figs. 2-9: decomposition and fitted model examples for the United Kingdom, United States, Chile, Germany, Japan, Russia, and other illustrative countries.",
+      "Table 4: asset-pricing statistics for data and alternative models.",
+      "Tables 5a-5b: robustness to alternative consumption-process parameters.",
+      "Table 6: sensitivity to risk aversion, discount factor, IES, and debt-equity ratio.",
+      "Table 7: alternative matching criterion including Sharpe ratio."
+    ],
+    "supplement_availability": "Appendix B states that supplementary material is available online at the article DOI; the local PDF includes appendices A.1-A.5 but the online supplement itself was not reviewed.",
+    "uniqueness": [
+      "Out-of-domain macro-finance benchmark with dense mathematical modeling and tables.",
+      "Requires distinguishing a repository COVID notice from the actual article topic.",
+      "Tests whether reports preserve model-comparison nuance, latent-variable methods, posterior quantities, and asset-pricing limitations."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "rare-events-001",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The model is estimated from annual real per capita consumption data for 42 economies covering up to 1851-2012 and totaling 4814 country-year observations.",
+      "source_anchor": "Abstract; data, estimation method, and empirical results; Appendix A.1",
+      "expected_entities": [
+        "real per capita consumer expenditure",
+        "42 economies",
+        "Barro-Ursua data set"
+      ],
+      "expected_numbers": [
+        {
+          "label": "economies",
+          "value": 42
+        },
+        {
+          "label": "country_year_observations",
+          "value": 4814
+        },
+        {
+          "label": "start_year",
+          "value": 1851
+        },
+        {
+          "label": "end_year",
+          "value": 2012
+        }
+      ]
+    },
+    {
+      "claim_id": "rare-events-002",
+      "section": "results",
+      "importance": "P1",
+      "claim": "Estimated rare-event probabilities identify major global disaster periods around World War I, the Great Depression, and World War II, while the 2008-10 crisis does not register as a world disaster.",
+      "source_anchor": "Table 1 transition probabilities; Fig. 1 world rare-event probability",
+      "expected_entities": [
+        "World War I",
+        "Great Depression",
+        "World War II",
+        "global financial crisis"
+      ],
+      "expected_numbers": [
+        {
+          "label": "world_normal_to_disaster_probability",
+          "value": 0.029
+        },
+        {
+          "label": "world_disaster_persistence_probability",
+          "value": 0.658
+        },
+        {
+          "label": "years_world_disaster_probability_above_50_percent",
+          "value": 14
+        },
+        {
+          "label": "posterior_world_event_probability_2008_peak",
+          "value": 0.001
+        }
+      ]
+    },
+    {
+      "claim_id": "rare-events-003",
+      "section": "results",
+      "importance": "P1",
+      "claim": "The consumption-growth decomposition finds rare events explain much more variance than the long-run growth-rate/LRR component.",
+      "source_anchor": "Table 3 decomposition of consumption growth",
+      "expected_entities": [
+        "rare events",
+        "long-run risks",
+        "consumption growth"
+      ],
+      "expected_numbers": [
+        {
+          "label": "re_variance_share",
+          "value": 0.53
+        },
+        {
+          "label": "long_run_growth_variance_share",
+          "value": 0.1
+        },
+        {
+          "label": "error_variance_share",
+          "value": 0.36
+        },
+        {
+          "label": "mean_consumption_growth",
+          "value": 0.0201
+        }
+      ]
+    },
+    {
+      "claim_id": "rare-events-004",
+      "section": "results",
+      "importance": "P1",
+      "claim": "The baseline RE and LRR asset-pricing model matches the observed average risk-free rate and equity premium with relative risk aversion around 5.9, but it understates equity-return volatility and yields an excessive Sharpe ratio.",
+      "source_anchor": "Asset-pricing framework and Table 4",
+      "expected_entities": [
+        "risk-free rate",
+        "levered equity premium",
+        "Sharpe ratio",
+        "relative risk aversion"
+      ],
+      "expected_numbers": [
+        {
+          "label": "target_risk_free_rate",
+          "value": 0.0075
+        },
+        {
+          "label": "target_equity_premium",
+          "value": 0.0715
+        },
+        {
+          "label": "baseline_gamma",
+          "value": 5.86
+        },
+        {
+          "label": "baseline_beta",
+          "value": 0.973
+        },
+        {
+          "label": "data_sigma_equity_return",
+          "value": 0.245
+        },
+        {
+          "label": "baseline_sigma_equity_return",
+          "value": 0.0974
+        }
+      ]
+    },
+    {
+      "claim_id": "rare-events-005",
+      "section": "discussion",
+      "importance": "P1",
+      "claim": "When the matching criterion includes the Sharpe ratio, the joint RE and LRR model fits the Sharpe ratio but implies a much lower equity premium, showing the unresolved trade-off between fitting both targets.",
+      "source_anchor": "Alternative matching criterion; Table 7; concluding observations",
+      "expected_entities": [
+        "Sharpe ratio",
+        "equity premium",
+        "RE and LRR model"
+      ],
+      "expected_numbers": [
+        {
+          "label": "alternative_gamma",
+          "value": 3.19
+        },
+        {
+          "label": "alternative_beta",
+          "value": 0.988
+        },
+        {
+          "label": "alternative_model_sharpe_ratio",
+          "value": 0.295
+        },
+        {
+          "label": "alternative_model_equity_premium",
+          "value": 0.0214
+        },
+        {
+          "label": "observed_equity_premium",
+          "value": 0.0715
+        }
+      ]
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not describe this as a COVID-19 empirical study; the COVID notice is repository boilerplate and coronavirus is only mentioned as a possible rare disaster example.",
+    "Do not claim the joint model fully explains equity-return volatility.",
+    "Do not claim LRR alone explains the equity premium well; the LRR-only model requires very high risk aversion under the main criterion.",
+    "Do not omit the alternative matching-criterion trade-off between Sharpe ratio fit and equity-premium fit.",
+    "Do not imply the online supplementary material was reviewed unless separately extracted."
+  ],
+  "scoring_focus": [
+    "Reward correct identification of the paper as macro-finance/econometrics.",
+    "Reward accurate reporting of sample size, countries, time span, MCMC estimation, and latent RE/LRR decomposition.",
+    "Reward preservation of key numerical results from Tables 1, 3, 4, and 7.",
+    "Penalize COVID-topic confusion, biomedical framing, or overclaiming that the model solves the asset-pricing puzzles."
+  ]
+}

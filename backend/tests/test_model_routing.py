@@ -134,8 +134,8 @@ def test_openai_provider_routes_text_without_temperature(monkeypatch) -> None:
         return _Response()
 
     monkeypatch.setattr(llm.settings, "llm_provider", "openai")
-    monkeypatch.setattr(llm.settings, "psychpaper_openai_api_key", "sk-test")
-    monkeypatch.setattr(llm.settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(llm.settings, "psychpaper_openai_api_key", "OPENAI_API_KEY_FOR_TESTS")
+    monkeypatch.setattr(llm.settings, "openai_api_key", "OPENAI_API_KEY_FOR_TESTS")
     monkeypatch.setattr(llm.settings, "openai_api_mode", "responses")
     monkeypatch.setattr(llm.settings, "openai_usage_guardrails_enabled", False)
     monkeypatch.setattr(llm.settings, "openai_text_model", "gpt-5-mini")
@@ -154,7 +154,7 @@ def test_openai_provider_routes_text_without_temperature(monkeypatch) -> None:
     assert content[0] == {"type": "input_text", "text": "Analyze this."}
     assert {"type": "input_text", "text": "Return JSON."} in content
     assert "temperature" not in captured["json"]
-    assert captured["headers"]["Authorization"] == "Bearer sk-test"
+    assert captured["headers"]["Authorization"] == "Bearer OPENAI_API_KEY_FOR_TESTS"
 
 
 def test_openai_provider_routes_vision_images(monkeypatch, tmp_path) -> None:
@@ -184,8 +184,8 @@ def test_openai_provider_routes_vision_images(monkeypatch, tmp_path) -> None:
         return _Response()
 
     monkeypatch.setattr(llm.settings, "llm_provider", "openai")
-    monkeypatch.setattr(llm.settings, "psychpaper_openai_api_key", "sk-test")
-    monkeypatch.setattr(llm.settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(llm.settings, "psychpaper_openai_api_key", "OPENAI_API_KEY_FOR_TESTS")
+    monkeypatch.setattr(llm.settings, "openai_api_key", "OPENAI_API_KEY_FOR_TESTS")
     monkeypatch.setattr(llm.settings, "openai_api_mode", "responses")
     monkeypatch.setattr(llm.settings, "openai_usage_guardrails_enabled", False)
     monkeypatch.setattr(llm.settings, "openai_vision_model", "gpt-5-mini")

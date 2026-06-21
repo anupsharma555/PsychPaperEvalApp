@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc7437112_covid_logistic_growth",
+  "source_pdf": "test/04_32836822_PMC7437112.pdf",
+  "source_sha256": "61f0b7ab36b3a389daea02746d5c6aec5362f2a7129605aaa1168ac304ba7379",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/04_32836822_PMC7437112.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "Generalized logistic growth modeling of the COVID-19 outbreak",
+    "domain": "mathematical_epidemiology_supplement",
+    "study_type": "supplementary material only"
+  },
+  "final_report_expectations": {
+    "research_question": "The available PDF supports only a supplement-level question: how logistic growth, generalized Richards, and growth-rate decay fits summarize COVID-19 case trajectories across 29 mainland Chinese provinces.",
+    "study_design": "Supplementary model-fitting material with one summary table and province-level figures; the main article narrative is not present in this fixture.",
+    "population_or_materials": "COVID-19 confirmed-case data for 29 mainland Chinese provinces, explicitly excluding Hubei and Tibet, summarized through March 1, 2020 for figures and as of February 29, 2020 in Table S1.",
+    "methods": [
+      "Summarize Table S1 fitted parameters/statistics only within supplement scope.",
+      "Identify logistic growth model and generalized Richards model fits to cumulative cases.",
+      "Describe daily new cases and daily growth-rate visualizations.",
+      "Describe robustness fits using generalized Richards model cutoffs 20, 15, 10, and 5 days before March 1, 2020.",
+      "Describe linear regressions/log-linear growth-rate fits without inventing main-paper methods."
+    ],
+    "primary_findings": [
+      "The supplement reports fitted model statistics for 29 provinces.",
+      "Province figures pair empirical confirmed-case data with logistic and generalized Richards fitted curves.",
+      "Generalized Richards fits are shown with earlier cutoff dates to demonstrate consistency/robustness."
+    ],
+    "secondary_findings": [
+      "Figures include cumulative confirmed cases, daily new confirmed cases, and daily growth rates.",
+      "Growth rates are shown both against time on log scale and against cumulative confirmed cases on linear scale.",
+      "Linear fits are separated for January 19 to February 1 and February 2 to March 1 periods."
+    ],
+    "sensitivity_analysis": [
+      "Earlier-cutoff generalized Richards model fits use data ending 20, 15, 10, and 5 days before March 1, 2020.",
+      "No full-paper sensitivity analysis can be assessed because the fixture contains only supplementary material."
+    ],
+    "statistical_tests_used": [
+      "Logistic growth model fitting.",
+      "Generalized Richards model fitting.",
+      "Exponential decay exponent of growth rate.",
+      "Linear regression of logarithmic daily growth rate over time.",
+      "Linear fits of daily growth rate versus cumulative confirmed cases for two date intervals."
+    ],
+    "interpretation": [
+      "Treat all claims as supplement-derived model-fitting evidence.",
+      "Do not infer epidemic-policy conclusions, full introduction, or discussion content from the absent main article."
+    ],
+    "limitations": [
+      "Main article text is absent.",
+      "Table S1 appears as a table/figure-like PDF element, so extracted numeric cells are not reliably available from text alone.",
+      "Scientific synthesis is limited to headings, descriptive supplement text, table title, and figure descriptions."
+    ],
+    "tables_figures_supplements": [
+      "Supplementary Material page 1 describes all available content.",
+      "Table S1 summarizes statistics and fitted parameters for 29 provinces.",
+      "Subsequent province figures show cumulative cases, new cases, growth rates, and model fits."
+    ],
+    "supplement_availability": "The local source is supplementary material; main article content is unavailable in this fixture.",
+    "uniqueness": [
+      "This case tests supplement-only handling.",
+      "It requires avoiding fabricated full-paper sections.",
+      "It emphasizes model-fit robustness cutoffs and province-level figure interpretation."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "covid-logistic-supp-001",
+      "section": "methods",
+      "importance": "P0",
+      "claim": "The PDF fixture is supplementary material, not the main article.",
+      "source_anchor": "Page 1 heading and introductory supplement paragraph",
+      "expected_entities": [
+        "Supplementary Material"
+      ],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "covid-logistic-supp-002",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The supplement covers 29 mainland Chinese provinces and excludes Hubei and Tibet.",
+      "source_anchor": "Supplement paragraph and Table S1 title",
+      "expected_entities": [
+        "mainland China",
+        "Hubei",
+        "Tibet"
+      ],
+      "expected_numbers": [
+        {
+          "label": "province_count",
+          "value": 29,
+          "unit": "provinces"
+        }
+      ]
+    },
+    {
+      "claim_id": "covid-logistic-supp-003",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The supplement reports fitted parameters/statistics for generalized Richards, logistic growth, and growth-rate decay models.",
+      "source_anchor": "Table S1 description",
+      "expected_entities": [
+        "generalized Richards model",
+        "logistic growth model",
+        "exponential decay exponent"
+      ],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "covid-logistic-supp-004",
+      "section": "results",
+      "importance": "P1",
+      "claim": "Generalized Richards model fits are repeated using earlier data cutoffs of 20, 15, 10, and 5 days before March 1, 2020.",
+      "source_anchor": "Supplement figure-description paragraph",
+      "expected_entities": [
+        "Generalized Richards Model",
+        "March 1, 2020"
+      ],
+      "expected_numbers": [
+        {
+          "label": "cutoff_1",
+          "value": 20,
+          "unit": "days before March 1, 2020"
+        },
+        {
+          "label": "cutoff_2",
+          "value": 15,
+          "unit": "days before March 1, 2020"
+        },
+        {
+          "label": "cutoff_3",
+          "value": 10,
+          "unit": "days before March 1, 2020"
+        },
+        {
+          "label": "cutoff_4",
+          "value": 5,
+          "unit": "days before March 1, 2020"
+        }
+      ]
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not claim the main article was parsed.",
+    "Do not provide normal full-paper introduction/results/discussion synthesis.",
+    "Do not report exact Table S1 cell values unless independently extracted from the table image."
+  ],
+  "scoring_focus": [
+    "Explicit supplement-only disclosure.",
+    "Correct province count/exclusions.",
+    "Correct model names and robustness cutoffs.",
+    "Avoiding overinterpretation."
+  ]
+}

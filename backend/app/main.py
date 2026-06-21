@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
 
 from app.api.routes import router
-from app.core.config import ensure_dirs, settings
+from app.core.config import ROOT_DIR, ensure_dirs, settings
 from app.db.session import engine, init_db
 from app.services.jobs import job_runner
 from app.services.report_retention import enforce_report_retention
@@ -46,3 +47,7 @@ def shutdown() -> None:
 
 
 app.include_router(router)
+
+web_dist_dir = ROOT_DIR / "desktop_ui" / "dist"
+if web_dist_dir.exists():
+    app.mount("/web", StaticFiles(directory=web_dist_dir, html=True), name="web")

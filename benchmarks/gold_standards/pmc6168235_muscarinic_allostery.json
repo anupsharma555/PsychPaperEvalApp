@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc6168235_muscarinic_allostery",
+  "source_pdf": "test/02_30190312_PMC6168235.pdf",
+  "source_sha256": "4dc70eda5179d37f9750e527faba6e1445e6adc17928acfccd7ce1dee2bcac88",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/02_30190312_PMC6168235.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "Toward an understanding of the structural basis of allostery in muscarinic acetylcholine receptors",
+    "domain": "structural_pharmacology_gpcr_neuroscience",
+    "study_type": "viewpoint/review"
+  },
+  "final_report_expectations": {
+    "research_question": "How available muscarinic acetylcholine receptor structures and related pharmacological, biochemical, and computational evidence explain GPCR allosteric modulation.",
+    "study_design": "Narrative viewpoint/review, not a primary experimental study.",
+    "population_or_materials": "Published mAChR crystal structures, GPCR allostery concepts, pharmacological studies of PAMs/NAMs/NALs, molecular dynamics studies, and receptor monomer/oligomer evidence.",
+    "methods": [
+      "Synthesize structural biology evidence for inactive, active, and allosteric modulator-bound mAChR structures.",
+      "Explain PAM, NAM, NAL, ceiling effect, probe dependence, subtype selectivity, biased modulation, two-state allostery, and allosteric networks.",
+      "Distinguish crystal-structure evidence from pharmacological, biochemical, and computational inference."
+    ],
+    "primary_findings": [
+      "At publication, inactive-state structures existed for four of five mAChR subtypes, and two active-state structures existed for one subtype.",
+      "mAChRs are presented as an exemplar GPCR allostery model system.",
+      "Available structures clarify receptor activation, allosteric pockets, subtype selectivity, and positive allosteric modulation, but key structures remain unresolved."
+    ],
+    "secondary_findings": [
+      "Allosteric ligand behavior is context-dependent: classification as PAM, NAM, or NAL can depend on the orthosteric probe and signaling readout.",
+      "LY2119620 and LY2033298 are used as important examples for PAM binding/selectivity and biased/probe-dependent modulation.",
+      "The paper discusses possible contributions of receptor oligomerization while noting that monomeric mAChRs can support positive allosteric modulation in some systems."
+    ],
+    "sensitivity_analysis": [
+      "No formal sensitivity analysis was performed.",
+      "A correct report should treat claims as review synthesis and distinguish direct structural evidence from MD simulation, nanodisc, and pharmacological evidence."
+    ],
+    "statistical_tests_used": [
+      "No new inferential statistical testing was reported.",
+      "Table 1 summarizes receptor structures, ligands, PDB accession numbers, and resolutions."
+    ],
+    "interpretation": [
+      "Allostery offers a route to subtype selectivity and fine-tuning relative to orthosteric targeting.",
+      "The structural basis of mAChR allostery is partially understood, with unresolved NAM-bound and additional PAM-bound states remaining important."
+    ],
+    "limitations": [
+      "No new primary experimental cohort or assay dataset was reported.",
+      "NAM-bound mAChR crystal structures were unavailable.",
+      "Additional PAM-bound structures and structures explaining biased modulation were still needed."
+    ],
+    "tables_figures_supplements": [
+      "Figure 1 defines GPCR allosteric modulation concepts.",
+      "Figures 2-4 and Table 1 summarize inactive/active mAChR structures and structural insights into modulation.",
+      "Figures 5-9 address two-state allostery, PAM selectivity, allosteric networks, biased modulation, and monomeric/oligomeric considerations."
+    ],
+    "supplement_availability": "No supplementary material was detected in the extracted PDF text.",
+    "uniqueness": [
+      "A review-style benchmark where the central task is accurate synthesis, not extraction of a trial result.",
+      "Connects mAChR structure to general GPCR allostery principles.",
+      "Requires careful handling of context dependence in PAM/NAM/NAL labels."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "machr-001",
+      "section": "introduction",
+      "importance": "P1",
+      "claim": "The review states that inactive-state structures were available for four of five mAChR subtypes and two active-state structures for one subtype.",
+      "source_anchor": "Abstract opening",
+      "expected_entities": [
+        "mAChR",
+        "inactive-state structures",
+        "active-state structures"
+      ],
+      "expected_numbers": [
+        {
+          "label": "inactive_state_subtype_coverage",
+          "value": 4,
+          "unit": "of 5 subtypes"
+        },
+        {
+          "label": "active_state_structures",
+          "value": 2,
+          "unit": "structures for one subtype"
+        }
+      ]
+    },
+    {
+      "claim_id": "machr-002",
+      "section": "introduction",
+      "importance": "P1",
+      "claim": "Allosteric modulators are discussed as PAMs, NAMs, or NALs and can show ceiling effects, probe dependence, subtype selectivity, and biased modulation.",
+      "source_anchor": "Introduction and Figure 1 caption",
+      "expected_entities": [
+        "PAM",
+        "NAM",
+        "NAL",
+        "ceiling effect",
+        "probe dependence",
+        "biased modulation"
+      ],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "machr-003",
+      "section": "methods",
+      "importance": "P2",
+      "claim": "Table 1 lists mAChR structures including M1, M2, M3, and M4 structures with ligands, PDB accessions, and resolutions.",
+      "source_anchor": "Table 1",
+      "expected_entities": [
+        "M1R",
+        "M2R",
+        "M3R",
+        "M4R",
+        "LY2119620",
+        "PDB"
+      ],
+      "expected_numbers": [
+        {
+          "label": "table_1_structure_rows",
+          "value": 9,
+          "unit": "rows"
+        }
+      ]
+    },
+    {
+      "claim_id": "machr-004",
+      "section": "discussion",
+      "importance": "P1",
+      "claim": "Key unresolved structures include NAM-bound inactive-state mAChRs and additional PAM-bound states across mAChR subtypes.",
+      "source_anchor": "Future perspectives and conclusions",
+      "expected_entities": [
+        "NAM-bound structures",
+        "PAM-bound structures",
+        "mAChR",
+        "allostery"
+      ],
+      "expected_numbers": []
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not describe this as a randomized trial, cohort study, or new primary assay paper.",
+    "Do not claim all structural mechanisms of mAChR allostery are solved.",
+    "Do not treat PAM/NAM/NAL labels as absolute rather than context-dependent."
+  ],
+  "scoring_focus": [
+    "Preserve viewpoint/review status.",
+    "Reward correct allostery terminology and unresolved-structure limitations.",
+    "Penalize invented primary statistics or clinical efficacy claims."
+  ]
+}

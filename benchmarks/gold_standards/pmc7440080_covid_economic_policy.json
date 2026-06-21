@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc7440080_covid_economic_policy",
+  "source_pdf": "test/07_32843816_PMC7440080.pdf",
+  "source_sha256": "c79e7faf36493ff6f7c5a6a94104fc0a6737c87c359ca2b2bd27fcc176dd66ba",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/07_32843816_PMC7440080.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "Economic, social and political issues raised by the COVID-19 pandemic",
+    "domain": "economics_policy",
+    "study_type": "conceptual policy analysis"
+  },
+  "final_report_expectations": {
+    "research_question": "What economic, social, political, moral, and ethical policy issues are raised by COVID-19 control measures, especially hospital triage, social restrictions, group isolation, liberty, and recovery?",
+    "study_design": "Narrative policy analysis and conceptual economic modeling paper; not an empirical cohort, clinical trial, or systematic review.",
+    "population_or_materials": "Selected historical pandemic comparisons, COVID-19 policy literature, two illustrative economic models, and discussion of policy examples such as lockdowns, hospital capacity, supply chains, demand recovery, and liberty restrictions.",
+    "methods": [
+      "Uses a selective historical overview of pandemics to contextualize COVID-19.",
+      "Develops a hospital-admission prioritization model based on expected change in value from hospitalization under capacity constraints.",
+      "Develops a static social-choice model using Bergson-type welfare functions to analyze trade-offs between social restrictions, COVID-19 incidence, and economic activity.",
+      "Critiques targeted social-group isolation policies, especially those proposed for age and comorbidity groups.",
+      "Provides qualitative analysis of freedom-of-choice issues and supply-side and demand-side barriers to recovery."
+    ],
+    "primary_findings": [
+      "COVID-19 policy involves unavoidable trade-offs among infection control, hospital capacity, economic activity, liberty, and ethical valuation of life.",
+      "Hospital triage cannot be reduced to a purely technical rule because QALYs, willingness to pay, and economic-output valuation can disadvantage elderly, poor, chronically ill, or minority groups.",
+      "The social-choice model frames stricter restrictions as reducing COVID-19 cases while also reducing economic activity; the preferred policy depends on the welfare function and political preferences.",
+      "Targeted lockdowns of broad social groups may be blunt, discriminatory, hard to implement, and economically harmful without adequate support.",
+      "Economic recovery is likely constrained by disrupted international supply chains, reduced disposable income, risk-avoidant consumption, industry interdependence, and possible protectionism."
+    ],
+    "secondary_findings": [
+      "The article contrasts COVID-19 with the Black Death, Spanish flu, HIV/AIDS, SARS, swine flu, avian flu, Ebola, and Zika to emphasize variation across pandemics.",
+      "Fig. 1 illustrates how weak or moderate restrictions can leave hospital demand above capacity for longer periods than severe restrictions.",
+      "Fig. 2 illustrates a theoretical trade-off between COVID-19 cases and economic activity, with a Bergson-type optimum.",
+      "The paper argues that liberty restrictions may be defensible when individual behavior imposes external costs, but blanket restrictions are harder to justify when social gains are small.",
+      "The final section lists future research needs including valuation of human life, education losses, psychiatric costs, unemployment policy, public support for policy options, and reduced university research funding."
+    ],
+    "sensitivity_analysis": [
+      "No empirical sensitivity analysis was performed.",
+      "The hospital-capacity discussion varies conceptually by severity of restrictions, time above capacity, expected survival benefit, and valuation of life.",
+      "The social-choice model varies conceptually by social-restriction stringency, COVID-19 incidence, economic activity, and the adopted Bergson-type welfare function.",
+      "The author explicitly treats the model curves as illustrative and notes uncertainty about pandemic dimensions and acceptable welfare measurement."
+    ],
+    "statistical_tests_used": [
+      "No inferential statistical tests were used.",
+      "No primary data estimation was performed.",
+      "The paper uses conceptual economic equations, including expected value of hospitalization and simple functions linking COVID-19 cases, mortality, output loss, and social welfare."
+    ],
+    "interpretation": [
+      "Reports should identify this as an economics and policy control case, not biomedical evidence.",
+      "The strongest interpretation is that COVID-19 policy appraisal requires explicit ethical and distributional reasoning alongside economic modeling.",
+      "The paper should not be summarized as endorsing a single optimal lockdown rule; it emphasizes trade-offs, uncertainty, political preferences, and moral limitations of technical valuation."
+    ],
+    "limitations": [
+      "The historical review is selective rather than systematic.",
+      "The models are theoretical and illustrative rather than empirically estimated.",
+      "The social welfare function and valuation of human life are ethically contested and not resolved.",
+      "The paper discusses recovery constraints qualitatively and does not measure their magnitudes."
+    ],
+    "tables_figures_supplements": [
+      "Fig. 1: conceptual hospital-capacity and COVID-19 hospitalization-demand curves under substantial, moderate, and weak restrictions.",
+      "Fig. 2: conceptual trade-off between COVID-19 cases, economic activity, social restrictions, and Bergson-type welfare curves.",
+      "No tables are central to the paper.",
+      "No supplementary material was identified in the extracted main PDF."
+    ],
+    "supplement_availability": "No supplementary figures, tables, or online supplement were identified in the local PDF extraction.",
+    "uniqueness": [
+      "Out-of-domain economics-policy benchmark case that should resist biomedical-trial framing.",
+      "Combines pandemic history, hospital triage, welfare economics, targeted lockdown critique, liberty, recovery constraints, and ethics.",
+      "Useful for testing whether reports preserve conceptual-policy reasoning and avoid inventing empirical effect estimates."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "covid-policy-001",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The paper's two original modeling contributions are hospital-admission prioritization under capacity constraints and social-choice trade-offs between restrictions, COVID-19 incidence, and economic activity.",
+      "source_anchor": "Abstract; Section 3; Section 4; Figs. 1-2",
+      "expected_entities": [
+        "COVID-19",
+        "hospital capacity",
+        "Bergson-type welfare functions",
+        "economic activity"
+      ],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "covid-policy-002",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The hospital-prioritization model ranks admission by expected increase in value from hospitalization, but the author stresses that assigning life value is morally difficult and can discriminate through QALY or willingness-to-pay approaches.",
+      "source_anchor": "Equation (1) and QALY/willingness-to-pay discussion",
+      "expected_entities": [
+        "QALY",
+        "willingness to pay",
+        "elderly",
+        "poor",
+        "chronic health conditions"
+      ],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "covid-policy-003",
+      "section": "discussion",
+      "importance": "P1",
+      "claim": "The paper criticizes broad targeted lockdowns of social groups as blunt, potentially discriminatory, and economically harmful, despite acknowledging targeted-lockdown modeling by Acemoglu and colleagues.",
+      "source_anchor": "Discussion of age groups and comorbidities in targeted lockdowns",
+      "expected_entities": [
+        "Acemoglu",
+        "elderly",
+        "comorbidities",
+        "targeted lockdown",
+        "20-49 years",
+        "50-64 years",
+        "65 and over"
+      ],
+      "expected_numbers": [
+        {
+          "label": "young_group_fatality_rate",
+          "value": 0.001
+        },
+        {
+          "label": "middle_group_fatality_rate",
+          "value": 0.01
+        },
+        {
+          "label": "elderly_group_fatality_rate",
+          "value": 0.06
+        }
+      ]
+    },
+    {
+      "claim_id": "covid-policy-004",
+      "section": "discussion",
+      "importance": "P1",
+      "claim": "The author argues that liberty restrictions require weighing individual risk, external infection costs, public medical burdens, and social benefits, and that technical economic analysis should not obscure ethical questions.",
+      "source_anchor": "Freedom of choice issues; ethics and COVID-19 discussion",
+      "expected_entities": [
+        "liberty",
+        "external costs",
+        "human life valuation",
+        "ethics"
+      ],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "covid-policy-005",
+      "section": "discussion",
+      "importance": "P2",
+      "claim": "Recovery from COVID-19 is expected to be slowed by supply-chain disruption, transport limits, reduced consumer income, risk-avoidant demand, inter-industry dependence, and protectionist policies.",
+      "source_anchor": "Factors limiting economic recovery from COVID-19",
+      "expected_entities": [
+        "supply chains",
+        "consumer expenditure",
+        "protectionism",
+        "international trade"
+      ],
+      "expected_numbers": []
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not classify the paper as a clinical, epidemiological, or biomedical intervention study.",
+    "Do not claim that the models estimate real-world policy effects or treatment effects.",
+    "Do not claim the author endorses QALYs, willingness to pay, GDP contribution, or targeted lockdowns without ethical caveats.",
+    "Do not report a formal systematic review, meta-analysis, dataset, or statistical hypothesis test."
+  ],
+  "scoring_focus": [
+    "Reward preservation of the policy/economics framing and ethical trade-offs.",
+    "Reward correct identification of the two figures as conceptual models.",
+    "Reward explicit distinction between conceptual reasoning and empirical evidence.",
+    "Penalize biomedical overfitting, invented numerical outcomes, or omission of liberty and valuation-of-life issues."
+  ]
+}

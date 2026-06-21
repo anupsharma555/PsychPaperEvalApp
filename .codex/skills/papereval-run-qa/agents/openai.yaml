@@ -1,0 +1,4 @@
+interface:
+  display_name: "PaperEval Run QA"
+  short_description: "Inspect backend paper-run artifacts, timings, diagnostics, and focused tests."
+  default_prompt: "Run PaperEval run QA on the latest paper run and summarize timing, diagnostics, output quality risks, and focused backend checks."

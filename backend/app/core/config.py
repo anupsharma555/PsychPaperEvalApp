@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     archive_max_uncompressed_bytes: int = 250_000_000
 
     parser_engine: str = "validated"
+    parser_reuse_unchanged_assets_enabled: bool = True
 
     llm_provider: str = "local"
 
@@ -57,9 +58,15 @@ class Settings(BaseSettings):
     llm_n_threads: int = 8
     llm_n_batch: int = 512
     llm_n_gpu_layers: int = 999
+    ggml_metal_devices: str = "0"
+    local_gpu_smoke_enabled: bool = True
+    local_gpu_smoke_timeout_sec: int = 120
     llm_text_max_tokens: int = 6000
     llm_deep_max_tokens: int = 3500
     llm_vision_max_tokens: int = 1200
+    llm_local_text_max_tokens: int = 320
+    llm_local_deep_max_tokens: int = 1200
+    llm_local_vision_max_tokens: int = 800
     llm_image_max_dim: int = 1024
     llm_image_max_pixels: int = 1500000
     llm_image_format: str = "jpeg"
@@ -116,22 +123,38 @@ class Settings(BaseSettings):
     analysis_max_tables: int = 50
     analysis_max_figures: int = 30
     analysis_max_supp_items: int = 50
+    analysis_local_evidence_first_enabled: bool = True
     analysis_text_llm_enabled: bool = True
     analysis_text_llm_batch_max_chars: int = 9000
+    analysis_local_text_llm_batch_max_chars: int = 9000
+    analysis_local_text_preselection_enabled: bool = True
+    analysis_local_text_preselection_max_chunks: int = 12
+    analysis_local_text_preselection_min_chunks_per_section: int = 2
+    analysis_local_text_cache_enabled: bool = True
+    analysis_local_text_global_cache_enabled: bool = False
+    analysis_local_text_cache_min_packets: int = 8
+    analysis_local_text_cache_min_sections: int = 3
+    analysis_local_text_cache_max_missing_evidence_rate: float = 0.25
     analysis_parallel_modalities_enabled: bool = True
     analysis_parallel_modality_workers: int = 4
     analysis_text_subprocess_guard_enabled: bool = True
     analysis_text_subprocess_timeout_sec: int = 600
+    analysis_local_text_subprocess_timeout_sec: int = 360
+    analysis_local_text_subprocess_retry_enabled: bool = False
     analysis_modality_subprocess_guard_enabled: bool = True
     analysis_modality_subprocess_timeout_sec: int = 240
     analysis_nontext_llm_enabled: bool = False
     analysis_force_nontext_llm_for_openai: bool = True
+    analysis_local_figure_caption_first_enabled: bool = True
+    analysis_local_figure_caption_first_min_chars: int = 80
+    analysis_local_supplement_caption_first_enabled: bool = True
+    analysis_local_supplement_caption_first_min_chars: int = 80
     analysis_verifier_enabled: bool = True
     analysis_section_verifier_enabled: bool = True
     analysis_summary_polish_enabled: bool = True
     analysis_summary_polish_subprocess_guard_enabled: bool = True
     analysis_summary_polish_subprocess_timeout_sec: int = 90
-    analysis_narrative_overrides_enabled: bool = False
+    analysis_narrative_overrides_enabled: bool = True
     analysis_narrative_overrides_subprocess_guard_enabled: bool = True
     analysis_narrative_overrides_subprocess_timeout_sec: int = 120
     analysis_section_extraction_enabled: bool = True
@@ -202,35 +225,76 @@ class Settings(BaseSettings):
 
     @property
     def resolved_openai_api_key(self) -> str:
+        def is_placeholder(value: str) -> bool:
+            return value in {"", "YOUR_OPENAI_API_KEY", "OPENAI_API_KEY_PLACEHOLDER"}
+
         app_key = str(self.psychpaper_openai_api_key or "").strip()
-        if app_key and app_key != "sk-xxxx":
+        if not is_placeholder(app_key):
             return app_key
         key = str(self.openai_api_key or "").strip()
-        if key and key != "sk-xxxx":
+        if not is_placeholder(key):
             return key
         secrets_path = ROOT_DIR / "secrets" / "openai.env"
         try:
             for line in secrets_path.read_text(encoding="utf-8").splitlines():
                 if line.startswith("PSYCHPAPER_OPENAI_API_KEY="):
                     secret_key = line.split("=", 1)[1].strip()
-                    if secret_key and secret_key != "sk-xxxx":
+                    if not is_placeholder(secret_key):
                         return secret_key
                     continue
                 if not line.startswith("OPENAI_API_KEY="):
                     continue
                 secret_key = line.split("=", 1)[1].strip()
-                if secret_key and secret_key != "sk-xxxx":
+                if not is_placeholder(secret_key):
                     return secret_key
         except Exception:
-            return "" if key == "sk-xxxx" else key
-        return "" if key == "sk-xxxx" else key
+            return "" if is_placeholder(key) else key
+        return "" if is_placeholder(key) else key
+
+    @property
+    def analysis_local_evidence_first_active(self) -> bool:
+        return self.llm_provider_normalized == "local" and bool(self.analysis_local_evidence_first_enabled)
 
     @property
     def effective_analysis_nontext_llm_enabled(self) -> bool:
+        if self.analysis_local_evidence_first_active:
+            return False
         return bool(
             self.analysis_nontext_llm_enabled
             or (self.llm_provider_normalized == "openai" and self.analysis_force_nontext_llm_for_openai)
         )
+
+    @property
+    def effective_analysis_nontext_stage_enabled(self) -> bool:
+        return bool(self.effective_analysis_nontext_llm_enabled or self.analysis_local_evidence_first_active)
+
+    @property
+    def effective_analysis_verifier_enabled(self) -> bool:
+        return bool(self.analysis_verifier_enabled and not self.analysis_local_evidence_first_active)
+
+    @property
+    def effective_analysis_section_verifier_enabled(self) -> bool:
+        return bool(self.analysis_section_verifier_enabled and not self.analysis_local_evidence_first_active)
+
+    @property
+    def effective_analysis_summary_polish_enabled(self) -> bool:
+        return bool(self.analysis_summary_polish_enabled and not self.analysis_local_evidence_first_active)
+
+    @property
+    def effective_analysis_section_extraction_llm_enabled(self) -> bool:
+        return bool(self.analysis_section_extraction_enabled and not self.analysis_local_evidence_first_active)
+
+    @property
+    def effective_analysis_narrative_overrides_enabled(self) -> bool:
+        return bool(self.analysis_narrative_overrides_enabled)
+
+    @property
+    def effective_analysis_exec_summary_second_pass_enabled(self) -> bool:
+        return bool(self.analysis_exec_summary_second_pass_enabled and not self.analysis_local_evidence_first_active)
+
+    @property
+    def effective_analysis_section_synthesis_v2_llm_enabled(self) -> bool:
+        return bool(self.analysis_section_synthesis_v2_llm_enabled and not self.analysis_local_evidence_first_active)
 
 
 settings = Settings()

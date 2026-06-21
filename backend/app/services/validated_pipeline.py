@@ -35,6 +35,18 @@ class FigureAsset:
     meta: dict[str, Any]
 
 
+@dataclass
+class TableTextAsset:
+    table_id: str
+    caption: str
+    text: str
+    page: int | None
+    meta: dict[str, Any]
+
+
+TABLE_TITLE_RE = re.compile(r"\bT\s*A\s*B\s*L\s*E\s*([sS]?\d+[A-Za-z]?)\b", re.IGNORECASE)
+
+
 STRUCTURED_ABSTRACT_PREFIX_RE = re.compile(
     r"(?i)\b(objective|objectives|background|aim|aims|purpose|hypothesis|method|methods|design|results|conclusion|conclusions|participants|sample|analysis)\s*:"
 )
@@ -260,6 +272,10 @@ def parse_pdf_validated(
         )
         session.add(chunk)
         counts["text"] += 1
+
+    for table_asset in _tei_table_text_extract(tei_xml):
+        _store_table_text(session, document_id, asset, table_asset)
+        counts["table"] += 1
 
     figures = _pdffigures2_extract(path, document_id)
     if not figures:
@@ -524,6 +540,97 @@ def _tei_figure_legend_extract(
     return figures
 
 
+def _tei_table_text_extract(tei_xml: str) -> list[TableTextAsset]:
+    import xml.etree.ElementTree as ET
+
+    def _clean(text: str) -> str:
+        return " ".join(str(text or "").split()).strip()
+
+    try:
+        root = ET.fromstring(tei_xml)
+    except Exception:
+        return []
+
+    ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+    tables: list[TableTextAsset] = []
+    seen: set[str] = set()
+
+    def append_table(
+        *,
+        table_id: str | None,
+        caption: str,
+        text: str,
+        page: int | None,
+        meta: dict[str, Any],
+    ) -> None:
+        normalized_id = _normalize_table_id_value(table_id) or _normalize_table_id(caption or text)
+        if not normalized_id:
+            return
+        clean_text = _clean(text)
+        clean_caption = _clean(caption)
+        if len(clean_text) < 20 and len(clean_caption) < 20:
+            return
+        key = _safe_anchor_suffix(normalized_id)
+        if key in seen:
+            return
+        seen.add(key)
+        tables.append(
+            TableTextAsset(
+                table_id=normalized_id,
+                caption=clean_caption or f"Table {normalized_id}",
+                text=clean_text or clean_caption,
+                page=page,
+                meta=meta,
+            )
+        )
+
+    for idx, div in enumerate(root.findall(".//tei:body//tei:div", ns), start=1):
+        head_node = div.find("./tei:head", ns)
+        head = _clean(" ".join(head_node.itertext())) if head_node is not None else ""
+        table_id = _normalize_table_id(head)
+        if not table_id:
+            continue
+        text = _clean(" ".join(div.itertext()))
+        append_table(
+            table_id=table_id,
+            caption=head,
+            text=text,
+            page=_page_from_first_descendant_coords(div),
+            meta={
+                "source": "grobid_tei_table_text",
+                "xml_id": div.get("{http://www.w3.org/XML/1998/namespace}id") or div.get("id"),
+                "tei_node": "div",
+                "tei_index": idx,
+            },
+        )
+
+    for idx, node in enumerate(root.findall(".//tei:figure", ns), start=1):
+        fig_type = str(node.get("type") or "").strip().lower()
+        head = _clean(" ".join(head_node.itertext())) if (head_node := node.find("./tei:head", ns)) is not None else ""
+        label = _clean(" ".join(label_node.itertext())) if (label_node := node.find("./tei:label", ns)) is not None else ""
+        desc = _clean(" ".join(desc_node.itertext())) if (desc_node := node.find("./tei:figDesc", ns)) is not None else ""
+        text = _clean(" ".join(node.itertext()))
+        caption = " ".join(part for part in (head, desc or label) if part).strip() or text
+        table_id = _normalize_table_id(caption or text)
+        if fig_type != "table" and not table_id:
+            continue
+        append_table(
+            table_id=table_id,
+            caption=caption,
+            text=text,
+            page=_page_from_tei_coords(str(node.get("coords") or "")),
+            meta={
+                "source": "grobid_tei_table_figure",
+                "xml_id": node.get("{http://www.w3.org/XML/1998/namespace}id") or node.get("id"),
+                "tei_node": "figure",
+                "tei_index": idx,
+                "coords": str(node.get("coords") or "").strip(),
+            },
+        )
+
+    return tables
+
+
 def _figure_assets_from_text_chunks(text_blocks: list[dict[str, Any]]) -> list[FigureAsset]:
     figures: list[FigureAsset] = []
     for idx, block in enumerate(text_blocks, start=1):
@@ -641,6 +748,14 @@ def _page_from_tei_coords(coords: str) -> int | None:
         return int(match.group(1))
     except Exception:
         return None
+
+
+def _page_from_first_descendant_coords(node: Any) -> int | None:
+    for descendant in node.iter():
+        page = _page_from_tei_coords(str(descendant.get("coords") or ""))
+        if page is not None:
+            return page
+    return None
 
 
 def _validate_stack() -> None:
@@ -999,6 +1114,57 @@ def _store_table(
     session.add(chunk)
 
 
+def _store_table_text(
+    session: Session,
+    document_id: int,
+    asset: Asset,
+    table_asset: TableTextAsset,
+) -> None:
+    rows = _table_text_rows(table_asset.text, caption=table_asset.caption)
+    content = pd.DataFrame({"table_text": rows}).to_json(orient="split")
+    meta_obj: dict[str, Any] = {
+        "rows": len(rows),
+        "cols": 1,
+        "source": table_asset.meta.get("source") or "grobid_tei_table_text",
+        "asset_kind": asset.kind,
+        "caption": table_asset.caption,
+        "table_id": table_asset.table_id,
+        "page": table_asset.page,
+        "quality_flags": ["text_backed_table"],
+        "extra": table_asset.meta,
+    }
+    chunk = Chunk(
+        document_id=document_id,
+        asset_id=asset.id,
+        anchor=f"table:{_safe_anchor_suffix(table_asset.table_id)}",
+        modality="table",
+        content=content,
+        meta=json.dumps(meta_obj),
+    )
+    session.add(chunk)
+
+
+def _table_text_rows(text: str, *, caption: str = "") -> list[str]:
+    clean_text = " ".join(str(text or "").split()).strip()
+    clean_caption = " ".join(str(caption or "").split()).strip()
+    rows: list[str] = []
+    if clean_caption:
+        rows.append(clean_caption)
+    if clean_text:
+        if clean_caption and clean_text.startswith(clean_caption):
+            clean_text = clean_text[len(clean_caption):].strip()
+        tokens = clean_text.split()
+        row_tokens: list[str] = []
+        for token in tokens:
+            row_tokens.append(token)
+            if len(row_tokens) >= 18:
+                rows.append(" ".join(row_tokens))
+                row_tokens = []
+        if row_tokens:
+            rows.append(" ".join(row_tokens))
+    return [row for row in rows if row][:80] or [clean_text or clean_caption]
+
+
 def _table_from_image(image_path: Path) -> pd.DataFrame | None:
     image = Image.open(image_path).convert("RGB")
     rows, cols = _tatr_rows_cols(image)
@@ -1147,6 +1313,22 @@ def _normalize_figure_id(text: str) -> str | None:
     if not refs:
         return None
     return sorted(refs)[0]
+
+
+def _normalize_table_id(text: str) -> str | None:
+    match = TABLE_TITLE_RE.search(str(text or ""))
+    if not match:
+        return None
+    return _normalize_table_id_value(match.group(1))
+
+
+def _normalize_table_id_value(value: Any) -> str | None:
+    value = str(value or "").strip().upper()
+    if not re.fullmatch(r"S?\d+[A-Z]?", value):
+        return None
+    if not value:
+        return None
+    return value if value.startswith("S") else value.lstrip("0") or value
 
 
 def _safe_anchor_suffix(text: str) -> str:

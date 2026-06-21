@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "case_id": "sharma_2017_reward_deficits",
+  "source_pdf": "test/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association.pdf",
+  "source_sha256": "e1147400552eb8f0d0f6ee226fb598452aa3f6a24ae8196f0124fc2129bcd41f",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "reviewed_reference_available",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/sharma-et-al-2017-common-dimensional-reward-deficits-across-mood-and-psychotic-disorders-a-connectome-wide-association.pdf",
+      "test/text/sharma_2017_chatgpt_extraction.md",
+      "benchmarks/sharma_2017_gold_claims.jsonl"
+    ]
+  },
+  "paper_identity": {
+    "title": "Common dimensional reward deficits across mood and psychotic disorders: a connectome-wide association study",
+    "domain": "psychiatry_neuroimaging",
+    "study_type": "cross-sectional resting-state fMRI connectome-wide association study"
+  },
+  "final_report_expectations": {
+    "research_question": "Whether dimensional reward responsivity is associated with functional-connectivity patterns across mood, psychotic, psychosis-risk, and healthy-control groups.",
+    "study_design": "Connectome-wide association study using resting-state functional connectivity and multivariate distance-based matrix regression.",
+    "population_or_materials": "225 adults after quality assurance from major depressive disorder, bipolar disorder, schizophrenia, psychosis-risk, and healthy-control groups.",
+    "methods": [
+      "Report the Behavioral Activation Scale reward sensitivity subscale as the dimensional reward measure.",
+      "Report MDMR/connectome-wide analysis rather than a seed-only case-control analysis.",
+      "Preserve the five diagnostic/group counts when sample details are discussed."
+    ],
+    "primary_findings": [
+      "Reward deficits were associated with dysconnectivity involving nucleus accumbens, default mode network, and cingulo-opercular network.",
+      "Lower reward responsivity was associated with decreased nucleus accumbens-default mode connectivity and increased nucleus accumbens-cingulo-opercular connectivity.",
+      "Impaired reward responsivity was associated with default mode hyperconnectivity and diminished default mode-cingulo-opercular connectivity."
+    ],
+    "secondary_findings": [
+      "Clinical diagnosis alone did not identify reward-system hubs in MDMR analyses.",
+      "Associations were present within each diagnostic category and were directionally consistent but attenuated in healthy controls.",
+      "No categorical diagnostic differences in network-level summary measures were observed.",
+      "Other BAS subscales showed weaker associations and network effects were not related to disorder-specific illness severity measures."
+    ],
+    "sensitivity_analysis": [
+      "Within-group dimensional effects were examined across diagnostic categories.",
+      "Analyses excluding healthy controls strengthened the reward-sensitivity associations.",
+      "Smoking status and composite medication load were added as covariates and did not alter the findings.",
+      "Other BAS subscales and disorder-specific severity measures were evaluated for specificity."
+    ],
+    "statistical_tests_used": [
+      "Factor analysis was used to confirm the BAS reward sensitivity subfactor structure in the clinical sample.",
+      "Multivariate distance-based matrix regression tested BAS reward sensitivity associations with whole-brain connectivity patterns.",
+      "MDMR generated pseudo-F statistics and permutation-based p values at each gray matter voxel.",
+      "Cluster correction used voxel height z > 1.64 and cluster extent p < 0.01.",
+      "Follow-up seed-based connectivity and network-summary analyses used Pearson correlations and linear regression with clinical group, age, sex, and in-scanner motion covariates."
+    ],
+    "interpretation": [
+      "The report should frame findings as transdiagnostic network associations with anhedonia/reward responsivity.",
+      "The conclusion should emphasize corticostriatal and large-scale network dysfunction without claiming causal proof."
+    ],
+    "limitations": [
+      "Cross-sectional functional connectivity does not establish causality.",
+      "Diagnostic groups differed in clinical and medication context, so confounding and generalizability should be handled cautiously."
+    ],
+    "tables_figures_supplements": [
+      "Table 1 contains demographic and group information important for interpreting sample composition.",
+      "Figures identify connectivity clusters and follow-up network patterns."
+    ],
+    "supplement_availability": "The paper cites online data supplement methods/tables; if supplements are not extracted in a run, the synthesis should disclose that supplement-level details were not reviewed.",
+    "uniqueness": [
+      "The paper uses a whole-brain, data-driven CWAS/MDMR approach rather than relying on predefined seed regions.",
+      "It evaluates anhedonia dimensionally across mood, psychotic, psychosis-risk, and healthy-control groups in an RDoC-aligned framework.",
+      "It links reward deficits to both nucleus accumbens connectivity and large-scale default mode/cingulo-opercular network integration."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "sharma-001",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The final analytic sample included 225 adults across five groups.",
+      "source_anchor": "Abstract Method and Table 1",
+      "expected_entities": ["major depressive disorder", "bipolar disorder", "schizophrenia", "psychosis risk", "healthy controls"],
+      "expected_detail_types": ["data_source_or_design"],
+      "expected_numbers": [{"label": "final_sample", "value": 225, "unit": "participants"}]
+    },
+    {
+      "claim_id": "sharma-002",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "Reward responsivity was measured dimensionally with the Behavioral Activation Scale reward sensitivity subscale.",
+      "source_anchor": "Abstract Method",
+      "expected_entities": ["Behavioral Activation Scale", "reward sensitivity", "resting-state functional connectivity"],
+      "expected_detail_types": ["outcome_measure"],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "sharma-003",
+      "section": "results",
+      "importance": "P0",
+      "claim": "Reward deficits were linked to nucleus accumbens, default mode network, and cingulo-opercular network dysconnectivity.",
+      "source_anchor": "Abstract Results and Discussion",
+      "expected_entities": ["nucleus accumbens", "default mode network", "cingulo-opercular network"],
+      "expected_detail_types": ["statistical_result", "cross_modal_result"],
+      "expected_numbers": []
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not claim the study tested a treatment or longitudinal outcome.",
+    "Do not claim connectivity differences prove a causal mechanism."
+  ],
+  "scoring_focus": [
+    "Preserve sample structure, BAS reward sensitivity, MDMR/connectome-wide method, and network directionality.",
+    "Require supplement availability disclosure when online supplement details are not reviewed."
+  ]
+}

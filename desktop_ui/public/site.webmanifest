@@ -1,0 +1,14 @@
+{
+  "name": "PaperEval Desktop",
+  "short_name": "PaperEval",
+  "icons": [
+    {
+      "src": "/PaperEval-icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ],
+  "theme_color": "#101820",
+  "background_color": "#101820",
+  "display": "standalone"
+}

@@ -106,6 +106,46 @@ def truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars]
 
 
+def clean_source_excerpt(value: Any, *, max_chars: int = 900) -> str:
+    text = ""
+    if isinstance(value, list):
+        text = " ".join(str(item or "") for item in value)
+    else:
+        text = str(value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    return text[:max_chars].rsplit(" ", 1)[0].strip() if len(text) > max_chars else text
+
+
+def add_source_excerpts_to_packets(
+    raw_items: list[dict[str, Any]],
+    anchor_excerpts: dict[str, Any],
+    *,
+    max_chars: int = 900,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    clean_map = {
+        str(anchor or "").strip(): clean_source_excerpt(excerpt, max_chars=max_chars)
+        for anchor, excerpt in anchor_excerpts.items()
+        if str(anchor or "").strip()
+    }
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        updated = dict(item)
+        if not clean_source_excerpt(updated.get("source_excerpt"), max_chars=max_chars):
+            refs = ensure_str_list(updated.get("evidence_refs") or updated.get("evidence"))
+            anchor_candidates = [str(updated.get("anchor") or "").strip()] + [str(ref or "").strip() for ref in refs]
+            for anchor in anchor_candidates:
+                excerpt = clean_map.get(anchor)
+                if excerpt:
+                    updated["source_excerpt"] = excerpt
+                    break
+        out.append(updated)
+    return out
+
+
 def truncate_list(items: list[Any], max_items: int) -> list[Any]:
     if max_items <= 0:
         return []
@@ -188,14 +228,22 @@ EFFECT_RE = re.compile(r"\b(?:cohen'?s?\s*d|hedges'?g|or|rr)\s*[=:]?\s*(-?\d+(?:
 SECTION_LABEL_SET = {"introduction", "methods", "results", "discussion", "conclusion", "unknown"}
 SECTION_SOURCE_SET = {
     "meta",
+    "explicit_heading",
     "structured_abstract",
     "anchor",
     "statement_prefix",
     "category",
     "semantic",
     "heading",
+    "heading_style",
     "position",
     "lexical",
+    "llm_section_extract",
+    "llm_narrative_summary",
+    "llm_narrative_study_purpose",
+    "llm_narrative_study_hypothesis",
+    "llm_narrative_central_finding",
+    "section_boundary_ledger",
     "fallback",
 }
 RESULT_EVIDENCE_TYPE_SET = {"text_primary", "media_support"}
@@ -358,6 +406,8 @@ def normalize_evidence_packets(
         if not valid_refs:
             quality_flags.append("missing_evidence")
             valid_refs = []
+        elif anchor not in valid_anchor_set:
+            anchor = valid_refs[0]
 
         value, unit = _extract_numeric_value(statement)
         p_value = _extract_p_value(statement)
@@ -385,6 +435,14 @@ def normalize_evidence_packets(
             modality=modality if modality != "supp" else "supplement",
             anchor=anchor,
             statement=statement,
+            source_excerpt=clean_source_excerpt(
+                raw.get("source_excerpt")
+                or raw.get("source_text")
+                or raw.get("verbatim_text")
+                or raw.get("caption")
+                or raw.get("legend")
+                or raw.get("ocr_text")
+            ),
             evidence_refs=sorted(set(valid_refs)),
             confidence=clamp_confidence(raw.get("confidence", 0.0)),
             quality_flags=sorted(set(flag for flag in quality_flags if flag)),
@@ -411,6 +469,8 @@ def _normalize_section_label(value: Any) -> str:
 
 def _normalize_section_source(value: Any) -> str:
     token = str(value or "").strip().lower()
+    if token.startswith("section_boundary_ledger:"):
+        return "section_boundary_ledger"
     if token in SECTION_SOURCE_SET:
         return token
     return "fallback"
@@ -421,6 +481,26 @@ def _normalize_result_evidence_type(value: Any) -> str | None:
     if token in RESULT_EVIDENCE_TYPE_SET:
         return token
     return None
+
+
+def filter_grounded_evidence_packets(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop normalized packets that cannot be traced back to parsed source anchors."""
+    filtered: list[dict[str, Any]] = []
+    for packet in packets:
+        if not isinstance(packet, dict):
+            continue
+        flags = {str(flag or "").strip().lower() for flag in ensure_str_list(packet.get("quality_flags"))}
+        refs = [str(ref or "").strip() for ref in ensure_str_list(packet.get("evidence_refs"))]
+        refs = [ref for ref in refs if ref and ref.lower() != "unknown"]
+        anchor = str(packet.get("anchor") or "").strip()
+        if "missing_evidence" in flags:
+            continue
+        if not refs:
+            continue
+        if not anchor or anchor.lower() == "unknown":
+            continue
+        filtered.append(packet)
+    return filtered
 
 
 def packets_to_legacy_findings(packets: list[dict[str, Any]]) -> list[dict[str, Any]]:

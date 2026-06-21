@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc7441062_double_flp_in",
+  "source_pdf": "test/10_32820202_PMC7441062.pdf",
+  "source_sha256": "b303168244172aecfbddc10f48a4c4c2413162094ea2bfef4f3c4ecf634bbcff",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/10_32820202_PMC7441062.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "A double-Flp-in method for stable overexpression of two genes",
+    "domain": "molecular_biology_methods",
+    "study_type": "methods development and validation study"
+  },
+  "final_report_expectations": {
+    "research_question": "Whether the Flp-In system can be modified to enable simultaneous targeted integration and stable expression of two genes in mammalian cells.",
+    "study_design": "Molecular-biology methods development and validation study using engineered vectors, HEK293-derived cell lines, fluorescent reporter validation, genomic/transcriptional validation, and OCT1/CYP2C19 functional proof of concept.",
+    "population_or_materials": "HEK293/HEK293 T-REx Flp-In cell systems; modified pcDNA5/FRT hygromycin and puromycin vectors; fluorescent protein pairs; NTCP-CFP/NTCP-YFP; OCT1 and CYP2C19 pharmacogenomic cell-line combinations.",
+    "methods": [
+      "Engineer paired Flp-In vectors with frame-shift logic and separate selection markers.",
+      "Optimize double-transfection antibiotic selection and vector:pOG44 amounts.",
+      "Validate genomic integration by multiplex PCR, single PCR, and Sanger sequencing.",
+      "Measure expression by qPCR using delta-delta Ct.",
+      "Assess stability by flow cytometry and microscopy over repeated passages.",
+      "Functionally test proguanil uptake and cycloguanil formation by LC-MS/MS."
+    ],
+    "primary_findings": [
+      "The modified system enabled simultaneous targeted integration of two genes.",
+      "Double expression was stable through 30 passages and remained high after antibiotic withdrawal.",
+      "OCT1/CYP2C19 co-overexpression increased cycloguanil formation compared with CYP2C19-only systems."
+    ],
+    "secondary_findings": [
+      "OCT1 and CYP2C19 expression did not significantly differ between single and double transfectants or by integration order.",
+      "After 25 passages, eGFP/tdTomato double-positive cells remained about 99.95% with antibiotics and 99.5% without antibiotics.",
+      "NTCP-CFP/NTCP-YFP microscopy showed no significant difference with versus without antibiotics after 25 passages.",
+      "The authors state cell-line generation and validation can be completed in approximately four weeks."
+    ],
+    "sensitivity_analysis": [
+      "Validation used multiple gene-pair contexts: fluorescent reporters, NTCP fluorescent tags, and OCT1/CYP2C19.",
+      "Stability was evaluated with and without selection antibiotics.",
+      "Expression comparisons considered single transfection, double transfection, mock/double controls, and integration order.",
+      "Preliminary hygromycin-only selection produced 22 of 25 clones expressing both genes."
+    ],
+    "statistical_tests_used": [
+      "Unpaired t-test was used for double-positive cell comparisons with versus without antibiotics.",
+      "One-way ANOVA with post-hoc Tukey test was used for expression comparisons.",
+      "Delta-delta Ct method was used for qPCR expression analysis.",
+      "LC-MS/MS quantification used standard curves for proguanil and cycloguanil."
+    ],
+    "interpretation": [
+      "Frame as a reusable method for controlled two-gene overexpression and gene-interaction studies.",
+      "The pharmacogenomic example supports method utility but is not a clinical validation study."
+    ],
+    "limitations": [
+      "Dual antibiotic treatment may be problematic in sensitive cell lines.",
+      "Stable integration by site-specific recombinases can occur at pseudosites.",
+      "The third reading frame at the FRT site can lead to premature stop, limiting frame-dependent resistance design.",
+      "Validation remains necessary to exclude unwanted vector arrangements or multiple integrations."
+    ],
+    "tables_figures_supplements": [
+      "Figure 1 shows method principle and OCT1/CYP2C19 example.",
+      "Figure 2 shows frame-shift/resistance selection design.",
+      "Figure 3 shows fluorescent stability and passage data.",
+      "Figure 4 shows genomic/transcriptional validation.",
+      "Figure 5 shows proguanil/cycloguanil functional assay.",
+      "Table 1 lists primers; supplementary figures and Table S1 support cloning, PCR, sequencing, and LC-MS/MS parameters."
+    ],
+    "supplement_availability": "Supplementary information is reported as available online at the article DOI; the local PDF references Fig. S1-S3 and Table S1 but does not include their full content.",
+    "uniqueness": [
+      "Adapts Flp-In for simultaneous two-gene targeted integration.",
+      "Combines molecular validation with functional pharmacogenomic proof of concept.",
+      "Bridges single-gene overexpression and controlled multi-gene interaction studies."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "double-flp-001",
+      "section": "methods",
+      "importance": "P0",
+      "claim": "The method modifies Flp-In vectors so two genes can be simultaneously integrated at the FRT locus with selection for correct double integration.",
+      "source_anchor": "Abstract, Figure 1, Figure 2, strategy section",
+      "expected_entities": [
+        "Flp-In",
+        "FRT",
+        "pcDNA5/FRTpuro-fs",
+        "pcDNA5/FRThygro-fs"
+      ],
+      "expected_numbers": [
+        {
+          "label": "gene_count",
+          "value": 2,
+          "unit": "genes"
+        }
+      ]
+    },
+    {
+      "claim_id": "double-flp-002",
+      "section": "results",
+      "importance": "P1",
+      "claim": "Fluorescent reporter validation showed stable double-positive expression over 30 passages, including after antibiotic withdrawal.",
+      "source_anchor": "Stability of genomic integration; Figure 3",
+      "expected_entities": [
+        "eGFP",
+        "tdTomato",
+        "NTCP-CFP",
+        "NTCP-YFP"
+      ],
+      "expected_numbers": [
+        {
+          "label": "passages",
+          "value": 30,
+          "unit": "passages"
+        },
+        {
+          "label": "with_antibiotics_double_positive_after_25_passages",
+          "value": 99.95,
+          "unit": "percent"
+        },
+        {
+          "label": "without_antibiotics_double_positive_after_25_passages",
+          "value": 99.5,
+          "unit": "percent"
+        }
+      ]
+    },
+    {
+      "claim_id": "double-flp-003",
+      "section": "results",
+      "importance": "P1",
+      "claim": "PCR and Sanger sequencing were used to confirm intended vector arrangement and screen against unwanted/multiple integrations.",
+      "source_anchor": "Genomic validation; Figure 4",
+      "expected_entities": [
+        "multiplex PCR",
+        "single PCR",
+        "Sanger sequencing",
+        "FRT sites"
+      ],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "double-flp-004",
+      "section": "results",
+      "importance": "P0",
+      "claim": "Functional validation showed OCT1-mediated uptake combined with CYP2C19 metabolism increased cycloguanil accumulation relative to CYP2C19 alone.",
+      "source_anchor": "Functional validation; Figure 5; Discussion",
+      "expected_entities": [
+        "OCT1",
+        "CYP2C19",
+        "proguanil",
+        "cycloguanil"
+      ],
+      "expected_numbers": [
+        {
+          "label": "independent_experiments",
+          "value": 3,
+          "unit": "experiments"
+        }
+      ]
+    },
+    {
+      "claim_id": "double-flp-005",
+      "section": "discussion",
+      "importance": "P1",
+      "claim": "The authors note limitations around simultaneous antibiotic treatment in sensitive cell lines and possible pseudosite integration by recombinases.",
+      "source_anchor": "Discussion limitations paragraph",
+      "expected_entities": [
+        "hygromycin",
+        "puromycin",
+        "pseudosites",
+        "site-specific recombinases"
+      ],
+      "expected_numbers": []
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not claim validation in humans, patients, or clinical samples.",
+    "Do not omit required clone/genomic validation.",
+    "Do not claim unrestricted scalability to many genes without noting frame/recombination constraints."
+  ],
+  "scoring_focus": [
+    "Preserve the vector/frame-shift mechanism.",
+    "Capture genomic, expression, stability, and functional validation layers.",
+    "Keep OCT1/CYP2C19 as proof of concept, not clinical outcome evidence.",
+    "Include limitations and supplement disclosure."
+  ]
+}

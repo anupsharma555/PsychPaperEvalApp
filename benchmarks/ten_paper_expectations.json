@@ -1,0 +1,744 @@
+{
+  "schema_version": 1,
+  "fixture_id": "p2_10_paper_lightweight_expectations",
+  "description": "Lightweight deterministic expectations for test/01_*.pdf through test/10_*.pdf. This is a structural gold layer, not a claim-level benchmark.",
+  "failure_modes": [
+    "parser_failure",
+    "model_failure",
+    "synthesis_failure",
+    "benchmark_invalidity"
+  ],
+  "canonical_sections": [
+    "abstract",
+    "introduction",
+    "methods",
+    "results",
+    "discussion",
+    "conclusion",
+    "references",
+    "supplementary_material"
+  ],
+  "defaults": {
+    "parser_coverage_floors": {
+      "parser_text_coverage": 0.85,
+      "section_availability_recall": 0.75,
+      "figure_ref_recall": 0.5,
+      "table_ref_recall": 0.5,
+      "source_manifest_completeness": 1.0
+    },
+    "section_boundary_wrong_rate_ceiling": 0.25,
+    "source_manifest_expectations": {
+      "required": true,
+      "source_type_one_of": [
+        "file",
+        "url"
+      ],
+      "status_one_of": [
+        "resolved",
+        "parsed"
+      ],
+      "selected_assets_min": 1
+    }
+  },
+  "cases": [
+    {
+      "case_id": "01",
+      "pdf_file": "test/01_29311933_PMC5742137.pdf",
+      "pmid": "29311933",
+      "pmcid": "PMC5742137",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": true,
+        "results": true,
+        "discussion": true,
+        "conclusion": false,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+        ],
+        "table_refs": [
+          "1"
+        ],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": []
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 0.5,
+        "table_ref_recall": 0.5,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/01_29311933_PMC5742137.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "figure_or_table_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    },
+    {
+      "case_id": "02",
+      "pdf_file": "test/02_30190312_PMC6168235.pdf",
+      "pmid": "30190312",
+      "pmcid": "PMC6168235",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": false,
+        "results": false,
+        "discussion": true,
+        "conclusion": true,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "table_refs": [
+          "1"
+        ],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": []
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 0.5,
+        "table_ref_recall": 0.5,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/02_30190312_PMC6168235.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "figure_or_table_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    },
+    {
+      "case_id": "03",
+      "pdf_file": "test/03_32814590_PMC7435222.pdf",
+      "pmid": "32814590",
+      "pmcid": "PMC7435222",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": true,
+        "results": true,
+        "discussion": true,
+        "conclusion": true,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [
+          "1",
+          "2"
+        ],
+        "table_refs": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": []
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 0.5,
+        "table_ref_recall": 0.5,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/03_32814590_PMC7435222.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "figure_or_table_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    },
+    {
+      "case_id": "04",
+      "pdf_file": "test/04_32836822_PMC7437112.pdf",
+      "pmid": "32836822",
+      "pmcid": "PMC7437112",
+      "expected_sections": {
+        "abstract": false,
+        "introduction": false,
+        "methods": false,
+        "results": false,
+        "discussion": false,
+        "conclusion": false,
+        "references": false,
+        "supplementary_material": true
+      },
+      "expected_refs": {
+        "figure_refs": [],
+        "table_refs": [],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": [
+          "S1"
+        ]
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.7,
+        "section_availability_recall": 1.0,
+        "figure_ref_recall": 1.0,
+        "table_ref_recall": 1.0,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.1,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/04_32836822_PMC7437112.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "supplementary_material_not_identified",
+          "supplementary_table_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "main_article_sections_hallucinated_for_supplement_only_pdf"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "case_is_supplement_only_without_case_metadata"
+        ]
+      }
+    },
+    {
+      "case_id": "05",
+      "pdf_file": "test/05_32832679_PMC7439296.pdf",
+      "pmid": "32832679",
+      "pmcid": "PMC7439296",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": true,
+        "results": true,
+        "discussion": true,
+        "conclusion": false,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7"
+        ],
+        "table_refs": [],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": []
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 0.5,
+        "table_ref_recall": 1.0,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/05_32832679_PMC7439296.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "figure_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    },
+    {
+      "case_id": "06",
+      "pdf_file": "test/06_32267022_PMC7439333.pdf",
+      "pmid": "32267022",
+      "pmcid": "PMC7439333",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": true,
+        "results": true,
+        "discussion": true,
+        "conclusion": true,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [],
+        "table_refs": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+        ],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": [
+          "S1"
+        ]
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 1.0,
+        "table_ref_recall": 0.5,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/06_32267022_PMC7439333.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "table_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    },
+    {
+      "case_id": "07",
+      "pdf_file": "test/07_32843816_PMC7440080.pdf",
+      "pmid": "32843816",
+      "pmcid": "PMC7440080",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": false,
+        "results": false,
+        "discussion": true,
+        "conclusion": true,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [
+          "1",
+          "2"
+        ],
+        "table_refs": [],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": []
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 0.5,
+        "table_ref_recall": 1.0,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/07_32843816_PMC7440080.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "figure_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    },
+    {
+      "case_id": "08",
+      "pdf_file": "test/08_32843834_PMC7440026.pdf",
+      "pmid": "32843834",
+      "pmcid": "PMC7440026",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": true,
+        "results": true,
+        "discussion": true,
+        "conclusion": true,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "table_refs": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5A",
+          "5B",
+          "6",
+          "7"
+        ],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": []
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 0.5,
+        "table_ref_recall": 0.5,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/08_32843834_PMC7440026.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "figure_or_table_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    },
+    {
+      "case_id": "09",
+      "pdf_file": "test/09_32843824_PMC7440083.pdf",
+      "pmid": "32843824",
+      "pmcid": "PMC7440083",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": true,
+        "results": true,
+        "discussion": true,
+        "conclusion": true,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9",
+          "10",
+          "11"
+        ],
+        "table_refs": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "supplementary_figure_refs": [],
+        "supplementary_table_refs": []
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 0.5,
+        "table_ref_recall": 0.5,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/09_32843824_PMC7440083.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "figure_or_table_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    },
+    {
+      "case_id": "10",
+      "pdf_file": "test/10_32820202_PMC7441062.pdf",
+      "pmid": "32820202",
+      "pmcid": "PMC7441062",
+      "expected_sections": {
+        "abstract": true,
+        "introduction": true,
+        "methods": true,
+        "results": true,
+        "discussion": true,
+        "conclusion": false,
+        "references": true,
+        "supplementary_material": false
+      },
+      "expected_refs": {
+        "figure_refs": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+        ],
+        "table_refs": [
+          "1"
+        ],
+        "supplementary_figure_refs": [
+          "S1",
+          "S2",
+          "S3"
+        ],
+        "supplementary_table_refs": [
+          "S1"
+        ]
+      },
+      "parser_coverage_floors": {
+        "parser_text_coverage": 0.85,
+        "section_availability_recall": 0.75,
+        "figure_ref_recall": 0.5,
+        "table_ref_recall": 0.5,
+        "source_manifest_completeness": 1.0
+      },
+      "section_boundary_wrong_rate_ceiling": 0.25,
+      "source_manifest_expectations": {
+        "required": true,
+        "source_type_one_of": [
+          "file",
+          "url"
+        ],
+        "status_one_of": [
+          "resolved",
+          "parsed"
+        ],
+        "selected_assets_min": 1,
+        "expected_primary_asset": "test/10_32820202_PMC7441062.pdf"
+      },
+      "failure_mode_metadata": {
+        "parser_failure": [
+          "missing_expected_sections",
+          "figure_or_table_ref_floor_miss",
+          "source_manifest_asset_mismatch"
+        ],
+        "model_failure": [
+          "live_model_claim_recall_not_scored_by_this_fixture"
+        ],
+        "synthesis_failure": [
+          "section_boundary_wrong_rate_above_ceiling"
+        ],
+        "benchmark_invalidity": [
+          "missing_source_manifest",
+          "non_completed_or_fallback_run"
+        ]
+      }
+    }
+  ]
+}

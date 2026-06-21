@@ -1,0 +1,264 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc7439333_hbv_hcc_polymorphisms",
+  "source_pdf": "test/06_32267022_PMC7439333.pdf",
+  "source_sha256": "8cf4a35413a1a1a9ed3bd463ab73250f7daa1752c19d72c9077c6f258fde5a20",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/06_32267022_PMC7439333.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "Association between the rs9131 and rs3806792 polymorphisms of the CXCL2 gene and the risk of HBV-related hepatocellular carcinoma in a Guangxi population",
+    "domain": "clinical_epidemiology_genetics",
+    "study_type": "case-control genetic association study"
+  },
+  "final_report_expectations": {
+    "research_question": "Whether CXCL2 rs9131 and rs3806792 polymorphisms are associated with risk of chronic hepatitis B, HBV-related liver cirrhosis, or HBV-related hepatocellular carcinoma in Chinese individuals from Guangxi.",
+    "study_design": "Hospital-based case-control genetic association study comparing healthy controls with CHB, HBV-related LC, and HBV-related HCC groups, including allele, genotype, haplotype, sex subgroup, and 1000 Genomes population-frequency comparisons.",
+    "population_or_materials": "147 healthy controls, 138 chronic hepatitis B patients, 137 HBV-related liver cirrhosis patients, and 150 HBV-related hepatocellular carcinoma patients; all participants were Chinese individuals from Guangxi province.",
+    "methods": [
+      "Enrolled HBV-related disease cases from the First Affiliated Hospital of Guangxi Medical University from June 2017 to February 2018 and selected healthy volunteers from the same hospital's health examination center.",
+      "Confirmed chronic HBV infection for at least 6 months using HBV serology; defined CHB, LC, and HCC using liver enzymes, imaging, laboratory findings, cytology/histology, AFP, CT, or ultrasonography criteria as applicable.",
+      "Extracted DNA from peripheral white blood cells and amplified target regions by PCR.",
+      "Genotyped CXCL2 rs9131 and rs3806792 using SNaPshot multiplex genotyping and GeneMarker software.",
+      "Compared genotype, allele, and haplotype distributions across disease groups vs controls, including sex-stratified analyses and comparison of healthy controls with 1000 Genomes reference populations."
+    ],
+    "primary_findings": [
+      "No significant association was found between CXCL2 rs9131 or rs3806792 and CHB, HBV-related LC, or HBV-related HCC in the Guangxi sample.",
+      "The negative finding held across allele, genotype, dominant/recessive model, and haplotype comparisons.",
+      "Male and female subgroup analyses did not identify significant associations.",
+      "The authors concluded that rs9131 and rs3806792 might not contribute to CHB, HBV-related LC, or HCC development in this Guangxi population."
+    ],
+    "secondary_findings": [
+      "Baseline sex distributions were not significantly different across groups, but CHB patients were about 10 years younger than controls, LC patients, and HCC patients.",
+      "Hardy-Weinberg equilibrium was satisfied for both SNPs in all four groups.",
+      "Strong linkage disequilibrium was observed between rs9131 and rs3806792 across disease-vs-control comparisons.",
+      "The C9131-C3806792 haplotype was the major haplotype in all groups, and T9131-T3806792 was second most common.",
+      "Healthy-control genotype and allele frequencies were similar to Han Chinese in Beijing but differed from several other 1000 Genomes populations."
+    ],
+    "sensitivity_analysis": [
+      "No formal sensitivity analysis was labeled as such.",
+      "Robustness-relevant analyses included age/sex-adjusted logistic regression, male and female subgroup analyses, HWE checks, haplotype analysis, and external population-frequency comparison using 1000 Genomes.",
+      "Female subgroup details appear to be in Table S1, which was referenced but not present in the local PDF text."
+    ],
+    "statistical_tests_used": [
+      "ANOVA was used for continuous variables such as age across groups.",
+      "Chi-square tests and Fisher exact tests were used for categorical variables and allele/genotype frequency comparisons.",
+      "Goodness-of-fit chi-square tests assessed Hardy-Weinberg equilibrium.",
+      "Binary logistic regression estimated odds ratios and 95% confidence intervals, adjusted for age and sex where appropriate.",
+      "SHEsis software estimated linkage disequilibrium and haplotype frequencies.",
+      "IBM SPSS Statistics 23.0 was used for statistical analyses; two-sided p < 0.05 threshold."
+    ],
+    "interpretation": [
+      "The report should present this as a negative genetic association study in a Guangxi Chinese population.",
+      "Population-frequency differences vs 1000 Genomes groups should be treated as genetic-background context, not as evidence of disease risk in other ethnicities.",
+      "The findings do not rule out CXCL2 biology in HBV-related HCC, other CXCL2 variants, expression-level effects, or associations in larger/multicenter cohorts."
+    ],
+    "limitations": [
+      "Relatively small sample size may limit power to detect smaller genetic effects.",
+      "Population was geographically and ethnically limited to Chinese individuals from Guangxi.",
+      "Only two CXCL2 polymorphism sites were evaluated.",
+      "The study did not establish whether rs9131 or rs3806792 affects CXCL2 expression or serum levels."
+    ],
+    "tables_figures_supplements": [
+      "Table 1: demographic characteristics by group.",
+      "Table 2: rs9131 and rs3806792 genotype/allele frequencies and adjusted ORs across CHB, LC, HCC vs controls.",
+      "Table 3: male subgroup genotype/allele frequencies.",
+      "Table 4: healthy-control genotype/allele comparison with 1000 Genomes populations.",
+      "Table 5: haplotype frequencies for rs9131-rs3806792 across disease groups and controls.",
+      "Table S1: female subgroup analysis is referenced but not included in the extracted local PDF text."
+    ],
+    "supplement_availability": "The article states that additional supporting information may be found online. The local PDF text references Table S1 for female subgroup analyses but does not include the supporting table; online supporting information was not reviewed. The article states datasets are available from the corresponding author on reasonable request.",
+    "uniqueness": [
+      "Negative association benchmark requiring careful avoidance of false-positive genetic conclusions.",
+      "Covers an HBV disease-progression spectrum from CHB to LC to HCC.",
+      "Combines SNP genotype/allele models, haplotypes, sex subgroups, HWE checks, and population-genetic comparison."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "cxcl2-001",
+      "section": "methods",
+      "importance": "P0",
+      "claim": "The study compared healthy controls, CHB patients, HBV-related LC patients, and HBV-related HCC patients from Guangxi.",
+      "source_anchor": "Abstract Methods; Participants; Table 1",
+      "expected_entities": [
+        "healthy controls",
+        "CHB",
+        "HBV-related LC",
+        "HBV-related HCC",
+        "Guangxi"
+      ],
+      "expected_numbers": [
+        {
+          "label": "healthy_controls",
+          "value": 147,
+          "unit": "participants"
+        },
+        {
+          "label": "chb_patients",
+          "value": 138,
+          "unit": "participants"
+        },
+        {
+          "label": "lc_patients",
+          "value": 137,
+          "unit": "participants"
+        },
+        {
+          "label": "hcc_patients",
+          "value": 150,
+          "unit": "participants"
+        }
+      ]
+    },
+    {
+      "claim_id": "cxcl2-002",
+      "section": "methods",
+      "importance": "P1",
+      "claim": "The two CXCL2 variants tested were rs9131, a 3 prime UTR variant, and rs3806792, an upstream transcript variant, genotyped using SNaPshot.",
+      "source_anchor": "Introduction; DNA extraction and SNP genotypes",
+      "expected_entities": [
+        "CXCL2",
+        "rs9131",
+        "rs3806792",
+        "SNaPshot"
+      ],
+      "expected_numbers": [
+        {
+          "label": "variants_tested",
+          "value": 2,
+          "unit": "SNPs"
+        }
+      ]
+    },
+    {
+      "claim_id": "cxcl2-003",
+      "section": "results",
+      "importance": "P0",
+      "claim": "No significant rs9131 or rs3806792 allele or genotype associations were found for CHB, HBV-related LC, or HBV-related HCC compared with healthy controls.",
+      "source_anchor": "Association between CXCL2 SNPs and risk of HBV-related HCC; Table 2",
+      "expected_entities": [
+        "rs9131",
+        "rs3806792",
+        "CHB",
+        "LC",
+        "HCC",
+        "healthy controls"
+      ],
+      "expected_numbers": [
+        {
+          "label": "rs9131_hcc_ct_or",
+          "value": 1.26,
+          "unit": "odds_ratio"
+        },
+        {
+          "label": "rs9131_hcc_tt_or",
+          "value": 1.36,
+          "unit": "odds_ratio"
+        },
+        {
+          "label": "rs3806792_hcc_tc_or",
+          "value": 1.31,
+          "unit": "odds_ratio"
+        },
+        {
+          "label": "rs3806792_hcc_cc_or",
+          "value": 1.06,
+          "unit": "odds_ratio"
+        }
+      ]
+    },
+    {
+      "claim_id": "cxcl2-004",
+      "section": "results",
+      "importance": "P1",
+      "claim": "Haplotype analysis found strong linkage disequilibrium but no significant haplotype-distribution differences between disease groups and controls.",
+      "source_anchor": "Haplotype analysis; Table 5",
+      "expected_entities": [
+        "SHEsis",
+        "haplotype",
+        "linkage disequilibrium",
+        "C9131-C3806792",
+        "T9131-T3806792"
+      ],
+      "expected_numbers": [
+        {
+          "label": "d_prime_chb_vs_control",
+          "value": 0.991,
+          "unit": "D_prime"
+        },
+        {
+          "label": "d_prime_lc_vs_control",
+          "value": 0.991,
+          "unit": "D_prime"
+        },
+        {
+          "label": "d_prime_hcc_vs_control",
+          "value": 0.992,
+          "unit": "D_prime"
+        },
+        {
+          "label": "major_haplotype_minimum_frequency",
+          "value": 65,
+          "unit": "percent"
+        }
+      ]
+    },
+    {
+      "claim_id": "cxcl2-005",
+      "section": "discussion",
+      "importance": "P1",
+      "claim": "Healthy Guangxi controls had rs9131 and rs3806792 frequencies similar to Han Chinese in Beijing but significantly different from CEU, GIH, JPT, and YRI 1000 Genomes populations.",
+      "source_anchor": "1000 Genomes comparison; Table 4; Discussion",
+      "expected_entities": [
+        "Han Chinese in Beijing",
+        "CEU",
+        "GIH",
+        "JPT",
+        "YRI",
+        "1000 Genomes"
+      ],
+      "expected_numbers": [
+        {
+          "label": "present_study_rs9131_cc",
+          "value": 77,
+          "unit": "participants"
+        },
+        {
+          "label": "present_study_rs9131_c_allele_frequency",
+          "value": 0.72,
+          "unit": "proportion"
+        },
+        {
+          "label": "present_study_rs3806792_tt",
+          "value": 76,
+          "unit": "participants"
+        },
+        {
+          "label": "present_study_rs3806792_t_allele_frequency",
+          "value": 0.7,
+          "unit": "proportion"
+        }
+      ]
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not claim rs9131 or rs3806792 increases or decreases HBV-related HCC risk in the Guangxi sample.",
+    "Do not treat ethnic allele-frequency differences as disease-risk evidence.",
+    "Do not generalize the negative result to all populations or all CXCL2 variation.",
+    "Do not imply CXCL2 expression or serum levels were measured.",
+    "Do not claim the online supporting information was reviewed unless retrieved separately."
+  ],
+  "scoring_focus": [
+    "Reward accurate negative-association framing and preservation of all four group counts.",
+    "Require correct SNP identities, genotyping method, and adjusted logistic-regression/statistical framework.",
+    "Check that subgroup/haplotype/population-comparison analyses are included without overinterpretation.",
+    "Penalize any fabricated positive association, expression result, or external-risk inference."
+  ]
+}

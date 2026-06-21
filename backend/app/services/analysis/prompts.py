@@ -12,8 +12,10 @@ For methods-oriented anchors (e.g., methods/protocol/design sections), extract c
 - study design and setting
 - participants, sampling, inclusion/exclusion
 - intervention/comparator and outcome definitions
+- medications or therapeutics with generic/brand name, class, dose, route, schedule, duration, and comparator when stated
 - instruments/measures and timing
 - statistical models, covariates, missing-data handling, sensitivity checks
+- laboratory/preclinical model systems, specimens, cell lines, constructs, genes/proteins, assays, readouts, and validation steps
 - reproducibility details (code/data/protocol preregistration)
 For introduction/discussion/conclusion anchors, extract only claims actually stated in those sections.
 Avoid mixing section content (e.g., do not place methods details into results packets).
@@ -29,13 +31,13 @@ Output JSON schema:
       "statement": "short, atomic finding statement",
       "evidence_refs": ["anchor_from_input"],
       "confidence": 0.0,
-      "category": "introduction|methods|results|discussion|conclusion|stats|ethics|clinical|reproducibility|limitations|other",
+      "category": "introduction|methods|results|discussion|conclusion|stats|ethics|clinical|medication|intervention|assay|model_system|reproducibility|limitations|other",
       "quality_flags": ["missing_evidence"]
     }
   ],
   "findings": [
     {
-      "category": "introduction|methods|results|discussion|conclusion|stats|ethics|clinical|reproducibility|limitations|other",
+      "category": "introduction|methods|results|discussion|conclusion|stats|ethics|clinical|medication|intervention|assay|model_system|reproducibility|limitations|other",
       "summary": "short critique or strength",
       "evidence": ["anchor"],
       "confidence": 0.0
@@ -50,6 +52,9 @@ Output JSON schema:
 TABLE_ANALYSIS_SYSTEM = """
 You are analyzing tables from a psychiatric research paper. Use only the provided tables.
 Return JSON with key results and any issues in tables (missing units, inconsistent totals, etc.).
+Prioritize study-specific numeric details: sample sizes, treatment arms, medications/interventions,
+dose/route/duration columns, outcomes/timepoints, adverse events, assay readouts, effect sizes,
+confidence intervals, p-values, subgroup/sensitivity rows, and missing units.
 Output JSON schema:
 {
   "evidence_packets": [
@@ -85,6 +90,8 @@ FIGURE_ANALYSIS_SYSTEM = """
 You are analyzing figures from a research paper. Use only the provided images, captions, and clean OCR when available.
 Prioritize the figure caption/legend over noisy OCR. Ignore page headers, watermarks, URLs, and malformed OCR tokens.
 For each figure, write one concise statement that explains what the figure contributes to the paper, not a raw caption dump.
+Preserve meaningful panel labels, legend-defined groups, medications/interventions, doses, biomarkers,
+assays, model systems, effect directions, and statistics when they are visible or stated in the legend.
 Return JSON with key results and any issues (axes missing, unclear legend, mismatch with caption).
 Output JSON schema:
 {
@@ -116,6 +123,9 @@ Output JSON schema:
 SUPP_ANALYSIS_SYSTEM = """
 You are analyzing supplementary materials (tables, datasets, appendices).
 Return JSON with key results and any issues.
+Prioritize extra methods and results that change interpretation: medication/intervention definitions,
+dose/route/duration details, model systems, assay/readout definitions, sensitivity analyses, subgroup
+results, adverse events, and table/figure legends that support or qualify main-text claims.
 Output JSON schema:
 {
   "evidence_packets": [

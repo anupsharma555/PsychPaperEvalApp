@@ -38,108 +38,85 @@ python3 -m venv .venv
 cp backend/.env.example backend/.env
 ```
 3. Add local model files under `models/` (not tracked by git).
-4. Start app/backend:
+4. Start the backend directly when you do not need the desktop shell:
 ```bash
 ./run_app.sh
 ```
 
-## LLM Providers
+## Running PaperEval
 
-The app supports local `llama.cpp` models and OpenAI API models.
+Use the desktop app for the normal operator workflow. The desktop shell starts the backend in local-provider mode and supervises shutdown.
 
-Local mode remains the default unless `LLM_PROVIDER=openai` is configured. Local model weights are expected under `models/` and are not tracked by git.
+Use the backend-served browser UI for standard web review:
 
-OpenAI mode uses the Responses API by default:
-
-```env
-LLM_PROVIDER=openai
-PSYCHPAPER_OPENAI_API_KEY=sk-...
-OPENAI_API_MODE=responses
-OPENAI_TEXT_MODEL=gpt-5-mini
-OPENAI_DEEP_MODEL=gpt-5-mini
-OPENAI_VISION_MODEL=gpt-5-mini
-OPENAI_REASONING_EFFORT=minimal
+```bash
+make web-app
 ```
 
-`gpt-5-mini` is used as the default because it supports text and image input with text output, while keeping paper runs relatively inexpensive. The OpenAI wrapper still preserves the existing app-level `chat_text_fast`, `chat_text_deep`, and `chat_with_images` interfaces.
-
-## OpenAI Cost Guardrails
-
-OpenAI usage is tracked in an append-only JSONL ledger at:
+The canonical browser URL is:
 
 ```text
-data/openai_usage_ledger.jsonl
+http://127.0.0.1:8000/web/
 ```
 
-Each API call creates a reservation before the request and an actual usage record after the response. Reservations use conservative estimates so the run can be stopped before a call would exceed the configured budget. Actual records use token counts returned by OpenAI and are the best local estimate for per-run cost.
+Use this URL for report review, deep links, and app QA that should match the packaged UI. Avoid run-specific query strings as the project standard.
 
-Current relevant defaults:
+Use the Vite dev server only while editing frontend code:
 
-```env
-OPENAI_USAGE_GUARDRAILS_ENABLED=true
-OPENAI_MAX_COST_PER_RUN_USD=0.15
-OPENAI_MAX_COST_PER_DAY_USD=2.00
-OPENAI_MAX_CALLS_PER_RUN=36
-OPENAI_MAX_OUTPUT_TOKENS_PER_RUN=55000
-OPENAI_ESTIMATED_IMAGE_INPUT_TOKENS=2500
-LLM_TEXT_MAX_TOKENS=6000
-LLM_DEEP_MAX_TOKENS=3500
-LLM_VISION_MAX_TOKENS=1200
+```bash
+make web-dev
 ```
 
-The guardrail is stage-aware and records `job_id`, `document_id`, model, modality, stage, input tokens, cached input tokens, output tokens, and estimated cost. If the next call would exceed the run cap, daily cap, call cap, or output-token cap, analysis fails fast with a budget message rather than silently continuing.
+The dev URL is `http://127.0.0.1:5184/`. After frontend edits, rebuild and verify the same behavior on `http://127.0.0.1:8000/web/`.
 
-Figure and supplement fallbacks now propagate budget errors instead of retrying through OCR/caption-only paths after the cap is reached.
+## Models and Providers
 
-Recent observed runs validated the local estimate against the OpenAI dashboard:
+PaperEval is local-first. Normal launches force `LLM_PROVIDER=local` even if the parent shell has an OpenAI provider configured.
 
-- Job `146`: local estimate about `$0.0239`; dashboard movement was close after rounding/lag.
-- Job `148`: local estimate about `$0.0419`; dashboard moved roughly `$0.05`.
+Local GPU/Metal is preferred with `LLM_N_GPU_LAYERS=999`. Backend startup runs a guarded local-model smoke check in a subprocess. If Metal crashes or times out, the app falls back to CPU and reports the effective GPU mode in `/api/status`.
 
-Treat the ledger as the working per-run estimate and the OpenAI dashboard as the final billing source. If the two drift across multiple runs, update `backend/app/services/analysis/openai_usage.py` pricing assumptions.
+Local model readiness, local live runs, and local report validation are the primary test path. OpenAI routing tests remain as secondary compatibility checks so the optional provider path does not regress, but they are not the default runtime or the main quality gate.
+
+OpenAI is explicit opt-in only:
+
+```bash
+python scripts/run_app.py --llm-provider openai
+```
+
+Set provider credentials only in local env files that are ignored by git. Do not commit API keys.
+
+## GROBID and Docker
+
+`scripts/run_app.py` manages GROBID by default. It starts or adopts an expected GROBID container on `localhost:8070`, and stops app-owned/adopted containers when the launcher exits.
+
+If Docker Engine is already running, Docker Desktop does not need to stay open. If the engine is off on macOS, the launcher can start Docker Desktop hidden in the background, wait for Docker, and then start GROBID.
 
 ## Diagnostics
 
-Each completed or failed run writes diagnostics under the document artifact directory:
+Each run writes parse, source, timing, coverage, model-usage, and error diagnostics under the generated document artifact directory. Runtime data is intentionally ignored by git.
 
-```text
-data/doc_<id>/artifacts/
-```
+The UI surfaces backend readiness, GROBID status, model/provider status, source coverage, timing, media coverage, and report validity. Invalid or fallback-heavy reports are flagged instead of being presented as verified output.
 
-Important files include:
+## App Evaluation Benchmark
 
-- `parse_diagnostics.json`: parse timing and asset/chunk counts.
-- `run_timeline.json`: timestamped pipeline steps with per-step durations.
-- `parser_asset_diagnostics.json`: per-asset parse status and count deltas.
-- `source_manifest.json`: selected main asset and supplements for uploads/URLs.
-- `analysis_diagnostics.json`: stage timings, timestamped analysis timeline, coverage, model call counts, OpenAI usage summary, and vision input diagnostics.
-- `error.log`: traceback for failed jobs.
+Use the benchmark assets when judging parser changes, prompt changes, model/provider changes, UI report rendering, or release readiness.
 
-The desktop UI exposes runtime readiness, GROBID health, model provider readiness, model call counts, OpenAI estimated cost/tokens, source coverage, and report diagnostics. Reports with failed OpenAI calls are marked invalid instead of presenting deterministic fallback output as a normal OpenAI result.
+- Human-readable standard: `docs/app-evaluation-benchmark.md`
+- Machine-readable scorecard: `benchmarks/app_evaluation_standard.json`
+- Multi-paper manifest and runner: `benchmarks/multi_paper_benchmark.json`, `scripts/run_multi_paper_benchmark.py`
+- Final-report gold standards: `benchmarks/gold_standards/*.json`
+- Repo-local benchmark skill: `.codex/skills/papereval-benchmark/SKILL.md`
 
-## Analysis Pipeline Notes
+The benchmark focuses on source integrity, evidence retention, section fidelity, multimodal coverage, operational reliability, runtime visibility, and app usability.
 
-Relevant current behavior:
+## Pipeline Notes
 
-- Text, table, figure, supplement, reconcile, and synthesis stages carry usage context for diagnostics.
-- For OpenAI runs with subprocess guards enabled, text/table/figure/supplement analysis runs in parallel; reconcile and synthesis wait for all modalities.
-- Text analysis runs in guarded subprocesses and refuses OpenAI fallback reports when required OpenAI calls fail.
-- Figure analysis skips page-raster fallback images, supports caption-only analysis when image input is unavailable, and keeps OCR fallback bounded.
-- Synthesis produces sectioned executive summaries for Introduction, Methods, Results, Discussion, and Conclusion.
-- Section fidelity checks reduce cross-section leakage, especially method/result mixing.
-- Parser and ingestion write source manifests and richer diagnostics for troubleshooting PDF, upload, URL, and supplement handling.
-- Desktop startup now has a longer backend readiness timeout and focuses the existing window on secondary launch instead of unnecessarily recycling the backend.
-
-## Cost Checks
-
-For a completed job:
-
-1. Find the job's `document_id` in `data/app.db`.
-2. Read `data/doc_<document_id>/artifacts/analysis_diagnostics.json`.
-3. Use `diagnostics.openai_usage.estimated_cost_usd` for actual local cost.
-4. Compare with the OpenAI platform daily usage after allowing for dashboard lag and rounding.
-
-Only successful actual ledger entries should be used for cost accounting. Reservations are intentionally conservative and can be much higher than actual cost.
+- Parser and ingestion write source manifests and richer asset diagnostics.
+- Text, table, figure, supplement, reconcile, and synthesis stages write timestamped diagnostics.
+- Local GPU is preferred; CPU fallback is guarded and reported.
+- Reconcile and synthesis wait for upstream modality work before producing the final report.
+- Synthesis produces sectioned Introduction, Methods, Results, Discussion, and Conclusion summaries with evidence and warning metadata.
+- Report UI review should use the canonical backend-served web app unless testing desktop/Tauri behavior or frontend hot reload.
 
 ## Git Version Check
 
@@ -150,10 +127,3 @@ python3 scripts/git_version_report.py --fetch
 ```
 
 Add `--show-files` only when you want the changed-file list in the output.
-
-## GitHub Push (first time)
-
-```bash
-git remote add origin <YOUR_GITHUB_REPO_URL>
-git push -u origin main --tags
-```

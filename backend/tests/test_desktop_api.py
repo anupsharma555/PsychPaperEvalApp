@@ -96,6 +96,11 @@ def client(tmp_path, monkeypatch):
             },
         ],
     )
+    monkeypatch.setattr(
+        api_routes,
+        "artifacts_dir",
+        lambda document_id: tmp_path / "artifacts" / str(document_id),
+    )
 
     with Session(engine) as session:
         base = datetime(2026, 2, 9, 9, 0, 0)
@@ -166,6 +171,63 @@ def client(tmp_path, monkeypatch):
                 "discussion": [],
                 "conclusion": [],
             },
+            "section_diagnostics": {
+                "evidence_packet_coverage": {
+                    "packet_total": 2,
+                    "usable_packets": 2,
+                    "usable_packet_rate": 1.0,
+                    "sections_present": ["methods"],
+                    "missing_core_sections": ["results"],
+                    "by_section": {"methods": 2},
+                    "by_modality": {"text": 2},
+                    "by_detail_type": {"medication_or_therapeutic": 1},
+                    "cross_modal_packet_count": 0,
+                    "typed_packet_count": 1,
+                    "quality_flags": ["no_cross_modal_packets", "no_results_packets"],
+                },
+                "synthesis_evidence_warnings": [
+                    "Critical synthesis evidence not found for this paper type: Safety or Adverse Events."
+                ],
+                "synthesis_evidence_plan": {
+                    "critical_missing_focus_slots": [
+                        {
+                            "slot_key": "safety_or_adverse_events",
+                            "label": "Safety or Adverse Events",
+                        }
+                    ],
+                    "quality_flags": ["critical_focus_slots_missing", "safety_or_adverse_events_missing"],
+                },
+            },
+            "scientific_details_version": 1,
+            "scientific_details": [
+                {
+                    "detail_types": ["medication_or_therapeutic", "outcome_measure"],
+                    "statement": "Sertraline dosing was compared with placebo for depressive symptom change. (confidence 91%)",
+                    "evidence_refs": ["section:Methods:1", "id:text-fallback-methods-1", "section:Methods:1"],
+                    "source_modality": "text",
+                    "section_label": "methods",
+                    "category": "clinical",
+                    "confidence": 0.91,
+                },
+                {
+                    "detail_types": ["medication_or_therapeutic"],
+                    "statement": "Sertraline dosing was compared with placebo for depressive symptom change.",
+                    "evidence_refs": ["section:Methods:1"],
+                    "source_modality": "text",
+                    "section_label": "methods",
+                    "category": "clinical",
+                    "confidence": 0.9,
+                },
+                {
+                    "detail_types": ["assay_readout"],
+                    "statement": "This ungrounded item should not be displayed.",
+                    "evidence_refs": [],
+                    "source_modality": "text",
+                    "section_label": "results",
+                    "category": "assay",
+                    "confidence": 0.8,
+                },
+            ],
             "coverage_snapshot_line": "Figure/Table Coverage: Main figures (text-cited/extracted): 0/0.",
             "modalities": {
                 "text": {
@@ -314,6 +376,17 @@ def test_jobs_sort_and_filter(client: TestClient) -> None:
     assert filtered_payload["items"][0]["status"] == "running"
 
 
+def test_get_job_returns_raw_job_id_contract(client: TestClient) -> None:
+    resp = client.get("/api/jobs/1")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["id"] == 1
+    assert payload["document_id"] == 1
+    assert payload["status"] == "completed"
+    assert payload["progress"] == 1.0
+    assert payload["message"] == "done"
+
+
 def test_jobs_invalid_sort_returns_remediation(client: TestClient) -> None:
     resp = client.get("/api/jobs", params={"sort": "unknown:desc"})
     assert resp.status_code == 400
@@ -331,6 +404,13 @@ def test_runtime_events_since_filter(client: TestClient) -> None:
     assert payload["events"][0]["severity"] == "error"
 
 
+def test_runtime_events_since_filter_accepts_epoch_seconds(client: TestClient) -> None:
+    resp = client.get("/api/runtime/events", params={"since": "1777825749"})
+
+    assert resp.status_code == 200
+    assert "events" in resp.json()
+
+
 def test_desktop_bootstrap_contract(client: TestClient) -> None:
     resp = client.get("/api/desktop/bootstrap")
     assert resp.status_code == 200
@@ -344,6 +424,8 @@ def test_desktop_bootstrap_contract(client: TestClient) -> None:
     assert "vision_mmproj_path" in payload["models"]
     assert "provider" in payload["models"]
     assert "provider_ready" in payload["models"]
+    assert "local_gpu_mode" in payload["models"]
+    assert "local_gpu_effective_layers" in payload["models"]
     assert isinstance(payload.get("runtime_build"), dict)
     assert "git_commit" in payload["runtime_build"]
     assert "build_marker" in payload["runtime_build"]
@@ -365,6 +447,8 @@ def test_status_exposes_split_model_fields(client: TestClient) -> None:
     assert "vision_mmproj_exists" in payload
     assert "provider" in payload
     assert "provider_ready" in payload
+    assert "local_gpu_mode" in payload
+    assert "local_gpu_effective_layers" in payload
     assert "grobid" in payload
     assert isinstance(payload.get("runtime_build"), dict)
     assert "git_commit" in payload["runtime_build"]
@@ -395,6 +479,32 @@ def test_report_endpoint_exposes_analysis_diagnostics_field(client: TestClient) 
     assert "analysis_diagnostics" in payload
     assert "summary_schema_version" in payload
     assert "sectioned_report_version" in payload
+
+
+def test_report_endpoint_exposes_latency_profile_from_diagnostics(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "latency_profile": {
+                    "total_known_seconds": 694.5,
+                    "slowest_stage": "text",
+                    "top_bottlenecks": [
+                        {"stage": "text", "duration_seconds": 420.0},
+                        {"stage": "figure", "duration_seconds": 210.0},
+                    ],
+                }
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["latency_profile"]["slowest_stage"] == "text"
+    assert payload["latency_profile"]["top_bottlenecks"][0]["duration_seconds"] == 420.0
 
 
 def test_report_endpoint_sanitizes_legacy_fallback_ids_and_dedupes(client: TestClient) -> None:
@@ -428,8 +538,22 @@ def test_report_summary_includes_methods_card(client: TestClient) -> None:
     assert payload["sections_card"][0].startswith("Objective/Hypothesis:")
     assert all("(confidence" not in line.lower() for line in payload["sections_card"])
     assert all("(80%)" not in line.lower() for line in payload["sections_card"])
+    assert payload["scientific_card"] == [
+        "Medication Or Therapeutic, Outcome Measure / Methods: Sertraline dosing was compared with placebo for depressive symptom change. [section:Methods:1]"
+    ]
     assert payload["rerun_recommended"] is False
     assert payload["report_capabilities"]["sections_compact"] is True
+    assert payload["report_capabilities"]["scientific_details"] is True
+    assert any(
+        "Safety or Adverse Events" in warning
+        for warning in payload["report_warnings"]
+    )
+    assert any("missing Results packets" in warning for warning in payload["report_warnings"])
+    assert any("No table, figure, or supplement evidence packets" in warning for warning in payload["report_warnings"])
+    assert "safety_or_adverse_events_missing" in payload["synthesis_quality_flags"]
+    assert payload["critical_missing_focus_slots"] == [
+        {"slot_key": "safety_or_adverse_events", "label": "Safety or Adverse Events"}
+    ]
     assert payload["overall_confidence"] is None
     assert "(confidence" not in str(payload.get("executive_summary", "")).lower()
     assert "(77%)" not in str(payload.get("executive_summary", "")).lower()
@@ -437,6 +561,277 @@ def test_report_summary_includes_methods_card(client: TestClient) -> None:
         "text-fallback" not in " ".join(str(item) for item in card.get("highlights", [])).lower()
         for card in payload.get("modality_cards", [])
     )
+
+
+def test_report_summary_uses_analysis_diagnostics_validity(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "openai")
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "model_usage": {"text_calls": 1, "text_errors": 1},
+                "section_diagnostics": {"section_extraction_enabled": True},
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report/summary")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["report_status"] == "failed"
+    assert payload["rerun_recommended"] is True
+    assert payload["report_capabilities"]["openai_valid"] is False
+    assert "OpenAI model calls failed" in str(payload["executive_summary"])
+
+
+def test_report_summary_marks_local_invalid_run_failed(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "local")
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "model_usage": {"text_calls": 0},
+                "section_diagnostics": {"section_extraction_enabled": True},
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report/summary")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["report_status"] == "failed"
+    assert payload["rerun_recommended"] is True
+    assert payload["report_capabilities"]["analysis_valid"] is False
+    assert payload["report_capabilities"]["local_valid"] is False
+    assert "Local model text analysis did not run" in str(payload["executive_summary"])
+
+
+def test_report_validity_refreshes_stale_cached_local_text_run(monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "local")
+    summary = {
+        "analysis_diagnostics": {
+            "diagnostics": {
+                "model_usage": {"text_calls": 0},
+                "analysis_timeline": [
+                    {
+                        "stage": "text",
+                        "metadata": {"cache_hit": True, "cache_source": "global"},
+                    }
+                ],
+                "section_diagnostics": {"section_extraction_enabled": True},
+                "run_validity": {
+                    "run_validity": "invalid",
+                    "valid": False,
+                    "rerun_required": True,
+                    "reasons": ["text_llm_calls_zero"],
+                    "blockers": {"text_llm_calls_zero": True},
+                    "quality_backend_audit": {
+                        "text_calls": 0,
+                        "text_cache_reused": False,
+                        "blockers": {"text_calls_zero": True},
+                    },
+                },
+            }
+        }
+    }
+
+    validity = api_routes._report_validity(summary, None)
+
+    assert "text_analysis_cache_reused" in validity["reasons"]
+    assert "text_llm_calls_zero" not in validity["reasons"]
+    assert validity["blockers"]["text_analysis_cache_reused"] is True
+    assert validity["blockers"]["text_llm_calls_zero"] is False
+    assert validity["quality_backend_audit"]["text_cache_reused"] is True
+    assert "Cached local text-analysis output was reused" in api_routes._openai_report_invalid_reason(summary)
+
+
+def test_report_summary_exposes_prompt_budget_warnings(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "local")
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "model_usage": {"text_calls": 1},
+                "section_diagnostics": {"section_extraction_enabled": True},
+                "prompt_budget_diagnostics": {
+                    "totals": {"prompt_calls": 8, "max_prompt_chars": 15000, "max_prompt_modality": "figure"},
+                    "quality_flags": ["many_local_prompt_batches", "figure_large_prompt"],
+                },
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report/summary")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["report_status"] == "ready"
+    assert payload["rerun_recommended"] is False
+    assert any("Local context pressure" in warning for warning in payload["report_warnings"])
+    assert any("many local-model prompt batches" in warning for warning in payload["report_warnings"])
+
+
+def test_report_summary_exposes_latency_profile(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "local")
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "model_usage": {"text_calls": 1},
+                "section_diagnostics": {"section_extraction_enabled": True},
+                "latency_profile": {
+                    "total_known_seconds": 694.5,
+                    "slowest_stage": "text",
+                    "top_bottlenecks": [
+                        {"stage": "text", "duration_seconds": 420.0},
+                        {"stage": "figure", "duration_seconds": 210.0},
+                    ],
+                    "quality_flags": ["long_text_stage"],
+                },
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report/summary")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["report_status"] == "ready"
+    assert payload["latency_profile"]["total_known_seconds"] == 694.5
+    assert payload["latency_profile"]["slowest_stage"] == "text"
+    assert payload["report_capabilities"]["latency_profile"] is True
+
+
+def test_report_summary_exposes_compact_run_validity(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "local")
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "model_usage": {"text_calls": 1, "deep_calls": 0},
+                "stage_model_usage": {"synthesis": {"deep_calls": 0}},
+                "section_diagnostics": {"section_extraction_enabled": True},
+                "synthesis_diagnostics": {
+                    "narrative_overrides_enabled": True,
+                    "narrative_synthesis_required": True,
+                    "narrative_synthesis_deep_calls": 0,
+                },
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report/summary")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["report_status"] == "failed"
+    assert payload["rerun_recommended"] is True
+    assert payload["report_validity"]["valid"] is False
+    assert payload["report_validity"]["narrative_synthesis_required"] is True
+    assert payload["report_validity"]["narrative_synthesis_ran"] is False
+    assert "narrative_synthesis_calls_zero" in payload["report_validity"]["reasons"]
+
+
+def test_report_summary_warns_on_local_section_fallback_without_failing(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "local")
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "model_usage": {"text_calls": 1},
+                "section_diagnostics": {
+                    "section_extraction_enabled": True,
+                    "introduction": {"fallback_used": True},
+                },
+                "sections_fallback_notes": [
+                    "Introduction: Explicit introduction anchors were sparse; supplemented with early-body text."
+                ],
+                "fallback_counts_by_reason": {"introduction_fallback": 1},
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report/summary")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["report_status"] == "ready"
+    assert payload["rerun_recommended"] is False
+    assert any("Section-level evidence required" in warning for warning in payload["report_warnings"])
+
+
+def test_report_summary_warns_from_diagnostics_evidence_packet_coverage(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "local")
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "model_usage": {"text_calls": 1},
+                "section_diagnostics": {
+                    "section_extraction_enabled": True,
+                    "evidence_packet_coverage": {
+                        "packet_total": 1,
+                        "usable_packets": 0,
+                        "usable_packet_rate": 0.0,
+                        "missing_core_sections": ["methods", "results"],
+                        "cross_modal_packet_count": 0,
+                        "typed_packet_count": 0,
+                        "quality_flags": ["no_usable_evidence_packets", "no_typed_evidence_packets"],
+                    },
+                },
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report/summary")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["report_status"] == "ready"
+    assert any("No usable evidence packets" in warning for warning in payload["report_warnings"])
+    assert any("missing Methods, Results packets" in warning for warning in payload["report_warnings"])
+    assert any("No typed scientific evidence packets" in warning for warning in payload["report_warnings"])
+
+
+def test_report_summary_enriches_stored_validity_with_prompt_budget_warnings(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(api_routes.settings, "llm_provider", "local")
+    monkeypatch.setattr(
+        api_routes,
+        "_load_analysis_diagnostics",
+        lambda _document_id: {
+            "diagnostics": {
+                "model_usage": {"text_calls": 1},
+                "section_diagnostics": {"section_extraction_enabled": True},
+                "prompt_budget_diagnostics": {
+                    "totals": {"prompt_calls": 8, "max_prompt_chars": 15000, "max_prompt_modality": "figure"},
+                    "quality_flags": ["many_local_prompt_batches", "figure_large_prompt"],
+                },
+                "run_validity": {
+                    "valid": True,
+                    "run_validity": "valid",
+                    "rerun_required": False,
+                    "reasons": [],
+                },
+            }
+        },
+    )
+
+    resp = client.get("/api/documents/1/report/summary")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["report_status"] == "ready"
+    assert payload["rerun_recommended"] is False
+    assert any("Local context pressure" in warning for warning in payload["report_warnings"])
 
 
 def test_report_summary_marks_legacy_payload_for_rerun(client: TestClient) -> None:
@@ -613,4 +1008,4 @@ def test_openai_report_invalid_reason_detects_invalid_key_fallback(monkeypatch) 
 
     reason = api_routes._openai_report_invalid_reason(summary)
 
-    assert "deterministic fallback" in reason
+    assert "OpenAI model calls failed" in reason

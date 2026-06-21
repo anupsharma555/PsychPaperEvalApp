@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc5742137_deae_dextran_tumorigenesis",
+  "source_pdf": "test/01_29311933_PMC5742137.pdf",
+  "source_sha256": "f92102d10429172f384b2e0d0749cfbb77ed1feac58295441826e764558fdde4",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/01_29311933_PMC5742137.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "Role of beta-Interferon Inducer (DEAE-Dextran) in Tumorigenesis by VEGF and NOTCH1 Inhibition along with Apoptosis Induction",
+    "domain": "preclinical_cancer_pharmacology",
+    "study_type": "in vitro and rat DMBA-induced mammary cancer mechanistic study"
+  },
+  "final_report_expectations": {
+    "research_question": "Whether DEAE-Dextran has preclinical anti-tumor activity in breast cancer models, and whether its effects involve beta-interferon induction, VEGF/NOTCH1 inhibition, antioxidant activity, anti-proliferation, and apoptosis.",
+    "study_design": "Original preclinical study combining breast-cancer cell-line assays, HEK293 interferon assays, gene-expression studies, flow cytometry, western blot/IHC, and a DMBA-induced mammary cancer rat model with comparator treatments.",
+    "population_or_materials": "MCF-7 and MDA-MB-231 breast-cancer cells, HEK293 cells, DEAE-Dextran, paclitaxel, beta-interferon, and DMBA-induced mammary cancer rats.",
+    "methods": [
+      "MTT and trypan blue exclusion assays measured cytotoxicity and cell death.",
+      "ROS assays were run with and without hydrogen peroxide pre-incubation.",
+      "PCR/gene-expression assays evaluated interferons, VEGF, NOTCH1, and PEA3.",
+      "Beta-interferon release assays were run in HEK293 and MDA-MB-231 cells.",
+      "The DMBA rat model assessed tumor regression, antioxidant enzymes, beta-interferon levels, histopathology, IHC, western blotting, and flow cytometry for apoptosis."
+    ],
+    "primary_findings": [
+      "DEAE-Dextran showed cytotoxicity in MCF-7 and MDA-MB-231 cells, with lower IC50 in MDA-MB-231.",
+      "DEAE-Dextran increased beta-interferon gene expression/release and reduced VEGF and NOTCH1 expression in treated models.",
+      "The authors interpret the anti-tumor activity as involving beta-interferon induction, anti-angiogenic effects, and apoptosis."
+    ],
+    "secondary_findings": [
+      "DEAE-Dextran reduced ROS after hydrogen peroxide challenge, while paclitaxel increased ROS in that assay.",
+      "In the animal model, DEAE-Dextran was associated with improved antioxidant markers, beta-interferon levels, mammary gland morphology, and cell-cell adhesion markers.",
+      "Anti-proliferative marker evidence included reduced Ki67, p53, and PCNA, with CK5/6 and p63 interpreted as improved breast-cell morphology."
+    ],
+    "sensitivity_analysis": [
+      "No formal sensitivity analysis was reported.",
+      "Robustness comes from use of multiple cell types, two DEAE-Dextran doses in several in vitro assays, time-course cell death/apoptosis measures, and comparator treatments including paclitaxel and beta-interferon."
+    ],
+    "statistical_tests_used": [
+      "Results were reported as mean +/- SEM.",
+      "One-way ANOVA followed by Tukey's test was performed using GraphPad Prism 5.",
+      "Statistical significance threshold was p < 0.05."
+    ],
+    "interpretation": [
+      "Frame the work as preclinical evidence for DEAE-Dextran as an emerging anti-tumor candidate, not as clinical proof.",
+      "Mechanistic interpretation should stay tied to beta-interferon induction, VEGF/NOTCH1 downregulation, antioxidant effects, anti-proliferation, and apoptosis."
+    ],
+    "limitations": [
+      "No human clinical efficacy data were reported.",
+      "The authors state that the exact apoptotic pathway and deeper mechanism require further study.",
+      "Evidence is figure-heavy and based on preclinical assays and a rat tumor model."
+    ],
+    "tables_figures_supplements": [
+      "Table 1 lists PCR primer sequences and gene properties.",
+      "Figures 1-5 cover cytotoxicity/ROS, interferon expression/release, DMBA tumor and biochemical outcomes, IHC/western markers, VEGF/NOTCH1/PEA3 expression, and apoptosis flow cytometry."
+    ],
+    "supplement_availability": "No supplementary material was detected in the extracted PDF text; synthesis should not imply supplement review.",
+    "uniqueness": [
+      "Repurposes DEAE-Dextran from a transfection/interferon-induction context as a proposed anti-tumor molecule.",
+      "Combines TNBC-relevant MDA-MB-231 assays with an in vivo DMBA mammary cancer model.",
+      "Requires strict separation of mechanistic preclinical evidence from clinical oncology claims."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "deae-001",
+      "section": "results",
+      "importance": "P1",
+      "claim": "DEAE-Dextran was cytotoxic in MCF-7 and MDA-MB-231 cells, with lower IC50 in MDA-MB-231 than MCF-7.",
+      "source_anchor": "MTT assay text and Figure 1A-B",
+      "expected_entities": [
+        "DEAE-Dextran",
+        "MCF-7",
+        "MDA-MB-231",
+        "paclitaxel",
+        "IC50"
+      ],
+      "expected_detail_types": [
+        "model_system",
+        "assay_readout",
+        "statistical_result"
+      ],
+      "expected_numbers": [
+        {
+          "label": "deae_dextran_ic50_mcf7",
+          "value": 9.8,
+          "unit": "uM"
+        },
+        {
+          "label": "deae_dextran_ic50_mda_mb_231",
+          "value": 4.9,
+          "unit": "uM"
+        },
+        {
+          "label": "paclitaxel_ic50_mda_mb_231",
+          "value": 4.2,
+          "unit": "uM"
+        }
+      ]
+    },
+    {
+      "claim_id": "deae-002",
+      "section": "results",
+      "importance": "P1",
+      "claim": "DEAE-Dextran increased beta-interferon expression and release in cell assays.",
+      "source_anchor": "Interferon gene-expression/release text and Figure 2",
+      "expected_entities": [
+        "beta-interferon",
+        "DEAE-Dextran",
+        "HEK293",
+        "MDA-MB-231"
+      ],
+      "expected_detail_types": [
+        "model_system",
+        "assay_readout"
+      ],
+      "expected_numbers": [
+        {
+          "label": "beta_interferon_expression_increase",
+          "value": 3,
+          "unit": "fold versus untreated, approximately"
+        }
+      ]
+    },
+    {
+      "claim_id": "deae-003",
+      "section": "results",
+      "importance": "P1",
+      "claim": "DEAE-Dextran reduced VEGF and NOTCH1 expression and showed apoptotic activity in MDA-MB-231 cells.",
+      "source_anchor": "VEGF/NOTCH1 gene-expression section and Figure 5H-J",
+      "expected_entities": [
+        "VEGF",
+        "NOTCH1",
+        "Bcl2",
+        "Annexin V",
+        "apoptosis"
+      ],
+      "expected_detail_types": [
+        "model_system",
+        "assay_readout"
+      ],
+      "expected_numbers": []
+    },
+    {
+      "claim_id": "deae-004",
+      "section": "conclusion",
+      "importance": "P2",
+      "claim": "The authors conclude that DEAE-Dextran has multiple preclinical anti-tumor pathways but requires further mechanistic study.",
+      "source_anchor": "Conclusion paragraph",
+      "expected_entities": [
+        "DEAE-Dextran",
+        "beta-interferon",
+        "VEGF",
+        "NOTCH1",
+        "MDA-MB-231"
+      ],
+      "expected_numbers": []
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not claim DEAE-Dextran is clinically proven for breast cancer or TNBC.",
+    "Do not describe the animal model as a human cohort.",
+    "Do not state that the exact apoptotic pathway was resolved."
+  ],
+  "scoring_focus": [
+    "Preserve preclinical model boundaries.",
+    "Capture IC50, beta-interferon, VEGF/NOTCH1, apoptosis, and DMBA model evidence.",
+    "Penalize clinical overclaiming."
+  ]
+}

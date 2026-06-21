@@ -30,6 +30,7 @@ from app.schemas.desktop import (
 from app.services.ingest import ingest_upload, ingest_url
 from app.services.jobs import enqueue_job, job_runner
 from app.services.author_utils import sanitize_author_list
+from app.services.local_gpu import local_gpu_runtime_status
 from app.services.report_retention import (
     is_document_saved,
     list_saved_reports,
@@ -37,6 +38,7 @@ from app.services.report_retention import (
     saved_status,
 )
 from app.services.runtime import read_pids, read_runtime_events, stop_app
+from app.services.analysis.validity import build_run_validity, invalid_report_reason
 from app.services.storage import artifacts_dir, document_dir
 
 router = APIRouter(prefix="/api")
@@ -48,6 +50,8 @@ _RUNTIME_EVENT_SEVERITY = {
     "stop_requested": "warning",
     "stop_completed": "info",
     "backend_startup": "info",
+    "local_gpu_cpu_fallback": "warning",
+    "local_gpu_smoke_completed": "info",
     "shutdown_requested": "warning",
     "shutdown_completed": "info",
 }
@@ -180,14 +184,19 @@ def _strip_upload_guidance(user_message: str) -> str:
 
 def _parse_iso_timestamp(value: str) -> datetime:
     normalized = value.strip()
+    if re.fullmatch(r"\d+(?:\.\d+)?", normalized):
+        return datetime.fromtimestamp(float(normalized), timezone.utc)
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
     except Exception:
         _raise_bad_request(
             "invalid_since",
-            "Invalid since timestamp. Use ISO-8601 format.",
+            "Invalid since timestamp. Use ISO-8601 format or epoch seconds.",
             "Retry with a value like 2026-02-09T14:00:00Z.",
         )
 
@@ -251,53 +260,229 @@ def _grobid_health() -> dict[str, Any]:
     }
 
 
-def _openai_report_invalid_reason(summary_json: dict[str, Any]) -> str:
-    if settings.llm_provider_normalized != "openai" or not isinstance(summary_json, dict):
-        return ""
+def _report_validity(summary_json: dict[str, Any], analysis_diagnostics: dict[str, Any] | None) -> dict[str, Any]:
+    diagnostics = analysis_diagnostics if isinstance(analysis_diagnostics, dict) else {}
+    if not diagnostics and isinstance(summary_json, dict) and isinstance(summary_json.get("analysis_diagnostics"), dict):
+        diagnostics = summary_json.get("analysis_diagnostics", {})
+    diagnostics_payload = diagnostics.get("diagnostics") if isinstance(diagnostics.get("diagnostics"), dict) else diagnostics
+    stored_validity = diagnostics_payload.get("run_validity") if isinstance(diagnostics_payload, dict) else None
+    if isinstance(stored_validity, dict):
+        return _enrich_stored_validity_warnings(
+            stored_validity,
+            summary_json=summary_json if isinstance(summary_json, dict) else {},
+            diagnostics=diagnostics,
+        )
+    return build_run_validity(
+        summary_json=summary_json if isinstance(summary_json, dict) else {},
+        diagnostics=diagnostics,
+        job_status="completed",
+        provider=settings.llm_provider_normalized,
+        require_source_provenance=False,
+    )
 
-    def _numeric(value: Any) -> float:
-        try:
-            return float(value or 0)
-        except Exception:
-            return 0.0
 
-    model_usage = summary_json.get("analysis_diagnostics", {})
-    if isinstance(model_usage, dict):
-        model_usage = model_usage.get("diagnostics", {}).get("model_usage", {})
-    if not isinstance(model_usage, dict):
-        model_usage = summary_json.get("model_usage", {})
-    if isinstance(model_usage, dict):
-        error_total = sum(_numeric(model_usage.get(key)) for key in ("text_errors", "deep_errors", "vision_errors"))
-        if error_total > 0:
-            return "OpenAI model calls failed during analysis."
+def _enrich_stored_validity_warnings(
+    stored_validity: dict[str, Any],
+    *,
+    summary_json: dict[str, Any],
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    refreshed = build_run_validity(
+        summary_json=summary_json,
+        diagnostics=diagnostics,
+        job_status="completed",
+        provider=settings.llm_provider_normalized,
+        require_source_provenance=False,
+    )
+    enriched = dict(refreshed) if isinstance(refreshed, dict) else dict(stored_validity)
+    if isinstance(refreshed.get("warning_reasons"), list):
+        existing = [
+            str(reason).strip()
+            for reason in stored_validity.get("warning_reasons", [])
+            if str(reason).strip()
+        ] if isinstance(enriched.get("warning_reasons"), list) else []
+        for reason in refreshed["warning_reasons"]:
+            reason_text = str(reason).strip()
+            if reason_text and reason_text not in existing:
+                existing.append(reason_text)
+        enriched["warning_reasons"] = existing
+    if isinstance(refreshed.get("warnings"), dict):
+        warnings = dict(stored_validity.get("warnings", {})) if isinstance(stored_validity.get("warnings"), dict) else {}
+        warnings.update(refreshed["warnings"])
+        enriched["warnings"] = warnings
+    for key, value in stored_validity.items():
+        if key not in enriched:
+            enriched[key] = value
+    return enriched
 
-    diagnostics = summary_json.get("analysis_diagnostics", {})
-    if isinstance(diagnostics, dict):
-        diagnostics = diagnostics.get("diagnostics", {})
-    if isinstance(diagnostics, dict):
-        fallback_counts = diagnostics.get("fallback_counts_by_reason", {})
-        if isinstance(fallback_counts, dict):
-            for key in fallback_counts:
-                normalized = str(key).lower()
-                if "openai_request_failed" in normalized or "text_subprocess_fallback" in normalized:
-                    return "OpenAI analysis failed and a deterministic fallback was used."
-        stage_usage = diagnostics.get("stage_model_usage", {})
-        if isinstance(stage_usage, dict):
-            for usage in stage_usage.values():
-                if not isinstance(usage, dict):
-                    continue
-                error_total = sum(_numeric(usage.get(key)) for key in ("text_errors", "deep_errors", "vision_errors"))
-                if error_total > 0:
-                    return "OpenAI model calls failed during analysis."
 
-    uncertainty_gaps = summary_json.get("uncertainty_gaps", [])
-    if isinstance(uncertainty_gaps, list):
-        for item in uncertainty_gaps:
-            normalized = str(item).lower()
-            if "openai request failed" in normalized or "incorrect api key" in normalized:
-                return "OpenAI analysis failed and a deterministic fallback was used."
+def _openai_report_invalid_reason(summary_json: dict[str, Any], analysis_diagnostics: dict[str, Any] | None = None) -> str:
+    validity = _report_validity(summary_json, analysis_diagnostics)
+    return invalid_report_reason(validity, provider=settings.llm_provider_normalized)
 
-    return ""
+
+def _compact_report_validity(summary_json: dict[str, Any], analysis_diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
+    validity = _report_validity(summary_json, analysis_diagnostics)
+    quality = validity.get("quality_backend_audit", {}) if isinstance(validity.get("quality_backend_audit"), dict) else {}
+    blockers = validity.get("blockers", {}) if isinstance(validity.get("blockers"), dict) else {}
+    quality_blockers = quality.get("blockers", {}) if isinstance(quality.get("blockers"), dict) else {}
+    return {
+        "valid": bool(validity.get("valid")),
+        "run_validity": str(validity.get("run_validity") or ("valid" if validity.get("valid") else "invalid")),
+        "rerun_required": bool(validity.get("rerun_required")),
+        "reasons": [str(reason) for reason in validity.get("reasons", []) if str(reason).strip()]
+        if isinstance(validity.get("reasons"), list)
+        else [],
+        "warning_reasons": [str(reason) for reason in validity.get("warning_reasons", []) if str(reason).strip()]
+        if isinstance(validity.get("warning_reasons"), list)
+        else [],
+        "blockers": blockers,
+        "quality_blockers": quality_blockers,
+        "text_calls": int(quality.get("text_calls", 0) or 0),
+        "text_cache_reused": bool(quality.get("text_cache_reused")),
+        "narrative_synthesis_required": bool(quality.get("narrative_synthesis_required")),
+        "narrative_synthesis_ran": bool(quality.get("narrative_synthesis_ran")),
+        "narrative_synthesis_deep_calls": int(quality.get("narrative_synthesis_deep_calls", 0) or 0),
+    }
+
+
+def _report_warning_messages(summary_json: dict[str, Any], analysis_diagnostics: dict[str, Any] | None = None) -> list[str]:
+    validity = _report_validity(summary_json, analysis_diagnostics)
+    reasons = [str(reason).strip() for reason in validity.get("warning_reasons", []) if str(reason).strip()]
+    messages: list[str] = []
+    if any("large_prompt" in reason for reason in reasons):
+        messages.append(
+            "Local context pressure was high in at least one modality; review the Local context budget diagnostics."
+        )
+    if any("many_local_prompt_batches" == reason or reason.endswith("_many_batches") for reason in reasons):
+        messages.append(
+            "The paper required many local-model prompt batches, so cross-section synthesis may depend on selected evidence."
+        )
+    if "section_recall_fallback_used" in reasons:
+        messages.append(
+            "Section-level evidence required deterministic recall backfill; review section diagnostics before relying on sparse sections."
+        )
+    messages.extend(_synthesis_evidence_warning_messages(summary_json))
+    messages.extend(_evidence_packet_coverage_warning_messages(summary_json, analysis_diagnostics))
+    return list(dict.fromkeys(messages))
+
+
+def _evidence_packet_coverage_warning_messages(
+    summary_json: dict[str, Any],
+    analysis_diagnostics: dict[str, Any] | None = None,
+) -> list[str]:
+    messages: list[str] = []
+    for coverage in _evidence_packet_coverage_payloads(summary_json, analysis_diagnostics):
+        flags = {
+            str(flag).strip()
+            for flag in coverage.get("quality_flags", [])
+            if str(flag).strip()
+        } if isinstance(coverage.get("quality_flags"), list) else set()
+        missing_sections = [
+            str(section).strip().lower()
+            for section in coverage.get("missing_core_sections", [])
+            if str(section).strip()
+        ] if isinstance(coverage.get("missing_core_sections"), list) else []
+
+        if "no_usable_evidence_packets" in flags or int(coverage.get("usable_packets", 0) or 0) == 0:
+            messages.append("No usable evidence packets were available for gold comparison or synthesis diagnostics.")
+        important_missing = [section for section in ("methods", "results") if section in missing_sections]
+        if important_missing or {"no_methods_packets", "no_results_packets"} & flags:
+            missing_label = ", ".join(section.title() for section in important_missing) or "Methods/Results"
+            messages.append(f"Evidence packet coverage is missing {missing_label} packets; review extraction before relying on synthesis.")
+        if "no_cross_modal_packets" in flags or int(coverage.get("cross_modal_packet_count", 0) or 0) == 0:
+            messages.append("No table, figure, or supplement evidence packets were available for synthesis.")
+        if "no_typed_evidence_packets" in flags or int(coverage.get("typed_packet_count", 0) or 0) == 0:
+            messages.append("No typed scientific evidence packets were available for medication, method, or result prioritization.")
+    return list(dict.fromkeys(messages))[:6]
+
+
+def _evidence_packet_coverage_payloads(
+    summary_json: dict[str, Any],
+    analysis_diagnostics: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    if isinstance(summary_json, dict):
+        direct = summary_json.get("evidence_packet_coverage")
+        if isinstance(direct, dict):
+            payloads.append(direct)
+        section_diagnostics = summary_json.get("section_diagnostics")
+        if isinstance(section_diagnostics, dict) and isinstance(section_diagnostics.get("evidence_packet_coverage"), dict):
+            payloads.append(section_diagnostics["evidence_packet_coverage"])
+    diagnostics = analysis_diagnostics if isinstance(analysis_diagnostics, dict) else {}
+    diagnostics_payload = diagnostics.get("diagnostics") if isinstance(diagnostics.get("diagnostics"), dict) else diagnostics
+    section_diagnostics = diagnostics_payload.get("section_diagnostics") if isinstance(diagnostics_payload, dict) else None
+    if isinstance(section_diagnostics, dict) and isinstance(section_diagnostics.get("evidence_packet_coverage"), dict):
+        payloads.append(section_diagnostics["evidence_packet_coverage"])
+    return payloads
+
+
+def _synthesis_evidence_warning_messages(summary_json: dict[str, Any]) -> list[str]:
+    if not isinstance(summary_json, dict):
+        return []
+    diagnostics = summary_json.get("section_diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        return []
+    direct_warnings = [
+        str(item).strip()
+        for item in diagnostics.get("synthesis_evidence_warnings", [])
+        if str(item).strip()
+    ] if isinstance(diagnostics.get("synthesis_evidence_warnings"), list) else []
+    if direct_warnings:
+        return direct_warnings[:4]
+
+    evidence_plan = diagnostics.get("synthesis_evidence_plan", {})
+    if not isinstance(evidence_plan, dict):
+        return []
+    critical_missing = [
+        str(slot.get("label", "") or slot.get("slot_key", "")).strip()
+        for slot in evidence_plan.get("critical_missing_focus_slots", [])
+        if isinstance(slot, dict) and str(slot.get("label", "") or slot.get("slot_key", "")).strip()
+    ] if isinstance(evidence_plan.get("critical_missing_focus_slots"), list) else []
+    if not critical_missing:
+        return []
+    return [
+        "Critical synthesis evidence not found for this paper type: "
+        + ", ".join(critical_missing[:6])
+        + "."
+    ]
+
+
+def _synthesis_evidence_summary_fields(summary_json: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(summary_json, dict):
+        return {"synthesis_quality_flags": [], "critical_missing_focus_slots": []}
+    diagnostics = summary_json.get("section_diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        return {"synthesis_quality_flags": [], "critical_missing_focus_slots": []}
+    evidence_plan = diagnostics.get("synthesis_evidence_plan", {})
+    if not isinstance(evidence_plan, dict):
+        return {"synthesis_quality_flags": [], "critical_missing_focus_slots": []}
+
+    quality_flags = [
+        str(flag).strip()
+        for flag in evidence_plan.get("quality_flags", [])
+        if str(flag).strip()
+    ] if isinstance(evidence_plan.get("quality_flags"), list) else []
+    critical_missing: list[dict[str, str]] = []
+    if isinstance(evidence_plan.get("critical_missing_focus_slots"), list):
+        for slot in evidence_plan.get("critical_missing_focus_slots", []):
+            if not isinstance(slot, dict):
+                continue
+            slot_key = str(slot.get("slot_key", "") or "").strip()
+            label = str(slot.get("label", "") or slot_key).strip()
+            reason = str(slot.get("reason", "") or "").strip()
+            if not slot_key and not label:
+                continue
+            row = {"slot_key": slot_key, "label": label}
+            if reason:
+                row["reason"] = reason
+            critical_missing.append(row)
+            if len(critical_missing) >= 8:
+                break
+    return {
+        "synthesis_quality_flags": quality_flags[:8],
+        "critical_missing_focus_slots": critical_missing,
+    }
 
 
 def _model_readiness_payload() -> dict[str, Any]:
@@ -314,6 +499,7 @@ def _model_readiness_payload() -> dict[str, Any]:
     text_label = f"openai:{settings.openai_text_model}" if provider == "openai" else str(text_model_path)
     deep_label = f"openai:{settings.openai_deep_model}" if provider == "openai" else str(deep_model_path)
     vision_label = f"openai:{settings.openai_vision_model}" if provider == "openai" else str(vision_model_path)
+    local_gpu = local_gpu_runtime_status()
     return {
         # Legacy fields retained for compatibility with existing frontends.
         "model_path": vision_label,
@@ -336,6 +522,7 @@ def _model_readiness_payload() -> dict[str, Any]:
         "vision_mmproj_path": "" if provider == "openai" else str(vision_mmproj_path),
         "vision_mmproj_exists": bool(provider_ready) if provider == "openai" else vision_mmproj_path.exists(),
         "models_dir": str(settings.models_dir),
+        **local_gpu,
     }
 
 
@@ -925,6 +1112,49 @@ def _dedupe_statement_lines(lines: Any) -> list[str]:
     return out
 
 
+def _display_label(value: Any) -> str:
+    text = str(value or "").strip().replace("_", " ").replace("-", " ")
+    if not text:
+        return ""
+    return " ".join(part.capitalize() for part in text.split())
+
+
+def _scientific_detail_card(details: Any, max_items: int = 10) -> list[str]:
+    if not isinstance(details, list):
+        return []
+    lines: list[str] = []
+    seen_keys: list[str] = []
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        statement = _strip_fallback_id_text(_strip_confidence_tag(detail.get("statement", "")))
+        if not statement:
+            continue
+        evidence_refs = _sanitize_evidence_refs(detail.get("evidence_refs"))
+        if not evidence_refs:
+            continue
+        dedupe_key = _statement_dedupe_key(statement)
+        if not dedupe_key:
+            continue
+        if any(_are_near_duplicate_statement_keys(existing, dedupe_key) for existing in seen_keys):
+            continue
+        seen_keys.append(dedupe_key)
+        detail_types = detail.get("detail_types")
+        type_labels = [
+            _display_label(value)
+            for value in detail_types[:2]
+        ] if isinstance(detail_types, list) else []
+        type_label = ", ".join(label for label in type_labels if label) or _display_label(detail.get("category"))
+        section_label = _display_label(detail.get("section_label"))
+        context_parts = [part for part in [type_label, section_label] if part]
+        context = f"{' / '.join(context_parts)}: " if context_parts else ""
+        refs = ", ".join(evidence_refs[:3])
+        lines.append(f"{context}{statement} [{refs}]")
+        if len(lines) >= max_items:
+            break
+    return lines
+
+
 def _dedupe_statement_rows(rows: Any) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         return []
@@ -1129,6 +1359,42 @@ def _load_analysis_diagnostics(document_id: int) -> dict[str, Any] | None:
     except Exception:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _latency_profile_from_diagnostics(analysis_diagnostics: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(analysis_diagnostics, dict):
+        return None
+    for candidate in (
+        analysis_diagnostics.get("latency_profile"),
+        (analysis_diagnostics.get("diagnostics") or {}).get("latency_profile")
+        if isinstance(analysis_diagnostics.get("diagnostics"), dict)
+        else None,
+    ):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return None
+
+
+def _load_latency_profile(
+    document_id: int,
+    analysis_diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    profile = _latency_profile_from_diagnostics(analysis_diagnostics)
+    if profile:
+        return profile
+    latency_path = artifacts_dir(document_id) / "latency_profile.json"
+    if not latency_path.exists():
+        return None
+    try:
+        parsed = json.loads(latency_path.read_text())
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    embedded = parsed.get("latency_profile")
+    if isinstance(embedded, dict) and embedded:
+        return embedded
+    return parsed if parsed else None
 
 
 def _load_source_figure_legend_maps(document_id: int) -> tuple[dict[str, str], dict[str, str]]:
@@ -1726,7 +1992,8 @@ def get_report(document_id: int, session: Session = Depends(get_session)):
     summary_payload = report.payload if report else None
     summary_json, summary_version, sectioned_report_version = _parse_summary_payload(summary_payload)
     analysis_diagnostics = _load_analysis_diagnostics(document_id)
-    invalid_reason = _openai_report_invalid_reason(summary_json or {})
+    latency_profile = _load_latency_profile(document_id, analysis_diagnostics)
+    invalid_reason = _openai_report_invalid_reason(summary_json or {}, analysis_diagnostics)
     if invalid_reason and isinstance(summary_json, dict):
         summary_json = {
             **summary_json,
@@ -1744,6 +2011,7 @@ def get_report(document_id: int, session: Session = Depends(get_session)):
         "summary_schema_version": summary_version,
         "sectioned_report_version": sectioned_report_version,
         "analysis_diagnostics": analysis_diagnostics,
+        "latency_profile": latency_profile,
         "report_invalid": bool(invalid_reason),
         "report_invalid_reason": invalid_reason,
     }
@@ -1768,6 +2036,10 @@ def get_report_summary(document_id: int, session: Session = Depends(get_session)
             modality_cards=[],
             methods_card=[],
             sections_card=[],
+            scientific_card=[],
+            report_warnings=[],
+            synthesis_quality_flags=[],
+            critical_missing_focus_slots=[],
             rerun_recommended=False,
             report_capabilities={},
             discrepancy_count=0,
@@ -1777,8 +2049,17 @@ def get_report_summary(document_id: int, session: Session = Depends(get_session)
 
     summary_json, summary_version, _sectioned_report_version = _parse_summary_payload(report.payload)
     summary_json = summary_json or {}
-    invalid_reason = _openai_report_invalid_reason(summary_json)
+    analysis_diagnostics = _load_analysis_diagnostics(document_id)
+    latency_profile = _load_latency_profile(document_id, analysis_diagnostics)
+    invalid_reason = _openai_report_invalid_reason(summary_json, analysis_diagnostics)
+    report_validity = _compact_report_validity(summary_json, analysis_diagnostics)
+    report_warnings = _report_warning_messages(summary_json, analysis_diagnostics)
+    synthesis_summary = _synthesis_evidence_summary_fields(summary_json)
     if invalid_reason:
+        provider_key = settings.llm_provider_normalized
+        validity_capabilities = {"analysis_valid": False}
+        if provider_key:
+            validity_capabilities[f"{provider_key}_valid"] = False
         return DesktopReportSummary(
             document_id=document_id,
             summary_version=summary_version,
@@ -1787,8 +2068,14 @@ def get_report_summary(document_id: int, session: Session = Depends(get_session)
             modality_cards=[],
             methods_card=[],
             sections_card=[],
+            scientific_card=[],
+            report_warnings=report_warnings,
+            synthesis_quality_flags=synthesis_summary["synthesis_quality_flags"],
+            critical_missing_focus_slots=synthesis_summary["critical_missing_focus_slots"],
+            latency_profile=latency_profile,
+            report_validity=report_validity,
             rerun_recommended=True,
-            report_capabilities={"openai_valid": False},
+            report_capabilities={**validity_capabilities, "latency_profile": bool(latency_profile)},
             discrepancy_count=0,
             overall_confidence=None,
             export_url=f"/api/documents/{document_id}/export",
@@ -1846,6 +2133,7 @@ def get_report_summary(document_id: int, session: Session = Depends(get_session)
 
     methods_card: list[str] = []
     sections_card: list[str] = []
+    scientific_card = _scientific_detail_card(summary_json.get("scientific_details"), max_items=10)
     if has_presentation_evidence:
         seen_method_keys: list[str] = []
         for item in presentation_evidence.get("methods", []):
@@ -1956,8 +2244,10 @@ def get_report_summary(document_id: int, session: Session = Depends(get_session)
         "methods_compact": has_methods_compact,
         "sections_compact": has_sections_compact,
         "sections_extracted": has_sections_extracted,
+        "scientific_details": bool(scientific_card),
         "presentation_evidence": has_presentation_evidence,
         "coverage_snapshot_line": bool(str(summary_json.get("coverage_snapshot_line", "")).strip()),
+        "latency_profile": bool(latency_profile),
     }
     rerun_recommended = not (has_sections_compact or has_presentation_evidence)
     discrepancies = summary_json.get("discrepancies", [])
@@ -1969,6 +2259,12 @@ def get_report_summary(document_id: int, session: Session = Depends(get_session)
         modality_cards=cards,
         methods_card=methods_card,
         sections_card=sections_card,
+        scientific_card=scientific_card,
+        report_warnings=report_warnings,
+        synthesis_quality_flags=synthesis_summary["synthesis_quality_flags"],
+        critical_missing_focus_slots=synthesis_summary["critical_missing_focus_slots"],
+        latency_profile=latency_profile,
+        report_validity=report_validity,
         rerun_recommended=rerun_recommended,
         report_capabilities=report_capabilities,
         discrepancy_count=len(discrepancies) if isinstance(discrepancies, list) else 0,

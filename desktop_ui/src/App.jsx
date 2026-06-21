@@ -7,6 +7,7 @@ import {
   exportDiagnosticsBundle,
   fetchBootstrap,
   fetchDocumentMedia,
+  fetchJob,
   fetchJobs,
   fetchReport,
   fetchReportSaveStatus,
@@ -23,6 +24,19 @@ import {
   submitFromUpload,
   submitFromUrl,
 } from "./api";
+
+function readReportDeepLinkParams() {
+  const params = new URLSearchParams(window.location.search || "");
+  const jobId = Number(params.get("job_id") || params.get("jobId") || 0);
+  const documentId = Number(params.get("document_id") || params.get("documentId") || 0);
+  const view = String(params.get("view") || params.get("open") || "").toLowerCase();
+  const detail = String(params.get("detail") || "").toLowerCase();
+  return {
+    jobId: Number.isFinite(jobId) && jobId > 0 ? jobId : null,
+    documentId: Number.isFinite(documentId) && documentId > 0 ? documentId : null,
+    openDetail: view === "detailed_analysis" || view === "detail" || detail === "1" || detail === "true",
+  };
+}
 
 const WORKFLOW_STEPS = [
   { id: "select_source", label: "Select Source" },
@@ -183,6 +197,104 @@ function asArray(value) {
   if (Array.isArray(value)) return value;
   if (value === null || value === undefined) return [];
   return [value];
+}
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function formatCount(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+function formatPercent(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return "0%";
+  return `${Math.round(numeric * 100)}%`;
+}
+
+function formatDurationSeconds(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0s";
+  if (numeric < 60) return `${Math.round(numeric)}s`;
+  const minutes = Math.floor(numeric / 60);
+  const seconds = Math.round(numeric % 60);
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function normalizeJobStatus(status) {
+  return String(status || "unknown").trim().toLowerCase() || "unknown";
+}
+
+function jobStatusClass(status) {
+  return normalizeJobStatus(status).replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function jobStatusLabel(status) {
+  const normalized = normalizeJobStatus(status);
+  if (normalized === "queued") return "Queued";
+  if (normalized === "running") return "Running";
+  if (normalized === "completed") return "Completed";
+  if (normalized === "failed") return "Failed";
+  return "Unknown";
+}
+
+function formatJobProgress(job) {
+  const percent = formatPercent(job?.progress);
+  const status = normalizeJobStatus(job?.status);
+  if (status === "failed") return `Failed at ${percent}`;
+  if (status === "completed") return "Complete";
+  if (status === "queued") return `Queued (${percent})`;
+  if (status === "running") return `Running (${percent})`;
+  return percent;
+}
+
+function jobRowClassName(job, selectedJobId) {
+  const classes = ["job-row", `job-row-${jobStatusClass(job?.status)}`];
+  if (selectedJobId === job?.job_id) {
+    classes.push("selected");
+  }
+  return classes.join(" ");
+}
+
+function countEntries(value, maxItems = 6) {
+  const source = asObject(value);
+  if (!source) return [];
+  return Object.entries(source)
+    .map(([key, rawCount]) => ({
+      key: String(key || "").trim(),
+      count: Number(rawCount || 0),
+    }))
+    .filter((item) => item.key && Number.isFinite(item.count) && item.count > 0)
+    .sort((left, right) => {
+      if (right.count !== left.count) return right.count - left.count;
+      return left.key.localeCompare(right.key);
+    })
+    .slice(0, maxItems);
+}
+
+function normalizeFocusSlots(value) {
+  return asArray(value)
+    .map((slot) => asObject(slot))
+    .filter(Boolean)
+    .map((slot, index) => {
+      const refs = normalizeEvidenceRefs(slot).slice(0, 3);
+      return {
+        id: String(slot.slot_key || slot.label || index),
+        label: String(slot.label || humanizeKey(slot.slot_key) || `Focus Slot ${index + 1}`),
+        status: String(slot.status || "unknown").toLowerCase(),
+        source: String(slot.source || "").trim(),
+        statement: String(slot.statement || "").trim(),
+        reason: String(slot.reason || "").trim(),
+        sourceModality: String(slot.source_modality || "").trim(),
+        sectionLabel: String(slot.section_label || "").trim(),
+        detailTypes: asArray(slot.detail_types).map((item) => String(item || "").trim()).filter(Boolean).slice(0, 3),
+        refs,
+      };
+    });
 }
 
 function normalizeEvidenceRefs(item) {
@@ -1250,6 +1362,10 @@ function humanizeKey(key) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function formatQualityFlag(flag) {
+  return humanizeKey(String(flag || ""));
+}
+
 function canonicalText(value) {
   return String(value || "")
     .toLowerCase()
@@ -1594,9 +1710,12 @@ function clampViewerZoom(value) {
   return Math.max(0.25, Math.min(4, numeric));
 }
 
-function failureNextStep(job) {
+function failureNextStep(job, provider = "") {
   const message = String(job?.message || "").toLowerCase();
   if (message.includes("openai") || message.includes("usage guardrail") || message.includes("budget")) {
+    if (String(provider || "").trim().toLowerCase() !== "openai") {
+      return "Review local model and GPU diagnostics, then rerun analysis; this was not a source-fetch problem.";
+    }
     return "Review the OpenAI budget/token settings or rerun after the current backend fixes; this was not a source-fetch problem.";
   }
   if (message.includes("grobid")) {
@@ -1613,7 +1732,23 @@ function failureNextStep(job) {
   return "Review the failure reason, then submit a new run.";
 }
 
+function rerunGuidance(provider, reportFailed) {
+  if (!reportFailed) {
+    return "Legacy report detected. Re-run analysis to enable deterministic section-fidelity compact outputs.";
+  }
+  const normalized = String(provider || "").trim().toLowerCase();
+  if (normalized === "openai") {
+    return "Fix the configured OpenAI key/model access and rerun analysis.";
+  }
+  if (normalized === "local") {
+    return "Review local model and GPU diagnostics, then rerun analysis.";
+  }
+  return "Review model diagnostics, then rerun analysis.";
+}
+
 export default function App() {
+  const reportDeepLinkRef = useRef(readReportDeepLinkParams());
+  const reportDeepLinkLoadedRef = useRef(false);
   const [workflowStep, setWorkflowStep] = useState("select_source");
   const [nextStepText, setNextStepText] = useState(
     "Step 1: choose a main PDF (or enter URL/DOI), then click Validate."
@@ -1669,6 +1804,7 @@ export default function App() {
   const lastRuntimeSinceRef = useRef(null);
   const eventDedupeRef = useRef(new Map());
   const selectedJobIdRef = useRef(null);
+  const deepLinkWaitingNotifiedRef = useRef(false);
   const jobStatusCacheRef = useRef(new Map());
   const mainFileInputRef = useRef(null);
   const supplementsInputRef = useRef(null);
@@ -1743,12 +1879,38 @@ export default function App() {
     keepUniqueByNearDuplicate(listLines(reportSummary?.sections_card).map((line) => cleanSectionLine(line)), 24),
     12
   );
+  const scientificDetailLines = orderLinesForFlow(
+    keepUniqueByNearDuplicate(
+      listLines(reportSummary?.scientific_card)
+        .concat(asArray(structuredSummary?.scientific_details).map((item) => toDisplayLine(item)))
+        .map((line) => String(line || "").trim())
+        .filter(Boolean),
+      28
+    ),
+    12
+  );
   const sectionSnapshotGroups = groupPrefixedSectionLines(sectionsCardLines);
   const reportFailed = reportSummary?.report_status === "failed";
   const rerunRecommended = Boolean(reportSummary?.rerun_recommended);
+  const activeProvider = statusPayload?.provider || "";
+  const reportWarnings = asArray(reportSummary?.report_warnings)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
   const reportCapabilities = reportSummary?.report_capabilities && typeof reportSummary.report_capabilities === "object"
     ? reportSummary.report_capabilities
     : {};
+  const reportValidity =
+    asObject(reportSummary?.report_validity) ||
+    asObject(reportPayload?.analysis_diagnostics?.diagnostics?.run_validity) ||
+    null;
+  const reportValidityReasons = asArray(reportValidity?.reasons)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const reportValidityWarnings = asArray(reportValidity?.warning_reasons)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
   const reportModelUsage =
     reportPayload?.analysis_diagnostics?.diagnostics?.model_usage &&
     typeof reportPayload.analysis_diagnostics.diagnostics.model_usage === "object"
@@ -1759,6 +1921,95 @@ export default function App() {
     typeof reportPayload.analysis_diagnostics.diagnostics.openai_usage === "object"
       ? reportPayload.analysis_diagnostics.diagnostics.openai_usage
       : null;
+  const reportMultimodalQuality =
+    reportPayload?.analysis_diagnostics?.diagnostics?.multimodal_quality &&
+    typeof reportPayload.analysis_diagnostics.diagnostics.multimodal_quality === "object"
+      ? reportPayload.analysis_diagnostics.diagnostics.multimodal_quality
+      : null;
+  const reportMultimodalTotals = asObject(reportMultimodalQuality?.totals) || {};
+  const reportMultimodalFlags = asArray(reportMultimodalQuality?.quality_flags)
+    .map((flag) => String(flag || "").trim())
+    .filter(Boolean);
+  const reportMultimodalByModality = asObject(reportMultimodalQuality?.by_modality) || {};
+  const reportPromptBudget =
+    reportPayload?.analysis_diagnostics?.diagnostics?.prompt_budget_diagnostics &&
+    typeof reportPayload.analysis_diagnostics.diagnostics.prompt_budget_diagnostics === "object"
+      ? reportPayload.analysis_diagnostics.diagnostics.prompt_budget_diagnostics
+      : null;
+  const reportPromptBudgetTotals = asObject(reportPromptBudget?.totals) || {};
+  const reportPromptBudgetFlags = asArray(reportPromptBudget?.quality_flags)
+    .map((flag) => String(flag || "").trim())
+    .filter(Boolean);
+  const reportPromptBudgetByModality = asObject(reportPromptBudget?.by_modality) || {};
+  const reportLatencyProfile =
+    asObject(reportSummary?.latency_profile) ||
+    asObject(reportPayload?.latency_profile) ||
+    asObject(reportPayload?.analysis_diagnostics?.latency_profile) ||
+    asObject(reportPayload?.analysis_diagnostics?.diagnostics?.latency_profile) ||
+    null;
+  const reportLatencyBottlenecks = asArray(reportLatencyProfile?.top_bottlenecks)
+    .map((item) => asObject(item))
+    .filter(Boolean)
+    .slice(0, 3);
+  const reportLatencyFlags = asArray(reportLatencyProfile?.quality_flags)
+    .map((flag) => String(flag || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const reportLatencyPromptTotals = asObject(reportLatencyProfile?.prompt_totals) || {};
+  const reportSynthesisEvidencePlan =
+    asObject(structuredSummary?.section_diagnostics?.synthesis_evidence_plan) ||
+    asObject(reportPayload?.analysis_diagnostics?.diagnostics?.section_diagnostics?.synthesis_evidence_plan) ||
+    null;
+  const reportEvidencePacketCoverage =
+    asObject(structuredSummary?.evidence_packet_coverage) ||
+    asObject(structuredSummary?.section_diagnostics?.evidence_packet_coverage) ||
+    asObject(reportPayload?.analysis_diagnostics?.diagnostics?.section_diagnostics?.evidence_packet_coverage) ||
+    null;
+  const evidenceCoverageBySection = countEntries(reportEvidencePacketCoverage?.by_section, 5);
+  const evidenceCoverageByModality = countEntries(reportEvidencePacketCoverage?.by_modality, 4);
+  const evidenceCoverageByDetailType = countEntries(reportEvidencePacketCoverage?.by_detail_type, 7);
+  const evidenceCoverageMissingSections = asArray(reportEvidencePacketCoverage?.missing_core_sections)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const evidenceCoverageQualityFlags = asArray(reportEvidencePacketCoverage?.quality_flags)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const synthesisPlanCounts = asObject(reportSynthesisEvidencePlan?.selected_detail_counts) || {};
+  const synthesisPlanByModality = countEntries(synthesisPlanCounts.by_modality, 4);
+  const synthesisPlanBySection = countEntries(synthesisPlanCounts.by_section, 5);
+  const synthesisPlanByDetailType = countEntries(synthesisPlanCounts.by_detail_type, 7);
+  const synthesisPlanSectionInputs = countEntries(reportSynthesisEvidencePlan?.section_input_counts, 5);
+  const synthesisPlanGuidance = asArray(reportSynthesisEvidencePlan?.guidance)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const synthesisPlanQualityFlags = asArray(reportSynthesisEvidencePlan?.quality_flags)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .concat(
+      asArray(reportSummary?.synthesis_quality_flags)
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+    .filter((item, index, all) => all.indexOf(item) === index)
+    .slice(0, 6);
+  const synthesisPlanCriticalMissingSlots = asArray(
+    reportSynthesisEvidencePlan?.critical_missing_focus_slots ||
+      reportSummary?.critical_missing_focus_slots
+  )
+    .map((slot) => asObject(slot))
+    .filter(Boolean)
+    .map((slot, index) => ({
+      id: String(slot.slot_key || slot.label || index),
+      label: String(slot.label || humanizeKey(slot.slot_key) || `Missing Focus ${index + 1}`),
+      reason: String(slot.reason || "").trim(),
+    }))
+    .slice(0, 6);
+  const synthesisPlanFocusSlots = normalizeFocusSlots(reportSynthesisEvidencePlan?.focus_slots);
+  const synthesisPlanFoundSlots = synthesisPlanFocusSlots.filter((slot) => slot.status === "found").slice(0, 6);
+  const synthesisPlanMissingSlots = synthesisPlanFocusSlots.filter((slot) => slot.status === "missing").slice(0, 5);
   const modalityEntries =
     structuredSummary?.modalities && typeof structuredSummary.modalities === "object"
       ? Object.entries(structuredSummary.modalities)
@@ -2418,7 +2669,7 @@ export default function App() {
     }
     if (selectedJob.status === "failed") {
       setWorkflowStep("monitoring");
-      setNextStepText(failureNextStep(selectedJob));
+      setNextStepText(failureNextStep(selectedJob, activeProvider));
       return;
     }
     if (selectedJob.status === "running") {
@@ -2430,7 +2681,7 @@ export default function App() {
       setWorkflowStep("submitted");
       setNextStepText("Job is queued. Monitor Active Work.");
     }
-  }, [selectedJob]);
+  }, [selectedJob, activeProvider]);
 
   const handleSubmit = async () => {
     const valid = validateInput();
@@ -2496,10 +2747,13 @@ export default function App() {
     pushEvent("Source inputs cleared.", "info", "source-inputs-cleared");
   };
 
-  const handleLoadReport = async () => {
-    const targetJob = selectedJob?.status === "completed" ? selectedJob : latestCompletedJob;
+  const loadReportForJob = async (targetJob, { source = "manual" } = {}) => {
     if (!targetJob) {
       pushEvent("Load Report requires at least one completed job.", "warning", "load-not-completed");
+      return;
+    }
+    if (targetJob.status !== "completed") {
+      pushEvent(`Report is not ready yet for job ${targetJob.job_id}.`, "warning", `load-report-not-ready-${targetJob.job_id}`);
       return;
     }
 
@@ -2558,7 +2812,7 @@ export default function App() {
       setWorkflowStep("review");
       setNextStepText("Report loaded. Review modality sections and discrepancies.");
       pushEvent(
-        `Loaded latest completed report for job ${targetJob.job_id} (document ${targetJob.document_id}).`,
+        `${source === "deep-link" ? "Loaded linked report" : "Loaded latest completed report"} for job ${targetJob.job_id} (document ${targetJob.document_id}).`,
         "info",
         `load-report-success-${targetJob.job_id}`
       );
@@ -2573,6 +2827,77 @@ export default function App() {
       setLoadBusy(false);
     }
   };
+
+  const handleLoadReport = async () => {
+    const targetJob = selectedJob?.status === "completed" ? selectedJob : latestCompletedJob;
+    await loadReportForJob(targetJob);
+  };
+
+  useEffect(() => {
+    const target = reportDeepLinkRef.current;
+    if (reportDeepLinkLoadedRef.current || (!target.jobId && !target.documentId)) {
+      return;
+    }
+    let cancelled = false;
+    const findLinkedJob = () =>
+      jobs.find((item) => {
+        if (target.jobId && Number(item.job_id) === target.jobId) return true;
+        if (target.documentId && Number(item.document_id) === target.documentId) return true;
+        return false;
+      }) || null;
+
+    const loadLinkedReport = async () => {
+      let targetJob = findLinkedJob();
+      if (!targetJob && target.jobId) {
+        try {
+          const fetched = await fetchJob(target.jobId);
+          const fetchedJobId = Number(fetched?.job_id || fetched?.id || 0);
+          if (cancelled || !fetchedJobId) return;
+          targetJob = {
+            job_id: fetchedJobId,
+            document_id: fetched.document_id,
+            status: fetched.status,
+            progress: fetched.progress,
+            message: fetched.message || "",
+            created_at: fetched.created_at,
+            updated_at: fetched.updated_at,
+            source_kind: fetched.source_kind || fetched.source_type || "url",
+          };
+          setJobs((prev) => {
+            if (prev.find((item) => item.job_id === targetJob.job_id)) return prev;
+            return [targetJob, ...prev];
+          });
+        } catch (err) {
+          if (!cancelled) {
+            pushEvent(`Linked report job could not be loaded: ${toUiErrorMessage(err)}`, "error", "deep-link-job-load-failed");
+          }
+          return;
+        }
+      }
+      if (!targetJob || cancelled) {
+        return;
+      }
+      setSelectedJobId(targetJob.job_id);
+      if (targetJob.status !== "completed") {
+        if (!deepLinkWaitingNotifiedRef.current) {
+          deepLinkWaitingNotifiedRef.current = true;
+          pushEvent(`Linked report job ${targetJob.job_id} is ${targetJob.status}; waiting for completion.`, "info", `deep-link-waiting-${targetJob.job_id}`);
+        }
+        return;
+      }
+      reportDeepLinkLoadedRef.current = true;
+      await loadReportForJob(targetJob, { source: "deep-link" });
+      if (target.openDetail && !cancelled) {
+        setDetailViewOpen(true);
+        setDetailViewExpanded(true);
+      }
+    };
+
+    loadLinkedReport();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobs]);
 
   const handleSaveReport = async () => {
     if (!selectedJob || selectedJob.status !== "completed") {
@@ -2791,11 +3116,16 @@ export default function App() {
   const modelReady = statusPayload?.provider
     ? Boolean(statusPayload?.provider_ready)
     : Boolean(statusPayload?.model_exists && statusPayload?.mmproj_exists);
+  const localGpuMode = statusPayload?.local_gpu_mode || "";
   const modelLabel = statusPayload?.provider === "openai"
     ? `OpenAI ${statusPayload?.openai_deep_model || "Ready"}`
-    : modelReady
-      ? "Ready"
-      : "Missing";
+    : !modelReady
+      ? "Missing"
+      : localGpuMode === "cpu_fallback"
+        ? "Local CPU fallback"
+        : localGpuMode === "cpu"
+          ? "Local CPU"
+          : "Local GPU";
   const grobidReady = Boolean(statusPayload?.grobid?.ready);
 
   return (
@@ -3015,13 +3345,17 @@ export default function App() {
                 {jobs.map((item) => (
                   <tr
                     key={item.job_id}
-                    className={selectedJobId === item.job_id ? "selected" : ""}
+                    className={jobRowClassName(item, selectedJobId)}
                     onClick={() => setSelectedJobId(item.job_id)}
                   >
                     <td>#{item.job_id} / doc {item.document_id}</td>
                     <td>{sourceKindLabel(item.source_kind)}</td>
-                    <td>{item.status}</td>
-                    <td>{Math.round((item.progress || 0) * 100)}%</td>
+                    <td>
+                      <span className={`job-status-pill ${jobStatusClass(item.status)}`}>
+                        {jobStatusLabel(item.status)}
+                      </span>
+                    </td>
+                    <td>{formatJobProgress(item)}</td>
                     <td>{item.updated_at ? formatEtDateTime(item.updated_at) : "-"}</td>
                   </tr>
                 ))}
@@ -3037,15 +3371,20 @@ export default function App() {
                 <div className="detail-grid">
                   <div>Job ID</div><div>{selectedJob.job_id}</div>
                   <div>Document ID</div><div>{selectedJob.document_id}</div>
-                  <div>Status</div><div>{selectedJob.status}</div>
-                  <div>Progress</div><div>{Math.round((selectedJob.progress || 0) * 100)}%</div>
+                  <div>Status</div>
+                  <div>
+                    <span className={`job-status-pill ${jobStatusClass(selectedJob.status)}`}>
+                      {jobStatusLabel(selectedJob.status)}
+                    </span>
+                  </div>
+                  <div>Progress</div><div>{formatJobProgress(selectedJob)}</div>
                   <div>Message</div><div>{selectedJob.message || "-"}</div>
                 </div>
                 {selectedJob.status === "failed" && (
                   <div className="failure-callout">
                     <strong>Failure Reason</strong>
                     <p>{selectedJob.message || "No error details were provided by backend."}</p>
-                    <p className="hint">Next step: {failureNextStep(selectedJob)}</p>
+                    <p className="hint">Next step: {failureNextStep(selectedJob, activeProvider)}</p>
                   </div>
                 )}
               </>
@@ -3077,9 +3416,14 @@ export default function App() {
             )}
             {rerunRecommended && (
               <div className="failure-inline">
-                {reportFailed
-                  ? "Fix the configured OpenAI key/model access and rerun analysis."
-                  : "Legacy report detected. Re-run analysis to enable deterministic section-fidelity compact outputs."}
+                {rerunGuidance(activeProvider, reportFailed)}
+              </div>
+            )}
+            {reportWarnings.length > 0 && (
+              <div className="warning-inline">
+                {reportWarnings.slice(0, 4).map((warning) => (
+                  <div key={warning}>{warning}</div>
+                ))}
               </div>
             )}
             {mediaError && <div className="failure-inline">{mediaError}</div>}
@@ -3129,6 +3473,18 @@ export default function App() {
               )}
               <SectionEvidenceNotes lines={keyFindingLines.slice(0, 6)} />
             </div>
+
+            {scientificDetailLines.length > 0 && (
+              <div className="subsection">
+                <h3>Scientific Details</h3>
+                <ol className="detail-list detail-list-ordered">
+                  {scientificDetailLines.slice(0, 8).map((line, idx) => (
+                    <li key={`scientific-card-${idx}`}>{cleanSectionLine(line)}</li>
+                  ))}
+                </ol>
+                <SectionEvidenceNotes lines={scientificDetailLines.slice(0, 8)} />
+              </div>
+            )}
 
             <div className="subsection">
               <h3>Section Snapshot</h3>
@@ -3198,6 +3554,7 @@ export default function App() {
                 <div className="detail-grid">
                   <div>Methods compact</div><div>{String(Boolean(reportCapabilities.methods_compact))}</div>
                   <div>Sections compact</div><div>{String(Boolean(reportCapabilities.sections_compact))}</div>
+                  <div>Scientific details</div><div>{String(Boolean(reportCapabilities.scientific_details))}</div>
                   <div>Coverage snapshot line</div><div>{String(Boolean(reportCapabilities.coverage_snapshot_line))}</div>
                 </div>
               </details>
@@ -3236,6 +3593,359 @@ export default function App() {
                     </div>
                     <div>OpenAI tokens: {Number(reportOpenAiUsage.total_tokens || 0).toLocaleString()}</div>
                   </>
+                )}
+                {reportValidity && (
+                  <div className="synthesis-evidence-block">
+                    <strong>Run validity</strong>
+                    <div className="multimodal-quality-grid">
+                      <div>Valid</div>
+                      <div>{String(Boolean(reportValidity.valid))}</div>
+                      <div>Rerun required</div>
+                      <div>{String(Boolean(reportValidity.rerun_required))}</div>
+                      <div>Text calls</div>
+                      <div>{formatCount(reportValidity.text_calls)}</div>
+                      <div>Text cache reused</div>
+                      <div>{String(Boolean(reportValidity.text_cache_reused))}</div>
+                      <div>Narrative synthesis</div>
+                      <div>
+                        {Boolean(reportValidity.narrative_synthesis_required)
+                          ? Boolean(reportValidity.narrative_synthesis_ran)
+                            ? `ran (${formatCount(reportValidity.narrative_synthesis_deep_calls)} call${Number(reportValidity.narrative_synthesis_deep_calls || 0) === 1 ? "" : "s"})`
+                            : "missing"
+                          : "not required"}
+                      </div>
+                    </div>
+                    {(reportValidityReasons.length > 0 || reportValidityWarnings.length > 0) && (
+                      <div className="quality-flag-row">
+                        {reportValidityReasons.map((reason) => (
+                          <span key={`validity-reason-${reason}`} className="quality-flag">
+                            {formatQualityFlag(reason)}
+                          </span>
+                        ))}
+                        {reportValidityWarnings.map((reason) => (
+                          <span key={`validity-warning-${reason}`} className="quality-flag">
+                            {formatQualityFlag(reason)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {reportEvidencePacketCoverage && (
+                  <div className="synthesis-evidence-block">
+                    <strong>Evidence packet coverage</strong>
+                    <div className="synthesis-evidence-meta">
+                      <span>Usable packets: {formatCount(reportEvidencePacketCoverage.usable_packets)} / {formatCount(reportEvidencePacketCoverage.packet_total)}</span>
+                      <span>Usable rate: {formatPercent(reportEvidencePacketCoverage.usable_packet_rate)}</span>
+                      <span>Cross-modal packets: {formatCount(reportEvidencePacketCoverage.cross_modal_packet_count)}</span>
+                      <span>Typed packets: {formatCount(reportEvidencePacketCoverage.typed_packet_count)}</span>
+                    </div>
+                    {evidenceCoverageQualityFlags.length > 0 && (
+                      <div className="quality-flag-row">
+                        {evidenceCoverageQualityFlags.map((flag) => (
+                          <span key={`coverage-flag-${flag}`} className="quality-flag">
+                            {formatQualityFlag(flag)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {evidenceCoverageMissingSections.length > 0 && (
+                      <div className="synthesis-missing-list critical">
+                        {evidenceCoverageMissingSections.map((section) => (
+                          <span key={`coverage-missing-${section}`}>
+                            Missing {humanizeKey(section)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="synthesis-evidence-columns">
+                      <div>
+                        <h4>Packet sections</h4>
+                        {evidenceCoverageBySection.length > 0 ? (
+                          evidenceCoverageBySection.map((item) => (
+                            <span key={`coverage-section-${item.key}`}>{humanizeKey(item.key)}: {formatCount(item.count)}</span>
+                          ))
+                        ) : (
+                          <span>No section packet counts.</span>
+                        )}
+                      </div>
+                      <div>
+                        <h4>Packet modalities</h4>
+                        {evidenceCoverageByModality.length > 0 ? (
+                          evidenceCoverageByModality.map((item) => (
+                            <span key={`coverage-modality-${item.key}`}>{humanizeKey(item.key)}: {formatCount(item.count)}</span>
+                          ))
+                        ) : (
+                          <span>No modality packet counts.</span>
+                        )}
+                      </div>
+                      <div>
+                        <h4>Packet detail types</h4>
+                        {evidenceCoverageByDetailType.length > 0 ? (
+                          evidenceCoverageByDetailType.map((item) => (
+                            <span key={`coverage-detail-${item.key}`}>{humanizeKey(item.key)}: {formatCount(item.count)}</span>
+                          ))
+                        ) : (
+                          <span>No typed packet counts.</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {(reportSynthesisEvidencePlan || synthesisPlanQualityFlags.length > 0 || synthesisPlanCriticalMissingSlots.length > 0) && (
+                  <div className="synthesis-evidence-block">
+                    <strong>Synthesis evidence plan</strong>
+                    <div className="synthesis-evidence-meta">
+                      <span>Paper type: {String(reportSynthesisEvidencePlan?.paper_type || "unknown")}</span>
+                      <span>Missing focus slots: {formatCount(reportSynthesisEvidencePlan?.missing_focus_slot_count)}</span>
+                    </div>
+                    {synthesisPlanQualityFlags.length > 0 && (
+                      <div className="quality-flag-row">
+                        {synthesisPlanQualityFlags.map((flag) => (
+                          <span key={`synthesis-flag-${flag}`} className="quality-flag">
+                            {formatQualityFlag(flag)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="synthesis-evidence-columns">
+                      <div>
+                        <h4>Selected modalities</h4>
+                        {synthesisPlanByModality.length > 0 ? (
+                          synthesisPlanByModality.map((item) => (
+                            <span key={`mod-${item.key}`}>{humanizeKey(item.key)}: {formatCount(item.count)}</span>
+                          ))
+                        ) : (
+                          <span>No selected detail counts.</span>
+                        )}
+                      </div>
+                      <div>
+                        <h4>Selected sections</h4>
+                        {synthesisPlanBySection.length > 0 ? (
+                          synthesisPlanBySection.map((item) => (
+                            <span key={`section-${item.key}`}>{humanizeKey(item.key)}: {formatCount(item.count)}</span>
+                          ))
+                        ) : (
+                          <span>No section counts.</span>
+                        )}
+                      </div>
+                      <div>
+                        <h4>Detail types</h4>
+                        {synthesisPlanByDetailType.length > 0 ? (
+                          synthesisPlanByDetailType.map((item) => (
+                            <span key={`type-${item.key}`}>{humanizeKey(item.key)}: {formatCount(item.count)}</span>
+                          ))
+                        ) : (
+                          <span>No scientific detail types.</span>
+                        )}
+                      </div>
+                      <div>
+                        <h4>Section inputs</h4>
+                        {synthesisPlanSectionInputs.length > 0 ? (
+                          synthesisPlanSectionInputs.map((item) => (
+                            <span key={`input-${item.key}`}>{humanizeKey(item.key)}: {formatCount(item.count)}</span>
+                          ))
+                        ) : (
+                          <span>No section input counts.</span>
+                        )}
+                      </div>
+                    </div>
+                    {synthesisPlanCriticalMissingSlots.length > 0 && (
+                      <div>
+                        <h4>Critical missing focus</h4>
+                        <div className="synthesis-missing-list critical">
+                          {synthesisPlanCriticalMissingSlots.map((slot) => (
+                            <span key={`critical-missing-${slot.id}`} title={slot.reason || undefined}>
+                              {slot.label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {(synthesisPlanFoundSlots.length > 0 || synthesisPlanMissingSlots.length > 0) && (
+                      <div className="synthesis-focus-slots">
+                        {synthesisPlanFoundSlots.length > 0 && (
+                          <div>
+                            <h4>Found focus slots</h4>
+                            <div className="synthesis-focus-list">
+                              {synthesisPlanFoundSlots.map((slot) => (
+                                <div key={`found-${slot.id}`} className="synthesis-focus-card found">
+                                  <div className="synthesis-focus-title">
+                                    <strong>{slot.label}</strong>
+                                    <span>{humanizeKey(slot.status)}</span>
+                                  </div>
+                                  {slot.statement && <p>{slot.statement}</p>}
+                                  <div className="synthesis-focus-meta">
+                                    {slot.sectionLabel && <span>{humanizeKey(slot.sectionLabel)}</span>}
+                                    {slot.sourceModality && <span>{humanizeKey(slot.sourceModality)}</span>}
+                                    {slot.source && <span>{humanizeKey(slot.source)}</span>}
+                                    {slot.detailTypes.map((item) => (
+                                      <span key={`${slot.id}-${item}`}>{humanizeKey(item)}</span>
+                                    ))}
+                                  </div>
+                                  {slot.refs.length > 0 && (
+                                    <div className="synthesis-focus-refs">
+                                      {slot.refs.map((ref) => (
+                                        <span key={`${slot.id}-${ref}`}>{formatEvidenceRef(ref) || ref}</span>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {synthesisPlanMissingSlots.length > 0 && (
+                          <div>
+                            <h4>Missing focus slots</h4>
+                            <div className="synthesis-missing-list">
+                              {synthesisPlanMissingSlots.map((slot) => (
+                                <span key={`missing-${slot.id}`} title={slot.reason || undefined}>
+                                  {slot.label}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {synthesisPlanGuidance.length > 0 && (
+                      <ul className="synthesis-guidance-list">
+                        {synthesisPlanGuidance.map((item, idx) => (
+                          <li key={`synthesis-guidance-${idx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                {reportMultimodalQuality && (
+                  <div className="multimodal-quality-block">
+                    <strong>Multimodal quality</strong>
+                    <div className="multimodal-quality-grid">
+                      <div>Evidence packets</div>
+                      <div>{formatCount(reportMultimodalTotals.evidence_packets)}</div>
+                      <div>Vision failures</div>
+                      <div>
+                        {formatCount(reportMultimodalTotals.vision_failures)}
+                        {" "}
+                        ({formatPercent(reportMultimodalTotals.vision_failure_rate)})
+                      </div>
+                      <div>OCR fallback calls</div>
+                      <div>
+                        {formatCount(reportMultimodalTotals.ocr_fallback_calls)}
+                        {" "}
+                        ({formatPercent(reportMultimodalTotals.ocr_dependency_rate)})
+                      </div>
+                      <div>Caption-first skips</div>
+                      <div>{formatCount(reportMultimodalTotals.caption_first_skipped_vision)}</div>
+                      <div>Skipped media assets</div>
+                      <div>{formatCount(reportMultimodalTotals.missing_or_skipped_assets)}</div>
+                    </div>
+                    {reportMultimodalFlags.length > 0 && (
+                      <div className="quality-flag-row">
+                        {reportMultimodalFlags.slice(0, 4).map((flag) => (
+                          <span key={flag} className="quality-flag">{formatQualityFlag(flag)}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="multimodal-quality-grid compact">
+                      {Object.entries(reportMultimodalByModality).map(([modality, block]) => {
+                        const safeBlock = asObject(block) || {};
+                        return (
+                          <div key={modality} className="multimodal-quality-modality">
+                            <strong>{humanizeKey(modality)}</strong>
+                            <span>Caption anchors: {formatCount(safeBlock.caption_anchored_count)}</span>
+                            <span>Caption-first skips: {formatCount(safeBlock.caption_first_skipped_vision)}</span>
+                            <span>OCR-dependent: {formatCount(safeBlock.ocr_dependent_count)}</span>
+                            <span>Skipped assets: {formatCount(safeBlock.missing_or_skipped_assets)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {reportLatencyProfile && (
+                  <div className="multimodal-quality-block">
+                    <strong>Latency profile</strong>
+                    <div className="multimodal-quality-grid">
+                      <div>Total known time</div>
+                      <div>{formatDurationSeconds(reportLatencyProfile.total_known_seconds)}</div>
+                      <div>Slowest stage</div>
+                      <div>{humanizeKey(reportLatencyProfile.slowest_stage || "unknown")}</div>
+                      {Number(reportLatencyPromptTotals.max_prompt_seconds || 0) > 0 && (
+                        <>
+                          <div>Slowest prompt call</div>
+                          <div>
+                            {formatDurationSeconds(reportLatencyPromptTotals.max_prompt_seconds)}
+                            {reportLatencyPromptTotals.max_prompt_seconds_modality
+                              ? ` (${humanizeKey(reportLatencyPromptTotals.max_prompt_seconds_modality)})`
+                              : ""}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {reportLatencyFlags.length > 0 && (
+                      <div className="quality-flag-row">
+                        {reportLatencyFlags.map((flag) => (
+                          <span key={flag} className="quality-flag">{formatQualityFlag(flag)}</span>
+                        ))}
+                      </div>
+                    )}
+                    {reportLatencyBottlenecks.length > 0 && (
+                      <div className="multimodal-quality-grid compact">
+                        {reportLatencyBottlenecks.map((block, idx) => (
+                          <div key={`${block.stage || "stage"}-${idx}`} className="multimodal-quality-modality">
+                            <strong>{humanizeKey(block.stage || `Stage ${idx + 1}`)}</strong>
+                            <span>{formatDurationSeconds(block.duration_seconds)}</span>
+                            {block.execution?.timed_out && (
+                              <span>Subprocess timeout</span>
+                            )}
+                            {Number(block.prompt_budget?.max_prompt_seconds || 0) > 0 && (
+                              <span>Slowest prompt: {formatDurationSeconds(block.prompt_budget.max_prompt_seconds)}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {reportPromptBudget && (
+                  <div className="multimodal-quality-block">
+                    <strong>Local context budget</strong>
+                    <div className="multimodal-quality-grid">
+                      <div>Prompt calls</div>
+                      <div>{formatCount(reportPromptBudgetTotals.prompt_calls)}</div>
+                      <div>Largest prompt</div>
+                      <div>
+                        {formatCount(reportPromptBudgetTotals.max_prompt_chars)}
+                        {reportPromptBudgetTotals.max_prompt_modality
+                          ? ` chars (${humanizeKey(reportPromptBudgetTotals.max_prompt_modality)})`
+                          : " chars"}
+                      </div>
+                      <div>Average prompt</div>
+                      <div>{formatCount(Math.round(Number(reportPromptBudgetTotals.average_prompt_chars || 0)))} chars</div>
+                    </div>
+                    {reportPromptBudgetFlags.length > 0 && (
+                      <div className="quality-flag-row">
+                        {reportPromptBudgetFlags.slice(0, 4).map((flag) => (
+                          <span key={flag} className="quality-flag">{formatQualityFlag(flag)}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="multimodal-quality-grid compact">
+                      {Object.entries(reportPromptBudgetByModality).map(([modality, block]) => {
+                        const safeBlock = asObject(block) || {};
+                        return (
+                          <div key={modality} className="multimodal-quality-modality">
+                            <strong>{humanizeKey(modality)}</strong>
+                            <span>Calls: {formatCount(safeBlock.prompt_calls)}</span>
+                            <span>Max chars: {formatCount(safeBlock.max_prompt_chars)}</span>
+                            <span>Blocks: {formatCount(safeBlock.max_prompt_blocks)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
                 {lastError && <div className="error-text">Last error: {lastError}</div>}
               </div>
@@ -3356,7 +4066,14 @@ export default function App() {
                 <>
                   {rerunRecommended && (
                     <div className="failure-inline">
-                      Legacy report detected. Re-run analysis for deterministic section-fidelity output.
+                      {rerunGuidance(activeProvider, reportFailed)}
+                    </div>
+                  )}
+                  {reportWarnings.length > 0 && (
+                    <div className="warning-inline">
+                      {reportWarnings.slice(0, 2).map((warning) => (
+                        <div key={`detail-warning-${warning}`}>{warning}</div>
+                      ))}
                     </div>
                   )}
                   <div className="subsection">
@@ -3383,6 +4100,18 @@ export default function App() {
                       <p key={`exec-${idx}`}>{paragraph}</p>
                     ))}
                   </div>
+
+                  {scientificDetailLines.length > 0 && (
+                    <div className="subsection">
+                      <h3>Scientific Details</h3>
+                      <ol className="detail-list detail-list-ordered">
+                        {scientificDetailLines.map((line, idx) => (
+                          <li key={`detail-scientific-${idx}`}>{cleanSectionLine(line)}</li>
+                        ))}
+                      </ol>
+                      <SectionEvidenceNotes lines={scientificDetailLines} />
+                    </div>
+                  )}
 
                   {paperMetaEntries.length > 0 && (
                     <div className="subsection">

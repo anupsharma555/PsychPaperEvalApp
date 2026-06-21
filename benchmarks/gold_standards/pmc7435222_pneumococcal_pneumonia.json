@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "case_id": "pmc7435222_pneumococcal_pneumonia",
+  "source_pdf": "test/03_32814590_PMC7435222.pdf",
+  "source_sha256": "51d11da9d56e56ce01b216384bfd551ac8229d5f5d30a12aaa952227e960c9d3",
+  "gold_standard_type": "final_report_expectations",
+  "authoring": {
+    "method": "codex_assisted_source_review",
+    "review_status": "codex_drafted_needs_review",
+    "created_at": "2026-06-21",
+    "source_material": [
+      "test/03_32814590_PMC7435222.pdf"
+    ]
+  },
+  "paper_identity": {
+    "title": "The potential role of pneumococcal conjugate vaccine in reducing acute respiratory inflammation in community-acquired pneumococcal pneumonia",
+    "domain": "pediatric_infectious_disease",
+    "study_type": "multicenter observational pediatric pneumonia surveillance study"
+  },
+  "final_report_expectations": {
+    "research_question": "Whether stepwise childhood pneumococcal conjugate vaccine implementation in Taiwan was associated with changes in pediatric community-acquired pneumococcal pneumonia prevalence, acute inflammatory severity, and breakthrough disease patterns by serotype.",
+    "study_design": "Prospective multicenter observational recruitment of children and adolescents with community-acquired pneumonia from the Taiwan Pediatric Infectious Diseases Alliance during 2010-2015, followed by analysis of the pneumococcal pneumonia subset.",
+    "population_or_materials": "1375 children/adolescents under 18 with all-cause community-acquired pneumonia were enrolled; 983 hospitalized children met criteria for pneumococcal pneumonia, including 133 definitive and 850 probable cases.",
+    "methods": [
+      "Defined community-acquired pneumonia by acute radiographic lung infiltrates plus respiratory signs or symptoms.",
+      "Classified pneumococcal pneumonia as definitive when sterile-site culture or pleural effusion pneumococcal PCR was positive, and probable when pneumococcal antigen testing was positive without culture/PCR confirmation.",
+      "Identified pathogens using pleural-fluid multiplex PCR, pneumococcal antigen testing, culture-related criteria, and Mycoplasma serology where relevant.",
+      "Serotyped pneumococcal isolates by sequential multiplex PCR covering 19 serotypes, with untyped serotypes classified as non-typed.",
+      "Compared vaccination status, vaccine type, serotype distribution, clinical severity measures, and blood inflammatory markers across vaccinated vs unvaccinated groups and vaccine-covered vs non-vaccine serotype breakthrough infections."
+    ],
+    "primary_findings": [
+      "Pneumococcal pneumonia cases declined after 2013, with the lowest observed prevalence among all-cause pneumonia in 2015.",
+      "Vaccination proportions in the pneumococcal pneumonia cohort increased over time, especially among children under 5 years and the 2-5 year group.",
+      "Serotype 19A remained the leading identified serotype among both vaccinated and unvaccinated pneumococcal pneumonia patients.",
+      "Vaccinated patients had less intense acute systemic inflammatory profiles than unvaccinated patients, including lower neutrophils, lymphocytes, and CRP, with higher lowest WBC.",
+      "Among vaccinated patients with definitive pneumococcal pneumonia, vaccine-covered serotype breakthrough infections were associated with more severe pneumonia than non-vaccine serotype infections."
+    ],
+    "secondary_findings": [
+      "Overall, 421 of 983 pneumococcal pneumonia patients had received some pneumococcal vaccination.",
+      "PCV7 was the largest vaccine category overall, while PCV13 became dominant after 2013 and reached all recorded vaccine-type use in 2015.",
+      "Clinical severity outcomes such as pleural aspiration, chest catheter use, ICU admission, and ICU days were numerically lower in vaccinated patients but not statistically significant in the broad vaccinated vs unvaccinated comparison.",
+      "PCV13 recipients had the lowest reported CRP among vaccine-type groups.",
+      "Breakthrough infections with vaccine-covered serotypes had higher chest catheter use, VATS, complication composites, eosinophils, and CRP, and lower hemoglobin than non-vaccine serotype definitive infections."
+    ],
+    "sensitivity_analysis": [
+      "No formal sensitivity analysis was labeled as such.",
+      "Robustness-relevant stratifications included age group, calendar year, vaccine type, definitive/probable status, serotype, and vaccine-covered vs non-vaccine serotype breakthrough infection.",
+      "The authors also separately examined vaccinated vs unvaccinated patients and PCV7/PCV13 subgroups."
+    ],
+    "statistical_tests_used": [
+      "Student t test was used for normally distributed continuous variables.",
+      "Mann-Whitney U test was used for non-normal continuous variables.",
+      "Chi-square test and Fisher exact test were used for categorical variables.",
+      "Logistic regression evaluated associations between definitive pneumococcal pneumonia and vaccine type.",
+      "Two-tailed hypothesis tests used p < 0.05 as the significance threshold; SAS 9.4 was used."
+    ],
+    "interpretation": [
+      "The paper should be interpreted as real-world pediatric infectious-disease evidence consistent with reduced pneumococcal pneumonia prevalence and attenuated inflammatory response after PCV implementation, not as randomized vaccine-effectiveness proof.",
+      "The report should preserve the distinction between reduced prevalence/inflammation and persistence of breakthrough pneumococcal pneumonia, especially serotype 19A.",
+      "The vaccine-covered breakthrough finding should be framed as higher severity among a definitive vaccinated subgroup, not as evidence that vaccination worsens disease overall."
+    ],
+    "limitations": [
+      "The study could not estimate vaccine effectiveness for each PCV because it lacked a large normal healthy child control group.",
+      "A small number of children initially received PCV10 or PPV23 before PCV13 boosters, though the authors considered this unlikely to materially affect results.",
+      "Medical-center recruitment likely enriched for more severe pneumonia and may introduce selection bias.",
+      "Results are observational and tied to Taiwan's stepwise vaccine policy and serotype ecology."
+    ],
+    "tables_figures_supplements": [
+      "Fig. 1: patient selection flowchart.",
+      "Fig. 2: age-stratified trends in all-cause and pneumococcal pneumonia and vaccination proportions.",
+      "Table 1: yearly all-cause pneumonia and definitive/probable pneumococcal pneumonia counts.",
+      "Table 2: yearly vaccination status by age group and vaccine type.",
+      "Table 3: serotypes, clinical characteristics, and laboratory findings by vaccination status and vaccine type.",
+      "Table 4: clinical/laboratory severity comparison for vaccine-covered vs non-vaccine serotypes in definitive vaccinated pneumococcal pneumonia."
+    ],
+    "supplement_availability": "The PDF references online supplementary information at the article DOI, specifically Supplementary Fig. 1 on numbers of vaccine types received among hospitalized all-cause pneumonia patients. The local PDF text includes the caption but not the supplement contents; online supplement was not reviewed.",
+    "uniqueness": [
+      "Combines vaccine-era pediatric pneumonia surveillance, serotype information, and inflammatory-marker severity rather than only incidence.",
+      "Highlights serotype 19A persistence and breakthrough pneumococcal pneumonia despite PCV implementation.",
+      "Useful benchmark for table-heavy extraction of denominators, subgroup definitions, and cautious observational interpretation."
+    ]
+  },
+  "critical_claims": [
+    {
+      "claim_id": "pcv-001",
+      "section": "methods",
+      "importance": "P0",
+      "claim": "The analytic pneumococcal pneumonia cohort consisted of 983 hospitalized children from 2010-2015, derived from 1375 all-cause community-acquired pneumonia enrollees.",
+      "source_anchor": "Abstract Methods; Results patient characteristics; Fig. 1",
+      "expected_entities": [
+        "children",
+        "community-acquired pneumococcal pneumonia",
+        "TPIDA",
+        "Taiwan"
+      ],
+      "expected_numbers": [
+        {
+          "label": "all_cause_pneumonia_enrollees",
+          "value": 1375,
+          "unit": "participants"
+        },
+        {
+          "label": "pneumococcal_pneumonia_cases",
+          "value": 983,
+          "unit": "participants"
+        },
+        {
+          "label": "definitive_cases",
+          "value": 133,
+          "unit": "participants"
+        },
+        {
+          "label": "probable_cases",
+          "value": 850,
+          "unit": "participants"
+        }
+      ]
+    },
+    {
+      "claim_id": "pcv-002",
+      "section": "results",
+      "importance": "P0",
+      "claim": "The proportion of pneumococcal pneumonia among all-cause pneumonia declined after 2013 and was lowest in 2015, while vaccination proportions increased over the study period.",
+      "source_anchor": "Results patient characteristics; Tables 1-2",
+      "expected_entities": [
+        "pneumococcal pneumonia",
+        "pneumococcal vaccination",
+        "2010-2015"
+      ],
+      "expected_numbers": [
+        {
+          "label": "pneumococcal_pneumonia_2010",
+          "value": 72.8,
+          "unit": "percent"
+        },
+        {
+          "label": "pneumococcal_pneumonia_2015",
+          "value": 54.9,
+          "unit": "percent"
+        },
+        {
+          "label": "vaccinated_2010",
+          "value": 25.1,
+          "unit": "percent"
+        },
+        {
+          "label": "vaccinated_2015",
+          "value": 66.7,
+          "unit": "percent"
+        }
+      ]
+    },
+    {
+      "claim_id": "pcv-003",
+      "section": "results",
+      "importance": "P1",
+      "claim": "Serotype 19A was the leading identified serotype in both vaccinated and unvaccinated pneumococcal pneumonia patients.",
+      "source_anchor": "Results patient characteristics; Table 3",
+      "expected_entities": [
+        "serotype 19A",
+        "vaccinated patients",
+        "unvaccinated patients"
+      ],
+      "expected_numbers": [
+        {
+          "label": "serotype_19a_vaccinated",
+          "value": 6.4,
+          "unit": "percent"
+        },
+        {
+          "label": "serotype_19a_unvaccinated",
+          "value": 5.2,
+          "unit": "percent"
+        }
+      ]
+    },
+    {
+      "claim_id": "pcv-004",
+      "section": "results",
+      "importance": "P1",
+      "claim": "Vaccinated patients had significantly higher lowest WBC and lower neutrophils, lymphocytes, and CRP than unvaccinated patients.",
+      "source_anchor": "Clinical outcomes; Table 3",
+      "expected_entities": [
+        "vaccinated patients",
+        "unvaccinated patients",
+        "WBC",
+        "neutrophils",
+        "lymphocytes",
+        "CRP"
+      ],
+      "expected_numbers": [
+        {
+          "label": "lowest_wbc_unvaccinated",
+          "value": 8.8,
+          "unit": "k/cumm"
+        },
+        {
+          "label": "lowest_wbc_vaccinated",
+          "value": 9.5,
+          "unit": "k/cumm"
+        },
+        {
+          "label": "highest_crp_unvaccinated",
+          "value": 13.2,
+          "unit": "mg/dl"
+        },
+        {
+          "label": "highest_crp_vaccinated",
+          "value": 10.9,
+          "unit": "mg/dl"
+        }
+      ]
+    },
+    {
+      "claim_id": "pcv-005",
+      "section": "results",
+      "importance": "P1",
+      "claim": "In vaccinated definitive pneumococcal pneumonia, vaccine-covered serotype breakthrough infection was associated with higher pneumonia severity than non-vaccine serotype infection.",
+      "source_anchor": "Clinical outcomes; Table 4",
+      "expected_entities": [
+        "breakthrough infection",
+        "vaccine-covered serotypes",
+        "chest catheter",
+        "VATS",
+        "CRP"
+      ],
+      "expected_numbers": [
+        {
+          "label": "non_vaccine_serotype_group",
+          "value": 21,
+          "unit": "participants"
+        },
+        {
+          "label": "vaccine_covered_serotype_group",
+          "value": 37,
+          "unit": "participants"
+        },
+        {
+          "label": "chest_catheter_non_vaccine",
+          "value": 57.14,
+          "unit": "percent"
+        },
+        {
+          "label": "chest_catheter_vaccine_covered",
+          "value": 83.78,
+          "unit": "percent"
+        },
+        {
+          "label": "highest_crp_non_vaccine",
+          "value": 23.7,
+          "unit": "mg/dl"
+        },
+        {
+          "label": "highest_crp_vaccine_covered",
+          "value": 29.5,
+          "unit": "mg/dl"
+        }
+      ]
+    }
+  ],
+  "report_should_not_claim": [
+    "Do not claim PCV eliminated pneumococcal pneumonia or serotype 19A.",
+    "Do not describe the study as randomized or as a direct vaccine-effectiveness trial.",
+    "Do not claim broad clinical severity outcomes were all significantly improved in vaccinated patients; several were only numerically lower.",
+    "Do not omit the medical-center recruitment and lack of healthy control group limitations.",
+    "Do not treat the online supplementary figure as reviewed unless it is separately retrieved."
+  ],
+  "scoring_focus": [
+    "Reward preservation of cohort derivation, definitive/probable definitions, and 2010-2015 Taiwan vaccine-policy context.",
+    "Require correct direction and caveats for inflammatory markers and breakthrough vaccine-covered serotype severity.",
+    "Check that serotype 19A persistence is reported despite PCV implementation.",
+    "Penalize causal overstatement and omission of limitations."
+  ]
+}
