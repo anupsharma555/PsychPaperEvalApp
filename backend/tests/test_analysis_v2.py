@@ -15,7 +15,11 @@ from app.services.analysis import text_analysis
 from app.services.analysis.reconcile import reconcile_reports
 from app.services.analysis.schemas import StructuredDossierV2
 from app.services.analysis.synthesis import synthesize_report
-from app.services.analysis.utils import filter_grounded_evidence_packets, normalize_evidence_packets
+from app.services.analysis.utils import (
+    add_source_excerpts_to_packets,
+    filter_grounded_evidence_packets,
+    normalize_evidence_packets,
+)
 from app.db.models import Chunk
 from app.services import validated_pipeline
 
@@ -61,6 +65,48 @@ def test_normalize_evidence_packets_clamps_and_flags_missing() -> None:
     assert "missing_evidence" in packets[1]["quality_flags"]
 
 
+def test_normalize_evidence_packets_infers_detail_types_for_llm_inputs() -> None:
+    packets = normalize_evidence_packets(
+        [
+            {
+                "finding_id": "x1",
+                "anchor": "table:1",
+                "statement": "Sensitivity analysis showed lower risk in the treatment group (p < 0.05).",
+                "evidence_refs": ["table:1"],
+                "confidence": 0.8,
+                "category": "stats",
+                "detail_types": ["outcome_measure"],
+            }
+        ],
+        "table",
+        {"table:1"},
+    )
+
+    assert {
+        "outcome_measure",
+        "statistical_result",
+        "sensitivity_analysis",
+        "cross_modal_result",
+    }.issubset(set(packets[0]["detail_types"]))
+
+
+def test_add_source_excerpts_to_packets_resolves_near_anchor_variants() -> None:
+    packets = add_source_excerpts_to_packets(
+        [
+            {
+                "finding_id": "x1",
+                "anchor": "section:results:2",
+                "statement": "Connectivity increased in reward-related networks.",
+                "evidence_refs": ["section:Results:2"],
+                "confidence": 0.8,
+            }
+        ],
+        {"section:Results::2": "The source paragraph reports increased connectivity in reward-related networks."},
+    )
+
+    assert packets[0]["source_excerpt"].startswith("The source paragraph reports")
+
+
 def test_normalize_evidence_packets_resolves_near_anchor_variants() -> None:
     packets = normalize_evidence_packets(
         [
@@ -91,6 +137,36 @@ def test_normalize_evidence_packets_resolves_near_anchor_variants() -> None:
     assert packets[1]["anchor"] == "section:CONCLUSIONS:38"
     assert packets[1]["evidence_refs"] == ["section:CONCLUSIONS:38"]
     assert "missing_evidence" not in packets[1]["quality_flags"]
+
+
+def test_normalize_evidence_packets_infers_section_labels_from_anchor_and_category() -> None:
+    packets = normalize_evidence_packets(
+        [
+            {
+                "finding_id": "x1",
+                "anchor": "section:Results::2",
+                "statement": "Connectivity increased in reward-related networks.",
+                "evidence_refs": ["section:results:2"],
+                "confidence": 0.81,
+                "category": "other",
+            },
+            {
+                "finding_id": "x2",
+                "anchor": "table:1",
+                "statement": "The sensitivity analysis remained significant.",
+                "evidence_refs": ["table:1"],
+                "confidence": 0.74,
+                "category": "stats",
+            },
+        ],
+        "text",
+        {"section:Results::2", "table:1"},
+    )
+
+    assert packets[0]["section_label"] == "results"
+    assert packets[0]["section_source"] == "anchor"
+    assert packets[1]["section_label"] == "results"
+    assert packets[1]["section_source"] == "category"
 
 
 def test_normalize_evidence_packets_repairs_invalid_anchor_from_valid_ref() -> None:
@@ -1130,6 +1206,28 @@ def test_synthesize_report_exposes_scientific_details_without_extra_llm_routing(
     assert summary["evidence_packet_coverage"]["by_modality"]["table"] == 1
     assert summary["evidence_packet_coverage"]["cross_modal_packet_count"] == 1
     assert "medication_or_therapeutic" in summary["evidence_packet_coverage"]["by_detail_type"]
+    assert summary["artifact_organization_version"] == 1
+    assert summary["artifact_organization"]["modality_packet_counts"] == {
+        "text": 1,
+        "table": 1,
+        "figure": 0,
+        "supplement": 0,
+    }
+    assert summary["artifact_organization"]["audited_packet_quality"]["total"] == 2
+    assert summary["artifact_organization"]["audited_packet_quality"]["typed_packet_count"] == 2
+    assert summary["artifact_organization"]["audited_packet_quality"]["source_excerpt_from_statement"] == 2
+    inventory = summary["artifact_organization"]["llm_input_inventory"]
+    assert inventory["schema_version"] == 1
+    assert inventory["eligible_scientific_detail_count"] == len(summary["scientific_details"])
+    assert inventory["selected_prompt_detail_count"] == 2
+    assert inventory["selected_detail_records"][0]["statement_sha256"]
+    assert inventory["selected_detail_records"][0]["evidence_refs"]
+    assert "statement" not in inventory["selected_detail_records"][0]
+    assert inventory["selected_quality"]["missing_source_excerpt"] == 0
+    assert inventory["selected_detail_counts"]["by_section"]["methods"] == 1
+    assert inventory["selected_detail_counts"]["by_modality"]["table"] == 1
+    assert "source_excerpt_reconstructed_from_statement" in summary["artifact_organization"]["quality_flags"]
+    assert summary["section_diagnostics"]["artifact_organization"] == summary["artifact_organization"]
     audit_by_id = {packet["finding_id"]: packet for packet in summary["evidence_packets"]}
     assert audit_by_id["med-1"]["section_label"] == "methods"
     assert "medication_or_therapeutic" in audit_by_id["med-1"]["detail_types"]
@@ -1151,6 +1249,7 @@ def test_synthesize_report_exposes_scientific_details_without_extra_llm_routing(
     assert validated["scientific_details"][0]["evidence_refs"]
     assert validated["evidence_packets"][0]["evidence_refs"]
     assert validated["evidence_packet_coverage"]["usable_packets"] == 2
+    assert validated["artifact_organization"]["audited_packet_quality"]["total"] == 2
 
 
 def test_evidence_packet_coverage_excludes_unknown_sections_from_gold_usable(monkeypatch) -> None:
@@ -1926,6 +2025,86 @@ def test_synthesize_report_discloses_unavailable_supplements_in_uncertainty() ->
     assert "not extracted or reviewed" in note
     assert any("not extracted or reviewed" in item for item in summary["uncertainty_gaps"])
     assert summary["section_diagnostics"]["supplement_availability_note"] == note
+
+
+def test_synthesize_report_discloses_unavailable_supplements_even_with_main_text_supp_packets() -> None:
+    summary = synthesize_report(
+        {"evidence_packets": []},
+        {"evidence_packets": []},
+        {"evidence_packets": []},
+        {
+            "evidence_packets": [
+                {
+                    "finding_id": "supp-ref-1",
+                    "modality": "supplement",
+                    "anchor": "section:Methods:1",
+                    "statement": "Further details are provided in Table S1 in the data supplement.",
+                    "evidence_refs": ["section:Methods:1"],
+                    "confidence": 0.45,
+                    "category": "supplement_extractive_summary",
+                    "section_label": "methods",
+                }
+            ]
+        },
+        {"cross_modal_claims": [], "discrepancies": []},
+        paper_meta={},
+        coverage={
+            "figures": {"expected": 0, "extracted": 0, "missing_refs": []},
+            "tables": {"expected": 0, "extracted": 0, "missing_refs": []},
+            "supp_figures": {"expected": 1, "extracted": 0, "missing_refs": ["Fig S1"]},
+            "supp_tables": {"expected": 1, "extracted": 0, "missing_refs": ["Table S1"]},
+        },
+    )
+
+    note = summary["supplement_availability_note"]
+    assert "Supplement availability:" in note
+    assert "not extracted or reviewed" in note
+    assert "Fig S1" in note
+    assert "Table S1" in note
+    assert any("not extracted or reviewed" in item for item in summary["uncertainty_gaps"])
+    assert summary["artifact_organization"]["supplement_source_consistency"] == {
+        "missing_supplement_ref_count": 2,
+        "supplement_availability_note_present": True,
+    }
+    assert (
+        "supplement_reference_packets_without_extracted_supplements"
+        in summary["artifact_organization"]["quality_flags"]
+    )
+
+
+def test_synthesize_report_marks_statement_source_excerpt_fallback_in_packet_audit() -> None:
+    summary = synthesize_report(
+        {
+            "evidence_packets": [
+                {
+                    "finding_id": "text-1",
+                    "modality": "text",
+                    "anchor": "section:Results:1",
+                    "statement": "Results showed higher response on the primary outcome, p < 0.05.",
+                    "evidence_refs": ["section:Results:1"],
+                    "confidence": 0.75,
+                    "category": "results",
+                    "detail_types": ["secondary_finding"],
+                    "section_label": "results",
+                }
+            ]
+        },
+        {"evidence_packets": []},
+        {"evidence_packets": []},
+        {"evidence_packets": []},
+        {"cross_modal_claims": [], "discrepancies": []},
+        paper_meta={},
+        coverage={"figures": {}, "tables": {}, "supp_figures": {}, "supp_tables": {}},
+    )
+
+    packet = next(item for item in summary["evidence_packets"] if item["finding_id"] == "text-1")
+    assert packet["source_excerpt"].startswith("Results showed higher response")
+    assert "source_excerpt_from_statement" in packet["quality_flags"]
+    assert "secondary_finding" in packet["detail_types"]
+    assert "statistical_result" in packet["detail_types"]
+    detail = next(item for item in summary["scientific_details"] if item["evidence_refs"] == ["section:Results:1"])
+    assert "secondary_finding" in detail["detail_types"]
+    assert detail["source_excerpt"].startswith("Results showed higher response")
 
 
 def test_synthesize_report_marks_supplement_only_source() -> None:

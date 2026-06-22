@@ -29,6 +29,8 @@ STANDARD = ROOT / "benchmarks" / "app_evaluation_standard.json"
 GOLD_STANDARDS = ROOT / "benchmarks" / "gold_standards"
 DEFAULT_HISTORY_DB = ROOT / "test" / "active_benchmark" / "benchmark_history.sqlite"
 MAX_STATIC_MEDIA_BYTES = 12 * 1024 * 1024
+MAX_SOURCE_CHUNK_INVENTORY_CHUNKS = 240
+MAX_SOURCE_CHUNK_INVENTORY_CHARS = 600
 SCRIPTS_DIR = ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
@@ -1248,6 +1250,9 @@ def _artifact_metadata(
     html_path: Path,
     slack_summary_path: Path,
     media_json_path: Path | None = None,
+    source_chunks_json_path: Path | None = None,
+    intermediate_stage_index_json_path: Path | None = None,
+    llm_input_inventory_json_path: Path | None = None,
     detailed_analysis_url: str = "",
     webapp_url: str = "",
 ) -> dict[str, str]:
@@ -1261,6 +1266,12 @@ def _artifact_metadata(
         media_dir = media_json_path.parent / "media"
         if media_dir.exists():
             metadata["static_media_dir"] = str(media_dir)
+    if source_chunks_json_path is not None:
+        metadata["source_chunks_json"] = str(source_chunks_json_path)
+    if intermediate_stage_index_json_path is not None:
+        metadata["intermediate_stage_index_json"] = str(intermediate_stage_index_json_path)
+    if llm_input_inventory_json_path is not None:
+        metadata["llm_input_inventory_json"] = str(llm_input_inventory_json_path)
     if detailed_analysis_url:
         metadata["detailed_analysis_url"] = detailed_analysis_url
     if webapp_url:
@@ -2140,6 +2151,106 @@ def _write_record(case_dir: Path, record: dict[str, Any]) -> None:
     (case_dir / "record.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
 
 
+def _write_source_chunk_inventory(
+    report: dict[str, Any],
+    output_path: Path,
+    *,
+    db_path: Path = ROOT / "data" / "app.db",
+    max_chunks: int = MAX_SOURCE_CHUNK_INVENTORY_CHUNKS,
+    max_chars: int = MAX_SOURCE_CHUNK_INVENTORY_CHARS,
+) -> Path | None:
+    document_id = _report_document_id(report)
+    if not document_id or not db_path.exists():
+        return None
+    payload = _source_chunk_inventory_payload(
+        document_id,
+        db_path=db_path,
+        max_chunks=max_chunks,
+        max_chars=max_chars,
+    )
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return output_path
+
+
+def _copy_intermediate_stage_index(document_id: int, output_path: Path) -> Path | None:
+    source_path = ROOT / "data" / f"doc_{document_id}" / "artifacts" / "intermediate_stage_index.json"
+    payload = _read_optional_json_object(source_path)
+    if not payload:
+        return None
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return output_path
+
+
+def _copy_llm_input_inventory(document_id: int, output_path: Path) -> Path | None:
+    source_path = ROOT / "data" / f"doc_{document_id}" / "artifacts" / "llm_input_inventory.json"
+    payload = _read_optional_json_object(source_path)
+    if not payload:
+        return None
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return output_path
+
+
+def _source_chunk_inventory_payload(
+    document_id: int,
+    *,
+    db_path: Path,
+    max_chunks: int = MAX_SOURCE_CHUNK_INVENTORY_CHUNKS,
+    max_chars: int = MAX_SOURCE_CHUNK_INVENTORY_CHARS,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "document_id": document_id,
+        "source": str(db_path),
+        "max_chunks": max_chunks,
+        "max_chars_per_chunk": max_chars,
+        "chunk_count": 0,
+        "stored_chunk_count": 0,
+        "truncated": False,
+        "chunks": [],
+    }
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            count_row = conn.execute(
+                "select count(*) from chunk where document_id = ?",
+                (document_id,),
+            ).fetchone()
+            chunk_count = int(count_row[0] or 0) if count_row else 0
+            rows = conn.execute(
+                """
+                select id, anchor, modality, content
+                from chunk
+                where document_id = ?
+                order by id
+                limit ?
+                """,
+                (document_id, max_chunks),
+            ).fetchall()
+    except Exception as exc:
+        payload["error"] = str(exc)
+        return payload
+
+    chunks: list[dict[str, Any]] = []
+    for chunk_id, anchor, modality, content in rows:
+        text = " ".join(str(content or "").split())
+        excerpt = text[:max_chars]
+        chunks.append(
+            {
+                "id": int(chunk_id),
+                "anchor": str(anchor or ""),
+                "modality": str(modality or ""),
+                "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "content_chars": len(text),
+                "excerpt": excerpt,
+                "excerpt_truncated": len(text) > len(excerpt),
+            }
+        )
+    payload["chunk_count"] = chunk_count
+    payload["stored_chunk_count"] = len(chunks)
+    payload["truncated"] = chunk_count > len(chunks)
+    payload["chunks"] = chunks
+    return payload
+
+
 def _failure_decision(record: dict[str, Any]) -> str:
     return "fail" if bool(record.get("release_gate")) else "diagnostic_fail"
 
@@ -2224,6 +2335,18 @@ def _finish_uploaded_case(
             failures.append("evidence-to-gold comparison is incompatible")
         report_path = case_dir / "report.json"
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        source_chunks_json_path = _write_source_chunk_inventory(
+            report,
+            case_dir / "source_chunks.json",
+        )
+        intermediate_stage_index_json_path = _copy_intermediate_stage_index(
+            document_id,
+            case_dir / "intermediate_stage_index.json",
+        )
+        llm_input_inventory_json_path = _copy_llm_input_inventory(
+            document_id,
+            case_dir / "llm_input_inventory.json",
+        )
         webapp_url = _webapp_detailed_analysis_url(api_base, record)
         media = _fetch_document_media(api_base, document_id)
         media_json_path: Path | None = None
@@ -2256,6 +2379,9 @@ def _finish_uploaded_case(
             html_path=html_path,
             slack_summary_path=slack_summary_path,
             media_json_path=media_json_path,
+            source_chunks_json_path=source_chunks_json_path,
+            intermediate_stage_index_json_path=intermediate_stage_index_json_path,
+            llm_input_inventory_json_path=llm_input_inventory_json_path,
             detailed_analysis_url=detailed_analysis_url,
             webapp_url=webapp_url,
         )
@@ -2310,6 +2436,25 @@ def _write_detailed_report_from_path(
     elif (report_path.parent / "media.json").exists():
         media_json_path = report_path.parent / "media.json"
         media = _load_json(media_json_path)
+    source_chunks_json_path = report_path.parent / "source_chunks.json"
+    if not source_chunks_json_path.exists():
+        source_chunks_json_path = None
+    intermediate_stage_index_json_path = report_path.parent / "intermediate_stage_index.json"
+    if not intermediate_stage_index_json_path.exists():
+        document_id = _report_document_id(report)
+        intermediate_stage_index_json_path = (
+            _copy_intermediate_stage_index(document_id, report_path.parent / "intermediate_stage_index.json")
+            if document_id
+            else None
+        )
+    llm_input_inventory_json_path = report_path.parent / "llm_input_inventory.json"
+    if not llm_input_inventory_json_path.exists():
+        document_id = _report_document_id(report)
+        llm_input_inventory_json_path = (
+            _copy_llm_input_inventory(document_id, report_path.parent / "llm_input_inventory.json")
+            if document_id
+            else None
+        )
     if fetch_media_assets:
         resolved_api_base = api_base or _api_base_from_webapp_url(webapp_url)
         document = report.get("document") if isinstance(report.get("document"), dict) else {}
@@ -2349,6 +2494,9 @@ def _write_detailed_report_from_path(
             html_path=html_path,
             slack_summary_path=slack_summary_path,
             media_json_path=media_json_path,
+            source_chunks_json_path=source_chunks_json_path,
+            intermediate_stage_index_json_path=intermediate_stage_index_json_path,
+            llm_input_inventory_json_path=llm_input_inventory_json_path,
             detailed_analysis_url=detailed_analysis_url,
             webapp_url=webapp_url,
         ),
@@ -2358,6 +2506,10 @@ def _write_detailed_report_from_path(
     print(f"slack_summary_markdown={slack_summary_path}")
     if media_json_path is not None:
         print(f"media_json={media_json_path}")
+    if intermediate_stage_index_json_path is not None:
+        print(f"intermediate_stage_index_json={intermediate_stage_index_json_path}")
+    if llm_input_inventory_json_path is not None:
+        print(f"llm_input_inventory_json={llm_input_inventory_json_path}")
     for updated_path in updated_metadata:
         print(f"updated_artifact_metadata={updated_path}")
     for updated_path in updated_comparison:
@@ -2390,6 +2542,9 @@ def _summarize_existing_run(path: Path, *, json_output: bool = False) -> int:
                     "webapp_detailed_analysis_url": str(artifacts.get("webapp_detailed_analysis_url") or ""),
                     "slack_summary_markdown": str(artifacts.get("slack_summary_markdown") or ""),
                     "media_json": str(artifacts.get("media_json") or ""),
+                    "source_chunks_json": str(artifacts.get("source_chunks_json") or ""),
+                    "intermediate_stage_index_json": str(artifacts.get("intermediate_stage_index_json") or ""),
+                    "llm_input_inventory_json": str(artifacts.get("llm_input_inventory_json") or ""),
                     "static_media_dir": str(artifacts.get("static_media_dir") or ""),
                 },
             }
@@ -2497,6 +2652,9 @@ def _history_rows(path: Path) -> list[dict[str, Any]]:
             fallback_slack = case_dir / "slack_summary.md"
             fallback_media_json = case_dir / "media.json"
             fallback_media_dir = case_dir / "media"
+            fallback_source_chunks_json = case_dir / "source_chunks.json"
+            fallback_stage_index_json = case_dir / "intermediate_stage_index.json"
+            fallback_llm_input_inventory_json = case_dir / "llm_input_inventory.json"
             rows.append(
                 {
                     "summary_path": str(summary_path.resolve()),
@@ -2542,6 +2700,18 @@ def _history_rows(path: Path) -> list[dict[str, Any]]:
                         artifacts.get("media_json")
                         or (fallback_media_json if fallback_media_json.exists() else "")
                     ),
+                    "source_chunks_json": str(
+                        artifacts.get("source_chunks_json")
+                        or (fallback_source_chunks_json if fallback_source_chunks_json.exists() else "")
+                    ),
+                    "intermediate_stage_index_json": str(
+                        artifacts.get("intermediate_stage_index_json")
+                        or (fallback_stage_index_json if fallback_stage_index_json.exists() else "")
+                    ),
+                    "llm_input_inventory_json": str(
+                        artifacts.get("llm_input_inventory_json")
+                        or (fallback_llm_input_inventory_json if fallback_llm_input_inventory_json.exists() else "")
+                    ),
                     "static_media_dir": str(
                         artifacts.get("static_media_dir")
                         or (fallback_media_dir if fallback_media_dir.exists() else "")
@@ -2560,6 +2730,11 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
         for case in manifest.get("cases", [])
         if isinstance(case, dict)
     }
+    pdf_by_case = {
+        str(case.get("id") or ""): str(case.get("pdf") or "")
+        for case in manifest.get("cases", [])
+        if isinstance(case, dict)
+    }
     comparator = _load_module(SCRIPTS_DIR / "compare_evidence_to_gold.py", "compare_evidence_to_gold_stage_summary")
     validator = _load_module(SCRIPTS_DIR / "validate_gold_standards.py", "validate_gold_standards_stage_summary")
 
@@ -2571,16 +2746,27 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
     aggregate_improvement_lane_counts: dict[str, int] = {}
     aggregate_source_visibility_counts: dict[str, int] = {}
     aggregate_lane_source_visibility_counts: dict[str, dict[str, int]] = {}
+    aggregate_artifact_organization_flags: dict[str, int] = {}
+    aggregate_artifact_organization_sources: dict[str, int] = {}
+    aggregate_artifact_packet_quality: dict[str, int] = {}
+    aggregate_artifact_supplement_consistency: dict[str, int] = {}
+    aggregate_llm_input_inventory_quality: dict[str, int] = {}
+    aggregate_llm_input_inventory_flags: dict[str, int] = {}
+    llm_input_inventory_present = 0
+    artifact_organization_present = 0
+    native_artifact_organization_present = 0
     aggregate_stage_presence = {
         stage: {"present": 0, "total_expected_items": 0}
         for stage in ("extracted_text", "evidence_packets", "synthesis_inputs", "final_report")
     }
+    pdf_text_cache: dict[str, str | None] = {}
 
     for case_id in sorted(latest_by_case):
         row = latest_by_case[case_id]
         report_path = Path(str(row.get("run_dir") or "")) / case_id / "report.json"
         gold_rel = gold_by_case.get(case_id, "")
         gold_path = ROOT / gold_rel if gold_rel else Path("")
+        source_pdf = ROOT / pdf_by_case.get(case_id, "") if pdf_by_case.get(case_id, "") else Path("")
         if not report_path.exists():
             skipped.append({"case_id": case_id, "reason": f"missing report.json: {report_path}"})
             continue
@@ -2595,6 +2781,12 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
             evidence_metadata=comparator.evidence_metadata_from_payload(report),
         )
         stage = comparator._build_artifact_stage_diagnostics(report, gold, comparison)
+        document_id = _report_document_id(report)
+        source_chunks_path = report_path.parent / "source_chunks.json"
+        report_chunk_payload_texts = _report_chunk_payload_texts(report)
+        diagnostic_chunk_payload_texts = report_chunk_payload_texts + _source_chunk_inventory_texts(
+            source_chunks_path
+        )
         failure_counts = _int_dict(stage.get("failure_point_counts"))
         item_type_counts = _int_dict(stage.get("item_type_counts"))
         failure_by_item_type = _nested_int_dict(stage.get("failure_point_by_item_type"))
@@ -2602,6 +2794,89 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
         visibility_counts = _source_visibility_counts(stage)
         lane_visibility_counts = _stage_lane_source_visibility_counts(stage)
         representative_examples = _stage_representative_examples(stage)
+        artifact_organization = _artifact_organization_from_report(report)
+        artifact_quality_flags = _artifact_organization_quality_flags(artifact_organization)
+        artifact_packet_quality = _artifact_organization_int_block(
+            artifact_organization,
+            "audited_packet_quality",
+        )
+        artifact_supplement_consistency = _artifact_organization_int_block(
+            artifact_organization,
+            "supplement_source_consistency",
+        )
+        llm_input_inventory = _artifact_organization_dict_block(
+            artifact_organization,
+            "llm_input_inventory",
+        )
+        llm_input_quality = _artifact_organization_int_block(
+            llm_input_inventory,
+            "selected_quality",
+        )
+        llm_input_flags = _artifact_organization_quality_flags(llm_input_inventory)
+        if llm_input_inventory:
+            llm_input_inventory_present += 1
+        if artifact_organization:
+            artifact_organization_present += 1
+            artifact_source = str(artifact_organization.get("diagnostic_source") or "native").strip() or "native"
+            aggregate_artifact_organization_sources[artifact_source] = (
+                aggregate_artifact_organization_sources.get(artifact_source, 0) + 1
+            )
+            if artifact_source == "native":
+                native_artifact_organization_present += 1
+        else:
+            artifact_source = ""
+        for flag in artifact_quality_flags:
+            aggregate_artifact_organization_flags[flag] = (
+                aggregate_artifact_organization_flags.get(flag, 0) + 1
+            )
+        _merge_int_counts(aggregate_artifact_packet_quality, artifact_packet_quality)
+        _merge_int_counts(aggregate_artifact_supplement_consistency, artifact_supplement_consistency)
+        _merge_int_counts(aggregate_llm_input_inventory_quality, llm_input_quality)
+        for flag in llm_input_flags:
+            aggregate_llm_input_inventory_flags[flag] = (
+                aggregate_llm_input_inventory_flags.get(flag, 0) + 1
+            )
+        source_recall_examples = _stage_lane_examples(
+            stage,
+            "source_recall_or_extraction_visibility",
+            document_id=document_id,
+            db_path=ROOT / "data" / "app.db",
+            pdf_path=source_pdf,
+            pdf_text_cache=pdf_text_cache,
+            report_chunk_payload_texts=diagnostic_chunk_payload_texts,
+        )
+        source_recall_counts = _stage_lane_visibility_counts(stage, "source_recall_or_extraction_visibility")
+        source_recall_item_type_counts = _stage_lane_item_type_counts(
+            stage,
+            "source_recall_or_extraction_visibility",
+        )
+        source_recall_db_visibility_counts = _stage_lane_db_visibility_counts(
+            stage,
+            "source_recall_or_extraction_visibility",
+            document_id=document_id,
+            db_path=ROOT / "data" / "app.db",
+        )
+        source_recall_pdf_visibility_counts = _stage_lane_pdf_visibility_counts(
+            stage,
+            "source_recall_or_extraction_visibility",
+            pdf_path=source_pdf,
+            pdf_text_cache=pdf_text_cache,
+        )
+        source_recall_loss_mode_counts = _stage_lane_source_recall_loss_mode_counts(
+            stage,
+            "source_recall_or_extraction_visibility",
+            document_id=document_id,
+            db_path=ROOT / "data" / "app.db",
+            pdf_path=source_pdf,
+            pdf_text_cache=pdf_text_cache,
+        )
+        source_recall_chunk_payload_visibility_counts = _stage_lane_chunk_payload_visibility_counts(
+            stage,
+            "source_recall_or_extraction_visibility",
+            document_id=document_id,
+            db_path=ROOT / "data" / "app.db",
+            report_chunk_payload_texts=diagnostic_chunk_payload_texts,
+        )
         stage_presence = stage.get("stage_presence_counts") if isinstance(stage.get("stage_presence_counts"), dict) else {}
         for key, count in failure_counts.items():
             aggregate_failure_counts[key] = aggregate_failure_counts.get(key, 0) + count
@@ -2640,9 +2915,28 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
                 "source_visibility_counts": visibility_counts,
                 "lane_source_visibility_counts": lane_visibility_counts,
                 "representative_examples": representative_examples,
+                "artifact_organization_present": bool(artifact_organization),
+                "artifact_organization_source": artifact_source,
+                "artifact_organization_quality_flags": artifact_quality_flags,
+                "artifact_organization_packet_quality": artifact_packet_quality,
+                "artifact_organization_supplement_consistency": artifact_supplement_consistency,
+                "llm_input_inventory_present": bool(llm_input_inventory),
+                "llm_input_inventory_quality": llm_input_quality,
+                "llm_input_inventory_quality_flags": llm_input_flags,
+                "source_recall_visibility_counts": source_recall_counts,
+                "source_recall_item_type_counts": source_recall_item_type_counts,
+                "source_recall_db_visibility_counts": source_recall_db_visibility_counts,
+                "source_recall_pdf_visibility_counts": source_recall_pdf_visibility_counts,
+                "source_recall_loss_mode_counts": source_recall_loss_mode_counts,
+                "source_recall_chunk_payload_visibility_counts": (
+                    source_recall_chunk_payload_visibility_counts
+                ),
+                "source_recall_examples": source_recall_examples,
                 "stage_presence_counts": stage_presence,
                 "report_json": str(report_path),
+                "source_chunks_json": str(source_chunks_path) if source_chunks_path.exists() else "",
                 "gold_standard": str(gold_path),
+                "source_pdf": str(source_pdf) if str(source_pdf) != "." else "",
             }
         )
 
@@ -2671,6 +2965,30 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
                 key=lambda item: (-sum(item[1].values()), item[0]),
             )
         },
+        "artifact_organization_summary": {
+            "indexed_cases": artifact_organization_present,
+            "native_cases": native_artifact_organization_present,
+            "total_cases": len(case_rows),
+            "quality_flag_counts": dict(
+                sorted(aggregate_artifact_organization_flags.items(), key=lambda item: (-item[1], item[0]))
+            ),
+            "source_counts": dict(
+                sorted(aggregate_artifact_organization_sources.items(), key=lambda item: (-item[1], item[0]))
+            ),
+            "audited_packet_quality_totals": dict(
+                sorted(aggregate_artifact_packet_quality.items(), key=lambda item: item[0])
+            ),
+            "supplement_source_consistency_totals": dict(
+                sorted(aggregate_artifact_supplement_consistency.items(), key=lambda item: item[0])
+            ),
+            "llm_input_inventory_cases": llm_input_inventory_present,
+            "llm_input_inventory_quality_totals": dict(
+                sorted(aggregate_llm_input_inventory_quality.items(), key=lambda item: item[0])
+            ),
+            "llm_input_inventory_quality_flag_counts": dict(
+                sorted(aggregate_llm_input_inventory_flags.items(), key=lambda item: (-item[1], item[0]))
+            ),
+        },
         "aggregate_stage_presence_counts": aggregate_stage_presence,
         "cases": sorted(
             case_rows,
@@ -2681,6 +2999,10 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
         ),
     }
     payload["recommended_inspection_queue"] = _recommended_stage_inspection_queue(payload)
+    payload["component_candidate_summary"] = _component_candidate_summary(
+        payload["recommended_inspection_queue"]
+    )
+    payload["source_recall_drilldown"] = _source_recall_drilldown(payload["cases"])
     if json_output:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
@@ -2703,6 +3025,107 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
     print("aggregate_source_visibility_counts:")
     for key, count in payload["aggregate_source_visibility_counts"].items():
         print(f"- {key}: {count}")
+    print("artifact_organization_summary:")
+    artifact_summary = payload.get("artifact_organization_summary")
+    if isinstance(artifact_summary, dict):
+        print(
+            "- indexed_cases: "
+            f"{artifact_summary.get('indexed_cases')}/{artifact_summary.get('total_cases')}"
+        )
+        print(
+            "- native_cases: "
+            f"{artifact_summary.get('native_cases')}/{artifact_summary.get('total_cases')}"
+        )
+        flag_counts = _int_dict(artifact_summary.get("quality_flag_counts"))
+        packet_totals = _int_dict(artifact_summary.get("audited_packet_quality_totals"))
+        supplement_totals = _int_dict(artifact_summary.get("supplement_source_consistency_totals"))
+        llm_quality_totals = _int_dict(artifact_summary.get("llm_input_inventory_quality_totals"))
+        llm_flag_counts = _int_dict(artifact_summary.get("llm_input_inventory_quality_flag_counts"))
+        source_counts = _int_dict(artifact_summary.get("source_counts"))
+        print(f"- sources: {_format_count_dict(source_counts)}")
+        print(f"- quality_flags: {_format_count_dict(flag_counts)}")
+        print(f"- audited_packet_quality: {_format_count_dict(packet_totals)}")
+        print(f"- supplement_source_consistency: {_format_count_dict(supplement_totals)}")
+        print(
+            "- llm_input_inventory: "
+            f"{artifact_summary.get('llm_input_inventory_cases')}/{artifact_summary.get('total_cases')} "
+            f"quality={_format_count_dict(llm_quality_totals)} "
+            f"flags={_format_count_dict(llm_flag_counts)}"
+        )
+    print("component_candidate_summary:")
+    component_summary = payload.get("component_candidate_summary")
+    if isinstance(component_summary, dict):
+        for row in component_summary.get("by_label", [])[:8]:
+            if not isinstance(row, dict):
+                continue
+            print(
+                "- "
+                f"{row.get('label')}: "
+                f"weighted_items={row.get('weighted_items')} "
+                f"causal={row.get('causal_status')}"
+            )
+    source_recall_drilldown = payload.get("source_recall_drilldown")
+    if isinstance(source_recall_drilldown, dict):
+        print("source_recall_drilldown:")
+        print(f"- total_items: {source_recall_drilldown.get('total_items')}")
+        print(
+            "- by_visibility: "
+            f"{_format_count_dict(_int_dict(source_recall_drilldown.get('by_visibility')))}"
+        )
+        print(
+            "- by_db_visibility: "
+            f"{_format_count_dict(_int_dict(source_recall_drilldown.get('by_db_visibility')))}"
+        )
+        print(
+            "- by_pdf_visibility: "
+            f"{_format_count_dict(_int_dict(source_recall_drilldown.get('by_pdf_visibility')))}"
+        )
+        print(
+            "- by_chunk_payload_visibility: "
+            f"{_format_count_dict(_int_dict(source_recall_drilldown.get('by_chunk_payload_visibility')))}"
+        )
+        print(
+            "- by_loss_mode: "
+            f"{_format_count_dict(_int_dict(source_recall_drilldown.get('by_loss_mode')))}"
+        )
+        print("  top_cases:")
+        for row in source_recall_drilldown.get("top_cases", [])[:5]:
+            if not isinstance(row, dict):
+                continue
+            print(
+                "  - "
+                f"{row.get('case_id')}: "
+                f"items={row.get('source_recall_items')} "
+                f"visibility={_format_count_dict(_int_dict(row.get('visibility_counts')))} "
+                f"db={_format_count_dict(_int_dict(row.get('db_visibility_counts')))} "
+                f"pdf={_format_count_dict(_int_dict(row.get('pdf_visibility_counts')))} "
+                f"chunk_payload={_format_count_dict(_int_dict(row.get('chunk_payload_visibility_counts')))} "
+                f"loss={_format_count_dict(_int_dict(row.get('loss_mode_counts')))}"
+            )
+        examples_by_loss_mode = source_recall_drilldown.get("examples_by_loss_mode")
+        if isinstance(examples_by_loss_mode, dict) and examples_by_loss_mode:
+            print("  loss_mode_examples:")
+            loss_counts = _int_dict(source_recall_drilldown.get("by_loss_mode"))
+            for mode, _count in sorted(loss_counts.items(), key=lambda item: (-item[1], item[0]))[:5]:
+                examples = examples_by_loss_mode.get(mode)
+                if not isinstance(examples, list) or not examples:
+                    continue
+                print(f"  - {mode}:")
+                for example in examples[:2]:
+                    if not isinstance(example, dict):
+                        continue
+                    print(
+                        "    "
+                        f"{example.get('case_id')} "
+                        f"{example.get('claim_id')} "
+                        f"{example.get('item_type')}={example.get('term')} "
+                        f"db={example.get('db_visibility')} "
+                        f"pdf={example.get('pdf_visibility')} "
+                        f"chunk_payload={example.get('chunk_payload_visibility', '')}"
+                    )
+                    trace = str(example.get("trace") or "").strip()
+                    if trace:
+                        print(f"      trace: {trace}")
     print("recommended_inspection_queue:")
     for entry in payload["recommended_inspection_queue"]:
         print(
@@ -2715,6 +3138,15 @@ def _summarize_stage_diagnostics(path: Path, *, json_output: bool = False) -> in
         guardrail = str(entry.get("guardrail") or "").strip()
         if guardrail:
             print(f"  guardrail: {guardrail}")
+        components = entry.get("component_candidates")
+        if isinstance(components, list) and components:
+            labels = [
+                str(component.get("label") or "").strip()
+                for component in components
+                if isinstance(component, dict) and str(component.get("label") or "").strip()
+            ]
+            if labels:
+                print(f"  components: {', '.join(labels[:4])}")
     print("\nTop cases by missing expected items:")
     for case_row in payload["cases"][:10]:
         failure_counts = _int_dict(case_row.get("failure_point_counts"))
@@ -2761,6 +3193,165 @@ def _count_stage_missing_item_field(stage: dict[str, Any], field: str) -> dict[s
     return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
 
 
+def _artifact_organization_from_report(report: Any) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        return {}
+    candidates = [report.get("artifact_organization")]
+    summary_json = report.get("summary_json")
+    if isinstance(summary_json, dict):
+        candidates.append(summary_json.get("artifact_organization"))
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate:
+            return {**candidate, "diagnostic_source": "native"}
+    return _derived_artifact_organization_from_report(report)
+
+
+def _derived_artifact_organization_from_report(report: dict[str, Any]) -> dict[str, Any]:
+    packets = _report_evidence_packets(report)
+    if not packets:
+        return {}
+    coverage = _report_dict_field(report, "coverage")
+    supplement_note = str(_report_field(report, "supplement_availability_note") or "").strip()
+    packet_total = len(packets)
+    typed_packet_count = sum(1 for packet in packets if packet.get("detail_types"))
+    source_excerpt_present = sum(1 for packet in packets if str(packet.get("source_excerpt") or "").strip())
+    usable_packet_count = sum(1 for packet in packets if bool(packet.get("usable_for_gold_comparison")))
+    unknown_section_count = sum(
+        1 for packet in packets if str(packet.get("section_label") or "").strip().lower() == "unknown"
+    )
+    figure_packet_count = sum(
+        1 for packet in packets if str(packet.get("modality") or "").strip().lower() == "figure"
+    )
+    usable_figure_packet_count = sum(
+        1
+        for packet in packets
+        if str(packet.get("modality") or "").strip().lower() == "figure"
+        and bool(packet.get("usable_for_gold_comparison"))
+    )
+    supplement_packet_count = sum(
+        1 for packet in packets if str(packet.get("modality") or "").strip().lower() == "supplement"
+    )
+    missing_supplement_refs = _report_missing_supplement_refs(coverage)
+
+    quality_flags: list[str] = []
+    if source_excerpt_present < packet_total:
+        quality_flags.append("missing_source_excerpts")
+    if typed_packet_count < packet_total:
+        quality_flags.append("untyped_evidence_packets")
+    if unknown_section_count:
+        quality_flags.append("unknown_section_evidence_packets")
+    if figure_packet_count and usable_figure_packet_count == 0:
+        quality_flags.append("figure_packets_not_gold_usable")
+    if supplement_packet_count and missing_supplement_refs:
+        quality_flags.append("supplement_reference_packets_without_extracted_supplements")
+    if missing_supplement_refs and not supplement_note:
+        quality_flags.append("missing_supplement_availability_note")
+
+    return {
+        "schema_version": 0,
+        "diagnostic_source": "derived_from_saved_report",
+        "quality_flags": _unique(quality_flags)[:16],
+        "audited_packet_quality": {
+            "total": packet_total,
+            "usable_for_gold_comparison": usable_packet_count,
+            "typed_packet_count": typed_packet_count,
+            "source_excerpt_present": source_excerpt_present,
+            "unknown_section_count": unknown_section_count,
+            "figure_packet_count": figure_packet_count,
+            "usable_figure_packet_count": usable_figure_packet_count,
+            "supplement_packet_count": supplement_packet_count,
+        },
+        "supplement_source_consistency": {
+            "missing_supplement_ref_count": len(missing_supplement_refs),
+            "supplement_availability_note_present": int(bool(supplement_note)),
+        },
+    }
+
+
+def _report_evidence_packets(report: dict[str, Any]) -> list[dict[str, Any]]:
+    packets = report.get("evidence_packets")
+    if not isinstance(packets, list):
+        summary_json = report.get("summary_json")
+        if isinstance(summary_json, dict):
+            packets = summary_json.get("evidence_packets")
+    if not isinstance(packets, list):
+        return []
+    return [packet for packet in packets if isinstance(packet, dict)]
+
+
+def _report_field(report: dict[str, Any], key: str) -> Any:
+    if key in report:
+        return report.get(key)
+    summary_json = report.get("summary_json")
+    if isinstance(summary_json, dict):
+        return summary_json.get(key)
+    return None
+
+
+def _report_dict_field(report: dict[str, Any], key: str) -> dict[str, Any]:
+    value = _report_field(report, key)
+    return value if isinstance(value, dict) else {}
+
+
+def _report_missing_supplement_refs(coverage: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for key in ("supp_figures", "supp_tables"):
+        block = coverage.get(key)
+        if not isinstance(block, dict):
+            continue
+        raw_refs = block.get("missing_refs")
+        if not isinstance(raw_refs, list):
+            continue
+        refs.extend(str(ref).strip() for ref in raw_refs if str(ref).strip())
+    return refs
+
+
+def _artifact_organization_quality_flags(artifact_organization: Any) -> list[str]:
+    if not isinstance(artifact_organization, dict):
+        return []
+    flags = artifact_organization.get("quality_flags")
+    if not isinstance(flags, list):
+        return []
+    return _unique([str(flag).strip() for flag in flags if str(flag).strip()])
+
+
+def _artifact_organization_int_block(artifact_organization: Any, key: str) -> dict[str, int]:
+    if not isinstance(artifact_organization, dict):
+        return {}
+    return _int_dict(artifact_organization.get(key))
+
+
+def _artifact_organization_dict_block(artifact_organization: Any, key: str) -> dict[str, Any]:
+    if not isinstance(artifact_organization, dict):
+        return {}
+    value = artifact_organization.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _merge_int_counts(target: dict[str, int], source: dict[str, int]) -> None:
+    for key, value in source.items():
+        target[key] = target.get(key, 0) + int(value or 0)
+
+
+def _report_document_id(report: Any) -> int | None:
+    if not isinstance(report, dict):
+        return None
+    candidates = [
+        report.get("document_id"),
+        (report.get("document") or {}).get("id") if isinstance(report.get("document"), dict) else None,
+        (report.get("summary_json") or {}).get("document_id") if isinstance(report.get("summary_json"), dict) else None,
+        (report.get("summary_json") or {}).get("document", {}).get("id")
+        if isinstance(report.get("summary_json"), dict)
+        and isinstance((report.get("summary_json") or {}).get("document"), dict)
+        else None,
+    ]
+    for value in candidates:
+        parsed = _int_or_none(value)
+        if parsed:
+            return parsed
+    return None
+
+
 def _source_visibility_counts(stage: dict[str, Any]) -> dict[str, int]:
     counts: dict[str, int] = {}
     items = stage.get("missing_items")
@@ -2775,6 +3366,397 @@ def _source_visibility_counts(stage: dict[str, Any]) -> dict[str, int]:
             key = str(visibility.get("classification") or "unknown")
         counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
+
+
+def _stage_lane_visibility_counts(stage: dict[str, Any], lane: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    items = stage.get("missing_items")
+    if not isinstance(items, list):
+        return counts
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("improvement_lane") or "") != lane:
+            continue
+        visibility = item.get("source_visibility")
+        key = "unknown"
+        if isinstance(visibility, dict):
+            key = str(visibility.get("classification") or "unknown").strip() or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
+
+
+def _stage_lane_item_type_counts(stage: dict[str, Any], lane: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    items = stage.get("missing_items")
+    if not isinstance(items, list):
+        return counts
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("improvement_lane") or "") != lane:
+            continue
+        key = str(item.get("item_type") or "unknown").strip() or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
+
+
+def _stage_lane_db_visibility_counts(
+    stage: dict[str, Any],
+    lane: str,
+    *,
+    document_id: int | None,
+    db_path: Path,
+) -> dict[str, int]:
+    items = stage.get("missing_items")
+    if not isinstance(items, list):
+        return {}
+    lane_items = [
+        item
+        for item in items
+        if isinstance(item, dict) and str(item.get("improvement_lane") or "") == lane
+    ]
+    if not lane_items:
+        return {}
+    if not document_id or not db_path.exists():
+        return {"db_not_checked": len(lane_items)}
+    counts: dict[str, int] = {}
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            if not _db_has_document_chunks(conn, document_id):
+                return {"db_document_missing": len(lane_items)}
+            for item in lane_items:
+                status = _db_visibility_for_stage_item(conn, document_id, item)
+                counts[status] = counts.get(status, 0) + 1
+    except Exception:
+        return {"db_not_checked": len(lane_items)}
+    return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
+
+
+def _stage_lane_pdf_visibility_counts(
+    stage: dict[str, Any],
+    lane: str,
+    *,
+    pdf_path: Path,
+    pdf_text_cache: dict[str, str | None],
+) -> dict[str, int]:
+    items = stage.get("missing_items")
+    if not isinstance(items, list):
+        return {}
+    lane_items = [
+        item
+        for item in items
+        if isinstance(item, dict) and str(item.get("improvement_lane") or "") == lane
+    ]
+    if not lane_items:
+        return {}
+    pdf_text = _pdf_text_for_path(pdf_path, pdf_text_cache)
+    if pdf_text is None:
+        return {"pdf_not_checked": len(lane_items)}
+    counts: dict[str, int] = {}
+    for item in lane_items:
+        status = _pdf_match_for_stage_item(pdf_text, item).get("status", "pdf_not_checked")
+        counts[status] = counts.get(status, 0) + 1
+    return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
+
+
+def _stage_lane_chunk_payload_visibility_counts(
+    stage: dict[str, Any],
+    lane: str,
+    *,
+    document_id: int | None,
+    db_path: Path,
+    report_chunk_payload_texts: list[str],
+) -> dict[str, int]:
+    items = stage.get("missing_items")
+    if not isinstance(items, list):
+        return {}
+    lane_items = [
+        item
+        for item in items
+        if isinstance(item, dict) and str(item.get("improvement_lane") or "") == lane
+    ]
+    if not lane_items or not document_id or not db_path.exists():
+        return {}
+    counts: dict[str, int] = {}
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            if not _db_has_document_chunks(conn, document_id):
+                return {}
+            for item in lane_items:
+                db_status = _db_visibility_for_stage_item(conn, document_id, item)
+                if db_status != "db_exact_term_present":
+                    continue
+                status = _chunk_payload_match_for_stage_item(report_chunk_payload_texts, item)
+                counts[status] = counts.get(status, 0) + 1
+    except Exception:
+        return {}
+    return dict(sorted(counts.items(), key=lambda row: (-row[1], row[0])))
+
+
+def _stage_lane_source_recall_loss_mode_counts(
+    stage: dict[str, Any],
+    lane: str,
+    *,
+    document_id: int | None,
+    db_path: Path,
+    pdf_path: Path,
+    pdf_text_cache: dict[str, str | None],
+) -> dict[str, int]:
+    items = stage.get("missing_items")
+    if not isinstance(items, list):
+        return {}
+    lane_items = [
+        item
+        for item in items
+        if isinstance(item, dict) and str(item.get("improvement_lane") or "") == lane
+    ]
+    if not lane_items:
+        return {}
+
+    db_conn: sqlite3.Connection | None = None
+    db_available = False
+    db_document_missing = False
+    if document_id and db_path.exists():
+        try:
+            db_conn = sqlite3.connect(str(db_path))
+            db_available = _db_has_document_chunks(db_conn, document_id)
+            db_document_missing = not db_available
+        except Exception:
+            if db_conn is not None:
+                db_conn.close()
+            db_conn = None
+    pdf_text = _pdf_text_for_path(pdf_path, pdf_text_cache)
+
+    counts: dict[str, int] = {}
+    try:
+        for item in lane_items:
+            if db_conn is not None and document_id and db_available:
+                db_status = _db_visibility_for_stage_item(db_conn, document_id, item)
+            elif document_id and db_path and db_document_missing:
+                db_status = "db_document_missing"
+            else:
+                db_status = "db_not_checked"
+            pdf_status = (
+                _pdf_match_for_stage_item(pdf_text, item).get("status", "pdf_not_checked")
+                if pdf_text is not None
+                else "pdf_not_checked"
+            )
+            mode = _source_recall_loss_mode(db_status, pdf_status)
+            counts[mode] = counts.get(mode, 0) + 1
+    finally:
+        if db_conn is not None:
+            db_conn.close()
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _pdf_text_for_path(pdf_path: Path, cache: dict[str, str | None]) -> str | None:
+    if not pdf_path or str(pdf_path) == ".":
+        return None
+    cache_key = str(pdf_path)
+    if cache_key in cache:
+        return cache[cache_key]
+    if not pdf_path.exists():
+        cache[cache_key] = None
+        return None
+    try:
+        completed = subprocess.run(
+            ["pdftotext", str(pdf_path), "-"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        cache[cache_key] = None
+        return None
+    text = completed.stdout if completed.returncode == 0 else ""
+    normalized = " ".join(text.split())
+    cache[cache_key] = normalized or None
+    return cache[cache_key]
+
+
+def _report_chunk_payload_texts(report: Any) -> list[str]:
+    texts: list[str] = []
+
+    def collect_from_chunk_list(rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            if isinstance(row, dict):
+                for key in ("content", "text", "source_excerpt", "statement", "summary"):
+                    value = row.get(key)
+                    if isinstance(value, str) and value.strip():
+                        texts.append(" ".join(value.split()))
+                        break
+            elif isinstance(row, str) and row.strip():
+                texts.append(" ".join(row.split()))
+
+    def walk(value: Any, key_hint: str = "") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_key = str(key)
+                if isinstance(child, list) and "chunk" in child_key.lower():
+                    collect_from_chunk_list(child)
+                walk(child, child_key)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, key_hint)
+
+    walk(report)
+    return texts
+
+
+def _source_chunk_inventory_texts(path: Path) -> list[str]:
+    payload = _read_optional_json_object(path)
+    if payload is None:
+        return []
+    chunks = payload.get("chunks")
+    if not isinstance(chunks, list):
+        return []
+    texts: list[str] = []
+    for row in chunks:
+        if not isinstance(row, dict):
+            continue
+        excerpt = row.get("excerpt")
+        if isinstance(excerpt, str) and excerpt.strip():
+            texts.append(" ".join(excerpt.split()))
+    return texts
+
+
+def _chunk_payload_match_for_stage_item(chunk_texts: list[str], item: dict[str, Any]) -> str:
+    if not chunk_texts:
+        return "report_chunk_payload_missing"
+    term = str(item.get("term") or "").strip()
+    if not term:
+        return "report_chunk_payload_not_checked"
+    if _looks_like_gold_label(term):
+        return "report_chunk_payload_label_term_not_checked"
+    joined = "\n".join(chunk_texts)
+    normalized_joined = _search_normalized_text(joined)
+    for variant in _term_db_search_variants(term):
+        if variant.lower() in joined.lower():
+            return "report_chunk_payload_contains_term"
+        normalized_variant = _search_normalized_text(variant)
+        if normalized_variant and normalized_variant in normalized_joined:
+            return "report_chunk_payload_contains_term"
+    return "report_chunk_payload_lacks_term"
+
+
+def _pdf_match_for_stage_item(pdf_text: str, item: dict[str, Any]) -> dict[str, str]:
+    term = str(item.get("term") or "").strip()
+    if not term:
+        return {"status": "pdf_not_checked"}
+    if _looks_like_gold_label(term):
+        return {"status": "pdf_label_term_not_checked"}
+    normalized_pdf_text = _search_normalized_text(pdf_text)
+    for variant in _term_db_search_variants(term):
+        if variant.lower() in pdf_text.lower():
+            return {
+                "status": "pdf_exact_term_present",
+                "trace": f"pdf: {_term_context_snippet(pdf_text, variant)}",
+            }
+        normalized_variant = _search_normalized_text(variant)
+        if normalized_variant and normalized_variant in normalized_pdf_text:
+            return {
+                "status": "pdf_exact_term_present",
+                "trace": f"pdf(normalized): {_term_context_snippet(normalized_pdf_text, normalized_variant)}",
+            }
+    return {"status": "pdf_not_found"}
+
+
+def _db_has_document_chunks(conn: sqlite3.Connection, document_id: int) -> bool:
+    try:
+        row = conn.execute(
+            "select 1 from chunk where document_id = ? limit 1",
+            (document_id,),
+        ).fetchone()
+    except Exception:
+        return False
+    return bool(row)
+
+
+def _db_visibility_for_stage_item(conn: sqlite3.Connection, document_id: int, item: dict[str, Any]) -> str:
+    return _db_match_for_stage_item(conn, document_id, item).get("status", "db_not_checked")
+
+
+def _db_match_for_stage_item(conn: sqlite3.Connection, document_id: int, item: dict[str, Any]) -> dict[str, str]:
+    term = str(item.get("term") or "").strip()
+    if not term:
+        return {"status": "db_not_checked"}
+    if _looks_like_gold_label(term):
+        return {"status": "db_label_term_not_checked"}
+    for variant in _term_db_search_variants(term):
+        try:
+            row = conn.execute(
+                """
+                select id, anchor, content
+                from chunk
+                where document_id = ?
+                  and instr(lower(content), lower(?)) > 0
+                limit 1
+                """,
+                (document_id, variant),
+            ).fetchone()
+        except Exception:
+            return {"status": "db_not_checked"}
+        if row:
+            chunk_id, anchor, content = row
+            return {
+                "status": "db_exact_term_present",
+                "trace": f"chunk:{chunk_id} {anchor}: {_term_context_snippet(str(content or ''), variant)}",
+            }
+    return {"status": "db_not_found"}
+
+
+def _looks_like_gold_label(term: str) -> bool:
+    value = term.strip()
+    if not value:
+        return False
+    if "_" in value and " " not in value:
+        return True
+    return bool(value.islower() and len(value.split()) == 1 and len(value) > 18)
+
+
+def _term_db_search_variants(term: str) -> list[str]:
+    variants = [term]
+    hyphen_normalized = term.replace("–", "-").replace("—", "-").replace("‑", "-")
+    variants.append(hyphen_normalized)
+    variants.append(hyphen_normalized.replace("-", " "))
+    if "comorbid" in term.lower():
+        variants.extend(["comorbid", "co-morbid", "morbidity"])
+    out: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        clean = " ".join(str(variant).split())
+        if clean and clean.lower() not in seen:
+            out.append(clean)
+            seen.add(clean.lower())
+    return out
+
+
+def _search_normalized_text(text: str) -> str:
+    return " ".join(
+        text.replace("–", "-")
+        .replace("—", "-")
+        .replace("‑", "-")
+        .replace("\u2212", "-")
+        .split()
+    ).lower()
+
+
+def _term_context_snippet(text: str, term: str, *, window: int = 180) -> str:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return ""
+    idx = normalized.lower().find(term.lower())
+    if idx < 0:
+        return normalized[:window]
+    start = max(0, idx - window // 3)
+    end = min(len(normalized), idx + len(term) + (window * 2 // 3))
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(normalized) else ""
+    return f"{prefix}{normalized[start:end]}{suffix}"
 
 
 def _stage_lane_source_visibility_counts(stage: dict[str, Any]) -> dict[str, dict[str, int]]:
@@ -2813,6 +3795,7 @@ def _recommended_stage_inspection_queue(payload: dict[str, Any]) -> list[dict[st
                 "count": count,
                 "source_visibility_counts": visibility_counts,
                 "recommended_next_step": _inspection_next_step_for_lane(lane, visibility_counts),
+                "component_candidates": _component_candidates_for_lane(lane, visibility_counts),
                 "guardrail": (
                     "Use this to inspect generalizable pipeline behavior only; do not add "
                     "paper-specific deterministic expected-fact rules."
@@ -2866,6 +3849,476 @@ def _inspection_next_step_for_lane(lane: str, visibility_counts: dict[str, int])
             "extraction or synthesis."
         )
     return "Inspect representative examples for a shared pipeline pattern before proposing a patch."
+
+
+def _stage_lane_examples(
+    stage: dict[str, Any],
+    lane: str,
+    *,
+    max_examples: int = 8,
+    document_id: int | None = None,
+    db_path: Path | None = None,
+    pdf_path: Path | None = None,
+    pdf_text_cache: dict[str, str | None] | None = None,
+    report_chunk_payload_texts: list[str] | None = None,
+) -> list[dict[str, str]]:
+    items = stage.get("missing_items")
+    if not isinstance(items, list):
+        return []
+    db_conn: sqlite3.Connection | None = None
+    db_available = False
+    if document_id and db_path and db_path.exists():
+        try:
+            db_conn = sqlite3.connect(str(db_path))
+            db_available = _db_has_document_chunks(db_conn, document_id)
+        except Exception:
+            if db_conn is not None:
+                db_conn.close()
+            db_conn = None
+    pdf_cache = pdf_text_cache if pdf_text_cache is not None else {}
+    pdf_text = _pdf_text_for_path(pdf_path, pdf_cache) if pdf_path is not None else None
+    rows: list[dict[str, str]] = []
+    try:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("improvement_lane") or "") != lane:
+                continue
+            row = {
+                "claim_id": str(item.get("claim_id") or ""),
+                "item_type": str(item.get("item_type") or ""),
+                "term": str(item.get("term") or ""),
+                "failure_point": str(item.get("failure_point") or ""),
+                "source_visibility": _compact_source_visibility(item.get("source_visibility")),
+                "diagnostic_reason": str(item.get("diagnostic_reason") or ""),
+            }
+            trace = _compact_stage_item_trace(item)
+            if trace:
+                row["trace"] = trace
+            nearest = _compact_stage_item_nearest(item)
+            if nearest:
+                row["nearest"] = nearest
+            if db_conn is not None and document_id and db_available:
+                db_match = _db_match_for_stage_item(db_conn, document_id, item)
+                row["db_visibility"] = str(db_match.get("status") or "db_not_checked")
+                db_trace = str(db_match.get("trace") or "").strip()
+                if db_trace:
+                    row["db_trace"] = db_trace
+                if row["db_visibility"] == "db_exact_term_present":
+                    row["chunk_payload_visibility"] = _chunk_payload_match_for_stage_item(
+                        report_chunk_payload_texts or [],
+                        item,
+                    )
+            elif document_id and db_path:
+                row["db_visibility"] = "db_document_missing"
+            else:
+                row["db_visibility"] = "db_not_checked"
+            if pdf_text is not None:
+                pdf_match = _pdf_match_for_stage_item(pdf_text, item)
+                row["pdf_visibility"] = str(pdf_match.get("status") or "pdf_not_checked")
+                pdf_trace = str(pdf_match.get("trace") or "").strip()
+                if pdf_trace:
+                    row["pdf_trace"] = pdf_trace
+            else:
+                row["pdf_visibility"] = "pdf_not_checked"
+            rows.append(row)
+    finally:
+        if db_conn is not None:
+            db_conn.close()
+    rows.sort(
+        key=lambda row: (
+            _source_visibility_review_rank(row.get("source_visibility", "")),
+            row.get("item_type", ""),
+            row.get("term", ""),
+        )
+    )
+    return rows[:max_examples]
+
+
+def _source_visibility_review_rank(value: str) -> int:
+    label = str(value or "").split(":", 1)[0]
+    return {
+        "no_term_candidate": 0,
+        "near_term_candidate": 1,
+        "weak_term_candidate": 2,
+        "exact_present": 3,
+        "unknown": 4,
+    }.get(label, 5)
+
+
+def _source_recall_drilldown(cases: Any) -> dict[str, Any]:
+    if not isinstance(cases, list):
+        return {"total_items": 0, "by_visibility": {}, "by_item_type": {}, "top_cases": []}
+    by_visibility: dict[str, int] = {}
+    by_db_visibility: dict[str, int] = {}
+    by_pdf_visibility: dict[str, int] = {}
+    by_chunk_payload_visibility: dict[str, int] = {}
+    by_loss_mode: dict[str, int] = {}
+    by_item_type: dict[str, int] = {}
+    top_cases: list[dict[str, Any]] = []
+    total = 0
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        visibility_counts = _int_dict(case.get("source_recall_visibility_counts"))
+        case_total = sum(visibility_counts.values())
+        if case_total <= 0:
+            continue
+        total += case_total
+        for key, count in visibility_counts.items():
+            by_visibility[key] = by_visibility.get(key, 0) + count
+        db_visibility_counts = _int_dict(case.get("source_recall_db_visibility_counts"))
+        for key, count in db_visibility_counts.items():
+            by_db_visibility[key] = by_db_visibility.get(key, 0) + count
+        pdf_visibility_counts = _int_dict(case.get("source_recall_pdf_visibility_counts"))
+        for key, count in pdf_visibility_counts.items():
+            by_pdf_visibility[key] = by_pdf_visibility.get(key, 0) + count
+        chunk_payload_visibility_counts = _int_dict(
+            case.get("source_recall_chunk_payload_visibility_counts")
+        )
+        for key, count in chunk_payload_visibility_counts.items():
+            by_chunk_payload_visibility[key] = by_chunk_payload_visibility.get(key, 0) + count
+        loss_mode_counts = _int_dict(case.get("source_recall_loss_mode_counts"))
+        if not loss_mode_counts:
+            loss_mode_counts = _source_recall_loss_mode_counts(db_visibility_counts)
+        for key, count in loss_mode_counts.items():
+            by_loss_mode[key] = by_loss_mode.get(key, 0) + count
+        for key, count in _int_dict(case.get("source_recall_item_type_counts")).items():
+            by_item_type[key] = by_item_type.get(key, 0) + count
+        examples = case.get("source_recall_examples")
+        top_cases.append(
+            {
+                "case_id": str(case.get("case_id") or ""),
+                "overall_benchmark_score": _float_or_none(case.get("overall_benchmark_score")),
+                "source_recall_items": case_total,
+                "visibility_counts": visibility_counts,
+                "db_visibility_counts": db_visibility_counts,
+                "pdf_visibility_counts": pdf_visibility_counts,
+                "chunk_payload_visibility_counts": chunk_payload_visibility_counts,
+                "loss_mode_counts": loss_mode_counts,
+                "examples": examples if isinstance(examples, list) else [],
+                "report_json": str(case.get("report_json") or ""),
+                "source_chunks_json": str(case.get("source_chunks_json") or ""),
+                "gold_standard": str(case.get("gold_standard") or ""),
+                "source_pdf": str(case.get("source_pdf") or ""),
+            }
+        )
+    top_cases.sort(
+        key=lambda row: (
+            -_int_or_zero(row.get("source_recall_items")),
+            str(row.get("case_id") or ""),
+        )
+    )
+    return {
+        "total_items": total,
+        "by_visibility": dict(sorted(by_visibility.items(), key=lambda item: (-item[1], item[0]))),
+        "by_db_visibility": dict(sorted(by_db_visibility.items(), key=lambda item: (-item[1], item[0]))),
+        "by_pdf_visibility": dict(sorted(by_pdf_visibility.items(), key=lambda item: (-item[1], item[0]))),
+        "by_chunk_payload_visibility": dict(
+            sorted(by_chunk_payload_visibility.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "by_loss_mode": dict(sorted(by_loss_mode.items(), key=lambda item: (-item[1], item[0]))),
+        "by_item_type": dict(sorted(by_item_type.items(), key=lambda item: (-item[1], item[0]))),
+        "examples_by_loss_mode": _source_recall_examples_by_loss_mode(top_cases, by_loss_mode),
+        "top_cases": top_cases[:10],
+    }
+
+
+def _source_recall_examples_by_loss_mode(
+    top_cases: list[dict[str, Any]],
+    loss_mode_counts: dict[str, int],
+    *,
+    per_mode: int = 3,
+) -> dict[str, list[dict[str, str]]]:
+    grouped: dict[str, list[dict[str, str]]] = {mode: [] for mode in loss_mode_counts}
+    for case in top_cases:
+        examples = case.get("examples")
+        if not isinstance(examples, list):
+            continue
+        for example in examples:
+            if not isinstance(example, dict):
+                continue
+            db_status = str(example.get("db_visibility") or "db_not_checked")
+            pdf_status = str(example.get("pdf_visibility") or "pdf_not_checked")
+            mode = _source_recall_loss_mode(db_status, pdf_status)
+            if len(grouped.setdefault(mode, [])) >= per_mode:
+                continue
+            trace = (
+                str(example.get("db_trace") or "").strip()
+                or str(example.get("pdf_trace") or "").strip()
+                or str(example.get("trace") or "").strip()
+                or str(example.get("nearest") or "").strip()
+            )
+            grouped[mode].append(
+                {
+                    "case_id": str(case.get("case_id") or ""),
+                    "claim_id": str(example.get("claim_id") or ""),
+                    "item_type": str(example.get("item_type") or ""),
+                    "term": str(example.get("term") or ""),
+                    "db_visibility": db_status,
+                    "pdf_visibility": pdf_status,
+                    "chunk_payload_visibility": str(example.get("chunk_payload_visibility") or ""),
+                    "source_visibility": str(example.get("source_visibility") or ""),
+                    "trace": trace,
+                }
+            )
+    return {
+        mode: examples
+        for mode, examples in sorted(
+            grouped.items(),
+            key=lambda item: (-loss_mode_counts.get(item[0], 0), item[0]),
+        )
+        if examples
+    }
+
+
+def _source_recall_loss_mode_counts(db_visibility_counts: dict[str, int]) -> dict[str, int]:
+    mapping = {
+        "db_exact_term_present": "parsed_chunk_present_lost_before_report_artifact",
+        "db_label_term_not_checked": "gold_label_or_alias_context_review",
+        "db_not_found": "pdf_ocr_parser_review_needed",
+        "db_document_missing": "historical_db_unavailable",
+        "db_not_checked": "db_not_checked",
+    }
+    counts: dict[str, int] = {}
+    for key, count in db_visibility_counts.items():
+        mode = mapping.get(key, "unknown")
+        counts[mode] = counts.get(mode, 0) + count
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _source_recall_loss_mode(db_status: str, pdf_status: str) -> str:
+    if db_status == "db_exact_term_present":
+        return "parsed_chunk_present_lost_before_report_artifact"
+    if db_status == "db_label_term_not_checked" or pdf_status == "pdf_label_term_not_checked":
+        return "gold_label_or_alias_context_review"
+    if db_status == "db_not_found":
+        if pdf_status == "pdf_exact_term_present":
+            return "pdf_text_present_but_chunk_missing"
+        if pdf_status == "pdf_not_found":
+            return "pdf_text_absent_or_alias_needed"
+        return "pdf_ocr_parser_review_needed"
+    if db_status == "db_document_missing":
+        if pdf_status == "pdf_exact_term_present":
+            return "historical_db_unavailable_pdf_has_term"
+        if pdf_status == "pdf_not_found":
+            return "historical_db_unavailable_pdf_not_found"
+        return "historical_db_unavailable"
+    if db_status == "db_not_checked":
+        if pdf_status == "pdf_exact_term_present":
+            return "pdf_text_present_db_not_checked"
+        if pdf_status == "pdf_not_found":
+            return "pdf_text_absent_db_not_checked"
+        return "db_or_pdf_not_checked"
+    return "unknown"
+
+
+def _component_candidates_for_lane(lane: str, visibility_counts: dict[str, int]) -> list[dict[str, Any]]:
+    exact_count = visibility_counts.get("exact_present", 0)
+    near_count = visibility_counts.get("near_term_candidate", 0)
+    weak_count = visibility_counts.get("weak_term_candidate", 0)
+    absent_count = visibility_counts.get("no_term_candidate", 0)
+    if lane == "source_recall_or_extraction_visibility":
+        if absent_count >= max(near_count + weak_count, exact_count):
+            return [
+                _component_candidate(
+                    "source ingestion / parser",
+                    "backend/app/services/parser.py; backend/app/services/validated_pipeline.py",
+                    "Expected terms are not visible in saved artifacts, so inspect source parsing, TEI/PDF chunking, and persistence first.",
+                    "candidate_causal",
+                    inspection_weight=absent_count,
+                ),
+                _component_candidate(
+                    "media OCR and source availability",
+                    "backend/app/services/analysis/ocr.py; backend/app/services/analysis/media_cleaning.py; backend/app/services/analysis/figure_analysis.py; backend/app/services/analysis/table_analysis.py",
+                    "No-term candidates can come from figure/table/supplement text that was not extracted or not stored in searchable artifact text.",
+                    "candidate_causal",
+                    inspection_weight=absent_count,
+                ),
+            ]
+        candidates = [
+            _component_candidate(
+                "normalization / alias handling",
+                "backend/app/services/analysis/media_cleaning.py; backend/app/services/analysis/text_analysis.py; scripts/compare_evidence_to_gold.py",
+                "Near or weak source candidates suggest text exists in altered form, so inspect cleanup, aliases, Greek letters, OCR artifacts, and benchmark wording before parser changes.",
+                "needs_manual_confirmation",
+                inspection_weight=near_count + weak_count,
+            ),
+        ]
+        if absent_count:
+            candidates.extend(
+                [
+                    _component_candidate(
+                        "source ingestion / parser",
+                        "backend/app/services/parser.py; backend/app/services/validated_pipeline.py",
+                        "No-term source candidates make parser/source extraction a candidate causal area for that subset.",
+                        "candidate_causal",
+                        inspection_weight=absent_count,
+                    ),
+                    _component_candidate(
+                        "media OCR and source availability",
+                        "backend/app/services/analysis/ocr.py; backend/app/services/analysis/media_cleaning.py; backend/app/services/analysis/figure_analysis.py; backend/app/services/analysis/table_analysis.py",
+                        "No-term candidates may reflect missing figure/table/supplement text extraction or persistence.",
+                        "candidate_causal",
+                        inspection_weight=absent_count,
+                    ),
+                ]
+            )
+        if exact_count:
+            candidates.append(
+                _component_candidate(
+                    "artifact routing / source visibility",
+                    "backend/app/services/analysis/synthesis.py::_build_extractive_evidence; scripts/compare_evidence_to_gold.py::_build_artifact_stage_diagnostics",
+                    "Exact-present source-recall classifications should be inspected as artifact routing or diagnostic classification before parser changes.",
+                    "needs_manual_confirmation",
+                    inspection_weight=exact_count,
+                )
+            )
+        return [candidate for candidate in candidates if _int_or_zero(candidate.get("inspection_weight")) > 0]
+    if lane == "evidence_packetization_or_typing":
+        return [
+            _component_candidate(
+                "evidence packet normalization",
+                "backend/app/services/analysis/utils.py::normalize_evidence_packets; backend/app/services/analysis/utils.py::filter_grounded_evidence_packets",
+                "The evidence is visible before packetization but not in compatible packets, so packet shaping and grounding are candidate causal components.",
+                "candidate_causal",
+            ),
+            _component_candidate(
+                "modality packet builders",
+                "backend/app/services/analysis/text_analysis.py; backend/app/services/analysis/table_analysis.py; backend/app/services/analysis/figure_analysis.py; backend/app/services/analysis/supp_analysis.py",
+                "Inspect reusable section/detail typing and statement construction across modality-specific packet builders.",
+                "candidate_causal",
+            ),
+        ]
+    if lane == "synthesis_evidence_selection_or_ranking":
+        return [
+            _component_candidate(
+                "synthesis focus-slot selection",
+                "backend/app/services/analysis/synthesis.py::_synthesis_focus_slots; backend/app/services/analysis/synthesis.py::_focus_slot_section_row_score",
+                "Evidence reaches packets but not synthesis input, making selection rules, ranking, and quotas candidate causal components.",
+                "candidate_causal",
+            ),
+            _component_candidate(
+                "synthesis evidence plan coverage",
+                "backend/app/services/analysis/synthesis.py::_synthesis_evidence_plan; backend/app/services/analysis/synthesis.py::_critical_missing_synthesis_focus_slots",
+                "Inspect whether the plan asks for the right cross-modal and section-level evidence before synthesis.",
+                "candidate_causal",
+            ),
+        ]
+    if lane == "final_synthesis_instruction_or_coverage":
+        return [
+            _component_candidate(
+                "final synthesis prompt and merge",
+                "backend/app/services/analysis/synthesis.py::_synthesis_prompt_text; backend/app/services/analysis/synthesis.py::synthesize_report",
+                "The right evidence reaches synthesis input but is omitted later, so prompt coverage and merge/verifier behavior are candidate causal components.",
+                "candidate_causal",
+            ),
+            _component_candidate(
+                "section verifier",
+                "backend/app/services/analysis/synthesis.py::_verify_section_fidelity_with_llm; backend/app/services/analysis/synthesis.py::_enforce_min_section_coverage",
+                "Inspect verifier behavior only when omissions occur after synthesis input is already adequate.",
+                "needs_manual_confirmation",
+            ),
+        ]
+    if lane == "benchmark_matching_or_claim_support_context":
+        return [
+            _component_candidate(
+                "benchmark comparator and claim context",
+                "scripts/compare_evidence_to_gold.py::compare_evidence_to_gold; scripts/compare_evidence_to_gold.py::_match_critical_claim",
+                "The final report contains the term, so the app component is not proven causal; first inspect matching context, claim co-occurrence, and fixture wording.",
+                "likely_not_app_output_causal",
+            ),
+            _component_candidate(
+                "report phrasing/context",
+                "backend/app/services/analysis/synthesis.py::_build_detailed_sections; backend/app/services/analysis/synthesis.py::_executive_report_synthesis_payload",
+                "Only inspect app phrasing if the final text has isolated terms but lacks the claim context needed for human-readable support.",
+                "needs_manual_confirmation",
+            ),
+        ]
+    return [
+        _component_candidate(
+            "manual artifact review",
+            "scripts/compare_evidence_to_gold.py --stage-diagnostics",
+            "No stable lane-specific component attribution is available.",
+            "unknown",
+        )
+    ]
+
+
+def _component_candidate(
+    label: str,
+    code_refs: str,
+    rationale: str,
+    causal_status: str,
+    *,
+    inspection_weight: int | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "label": label,
+        "code_refs": code_refs,
+        "rationale": rationale,
+        "causal_status": causal_status,
+    }
+    if inspection_weight is not None:
+        row["inspection_weight"] = max(0, int(inspection_weight))
+    return row
+
+
+def _component_candidate_summary(queue: Any) -> dict[str, Any]:
+    if not isinstance(queue, list):
+        return {"by_label": [], "causal_status_counts": {}}
+    by_label: dict[str, dict[str, Any]] = {}
+    causal_status_counts: dict[str, int] = {}
+    for entry in queue:
+        if not isinstance(entry, dict):
+            continue
+        lane = str(entry.get("focus") or "unknown").strip() or "unknown"
+        count = _int_or_zero(entry.get("count"))
+        components = entry.get("component_candidates")
+        if not isinstance(components, list):
+            continue
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            label = str(component.get("label") or "").strip()
+            if not label:
+                continue
+            causal_status = str(component.get("causal_status") or "unknown").strip() or "unknown"
+            weight = _int_or_zero(component.get("inspection_weight"))
+            if weight <= 0:
+                weight = count
+            causal_status_counts[causal_status] = causal_status_counts.get(causal_status, 0) + weight
+            row = by_label.setdefault(
+                label,
+                {
+                    "label": label,
+                    "weighted_items": 0,
+                    "causal_status": causal_status,
+                    "causal_status_counts": {},
+                    "code_refs": str(component.get("code_refs") or ""),
+                    "rationale": str(component.get("rationale") or ""),
+                    "lanes": [],
+                },
+            )
+            row["weighted_items"] = _int_or_zero(row.get("weighted_items")) + weight
+            row_counts = row.get("causal_status_counts")
+            if not isinstance(row_counts, dict):
+                row_counts = {}
+                row["causal_status_counts"] = row_counts
+            row_counts[causal_status] = _int_or_zero(row_counts.get(causal_status)) + weight
+            lanes = row.get("lanes")
+            if isinstance(lanes, list) and lane not in lanes:
+                lanes.append(lane)
+    by_label_rows = sorted(
+        by_label.values(),
+        key=lambda row: (-_int_or_zero(row.get("weighted_items")), str(row.get("label") or "")),
+    )
+    return {
+        "by_label": by_label_rows,
+        "causal_status_counts": dict(
+            sorted(causal_status_counts.items(), key=lambda item: (-item[1], item[0]))
+        ),
+    }
 
 
 def _top_cases_for_inspection_lane(cases: Any, lane: str, *, limit: int = 3) -> list[dict[str, Any]]:
@@ -3260,6 +4713,12 @@ def _summarize_history(path: Path, *, json_output: bool = False) -> int:
         media_json = str(latest.get("media_json") or "")
         if media_json:
             print(f"  media_json: {media_json}")
+        source_chunks_json = str(latest.get("source_chunks_json") or "")
+        if source_chunks_json:
+            print(f"  source_chunks_json: {source_chunks_json}")
+        llm_input_inventory_json = str(latest.get("llm_input_inventory_json") or "")
+        if llm_input_inventory_json:
+            print(f"  llm_input_inventory_json: {llm_input_inventory_json}")
 
     if focus_counts:
         print("\nFocus counts:")
@@ -3309,6 +4768,9 @@ def _record_history(path: Path, db_path: Path) -> int:
                 webapp_detailed_analysis_url text not null default '',
                 slack_summary_markdown text not null default '',
                 media_json text not null default '',
+                source_chunks_json text not null default '',
+                intermediate_stage_index_json text not null default '',
+                llm_input_inventory_json text not null default '',
                 static_media_dir text not null default '',
                 primary key (summary_path, case_id, generated_at)
             )
@@ -3321,6 +4783,9 @@ def _record_history(path: Path, db_path: Path) -> int:
             "webapp_detailed_analysis_url": "text not null default ''",
             "slack_summary_markdown": "text not null default ''",
             "media_json": "text not null default ''",
+            "source_chunks_json": "text not null default ''",
+            "intermediate_stage_index_json": "text not null default ''",
+            "llm_input_inventory_json": "text not null default ''",
             "static_media_dir": "text not null default ''",
             "benchmark_definition_available": "integer",
             "benchmark_definition_algorithm": "text not null default ''",
@@ -3391,9 +4856,12 @@ def _record_history(path: Path, db_path: Path) -> int:
                     webapp_detailed_analysis_url,
                     slack_summary_markdown,
                     media_json,
+                    source_chunks_json,
+                    intermediate_stage_index_json,
+                    llm_input_inventory_json,
                     static_media_dir
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(row.get("summary_path") or ""),
@@ -3430,6 +4898,9 @@ def _record_history(path: Path, db_path: Path) -> int:
                     str(row.get("webapp_detailed_analysis_url") or ""),
                     str(row.get("slack_summary_markdown") or ""),
                     str(row.get("media_json") or ""),
+                    str(row.get("source_chunks_json") or ""),
+                    str(row.get("intermediate_stage_index_json") or ""),
+                    str(row.get("llm_input_inventory_json") or ""),
                     str(row.get("static_media_dir") or ""),
                 ),
             )

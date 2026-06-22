@@ -44,6 +44,7 @@ class ModalityEvidence(BaseModel):
     p_value: float | None = None
     effect_size: float | None = None
     category: str = "other"
+    detail_types: list[str] = Field(default_factory=list)
     section_label: SectionLabel = "unknown"
     section_confidence: float = 0.0
     section_source: SectionSource = "fallback"
@@ -246,6 +247,8 @@ class StructuredDossierV2(BaseModel):
     evidence_packets: list[dict[str, Any]] = Field(default_factory=list)
     evidence_packet_coverage_version: int = 0
     evidence_packet_coverage: dict[str, Any] = Field(default_factory=dict)
+    artifact_organization_version: int = 0
+    artifact_organization: dict[str, Any] = Field(default_factory=dict)
     executive_summary: str = ""
     extractive_evidence_version: int = 0
     extractive_evidence: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
 import sys
@@ -1920,6 +1921,20 @@ def test_summarize_stage_diagnostics_aggregates_latest_saved_reports(
     def fake_load_json(path: Path):
         if path == helper.MANIFEST:
             return {"cases": [{"id": case_id, "gold_standard": str(gold_path)}]}
+        if path == report_path:
+            return {
+                "artifact_organization": {
+                    "schema_version": 1,
+                    "quality_flags": ["selected_prompt_details_missing_source_excerpt"],
+                    "audited_packet_quality": {"total": 2, "typed_packet_count": 2},
+                    "supplement_source_consistency": {"missing_supplement_ref_count": 0},
+                    "llm_input_inventory": {
+                        "schema_version": 1,
+                        "selected_quality": {"missing_source_excerpt": 1},
+                        "quality_flags": ["selected_prompt_details_missing_source_excerpt"],
+                    },
+                }
+            }
         return {}
 
     monkeypatch.setattr(helper, "_load_json", fake_load_json)
@@ -2008,15 +2023,50 @@ def test_summarize_stage_diagnostics_aggregates_latest_saved_reports(
     assert "- synthesis_evidence_selection_or_ranking: 1" in output
     assert "- exact_present: 1" in output
     assert "- weak_term_candidate: 1" in output
+    assert "component_candidate_summary:" in output
+    assert "artifact_organization_summary:" in output
+    assert "- native_cases: 1/1" in output
+    assert (
+        "- llm_input_inventory: 1/1 quality=missing_source_excerpt=1 "
+        "flags=selected_prompt_details_missing_source_excerpt=1"
+    ) in output
+    assert (
+        "- normalization / alias handling: weighted_items=1 "
+        "causal=needs_manual_confirmation"
+    ) in output
+    assert (
+        "- synthesis focus-slot selection: weighted_items=1 "
+        "causal=candidate_causal"
+    ) in output
+    assert "source_recall_drilldown:" in output
+    assert "- total_items: 1" in output
+    assert "- by_visibility: weak_term_candidate=1" in output
+    assert "- by_db_visibility: db_not_checked=1" in output
+    assert "- by_pdf_visibility: pdf_not_checked=1" in output
+    assert "- by_chunk_payload_visibility: " in output
+    assert "- by_loss_mode: db_or_pdf_not_checked=1" in output
+    assert (
+        "case_a: items=1 visibility=weak_term_candidate=1 "
+        "db=db_not_checked=1 pdf=pdf_not_checked=1 "
+        "chunk_payload= loss=db_or_pdf_not_checked=1"
+    ) in output
+    assert "loss_mode_examples:" in output
+    assert "- db_or_pdf_not_checked:" in output
+    assert (
+        "case_a claim-1 entity=missing source entity "
+        "db=db_not_checked pdf=pdf_not_checked"
+    ) in output
     assert "recommended_inspection_queue:" in output
     assert (
         "source_recall_or_extraction_visibility: items=1 visibility=weak_term_candidate=1"
     ) in output
     assert "inspect: Inspect normalization, aliases, OCR cleanup" in output
     assert "do not add paper-specific deterministic expected-fact rules" in output
+    assert "components: normalization / alias handling" in output
     assert (
         "synthesis_evidence_selection_or_ranking: items=1 visibility=exact_present=1"
     ) in output
+    assert "components: synthesis focus-slot selection, synthesis evidence plan coverage" in output
     assert "case_a: score=0.25 missing_items=3" in output
     assert (
         "example: source_recall_or_extraction_visibility claim-1 entity=missing source entity "
@@ -2033,7 +2083,164 @@ def test_summarize_stage_diagnostics_aggregates_latest_saved_reports(
     payload = capsys.readouterr().out
     assert '"aggregate_lane_source_visibility_counts"' in payload
     assert '"recommended_inspection_queue"' in payload
+    assert '"component_candidate_summary"' in payload
+    assert '"source_recall_drilldown"' in payload
+    assert '"source_recall_item_type_counts"' in payload
+    assert '"source_recall_db_visibility_counts"' in payload
+    assert '"source_recall_pdf_visibility_counts"' in payload
+    assert '"source_recall_chunk_payload_visibility_counts"' in payload
+    assert '"llm_input_inventory_cases": 1' in payload
+    assert '"llm_input_inventory_quality_flag_counts"' in payload
+    assert '"by_loss_mode"' in payload
+    assert '"by_pdf_visibility"' in payload
+    assert '"by_chunk_payload_visibility"' in payload
+    assert '"examples_by_loss_mode"' in payload
+    assert '"loss_mode_counts"' in payload
+    assert '"db_not_checked": 1' in payload
+    assert '"pdf_not_checked": 1' in payload
+    assert '"db_or_pdf_not_checked": 1' in payload
+    assert '"db_visibility": "db_not_checked"' in payload
+    assert '"pdf_visibility": "pdf_not_checked"' in payload
+    assert '"source_pdf"' in payload
+    assert '"weighted_items": 1' in payload
+    assert '"component_candidates"' in payload
+    assert '"causal_status": "candidate_causal"' in payload
+    assert '"causal_status": "needs_manual_confirmation"' in payload
     assert '"example_cases"' in payload
+
+
+def test_source_recall_pdf_visibility_helpers_classify_loss_modes() -> None:
+    helper = _load_helper_module()
+    item = {"term": "Bergson-type welfare functions"}
+    pdf_match = helper._pdf_match_for_stage_item(
+        "The paper discusses Bergson-type welfare functions and QALY assumptions.",
+        item,
+    )
+
+    assert pdf_match["status"] == "pdf_exact_term_present"
+    assert "Bergson-type welfare functions" in pdf_match["trace"]
+    range_match = helper._pdf_match_for_stage_item(
+        "The model compares 20–49 years, 50–64 years, and 65 and over.",
+        {"term": "20-49 years"},
+    )
+    assert range_match["status"] == "pdf_exact_term_present"
+    assert range_match["trace"].startswith("pdf(normalized):")
+    assert (
+        helper._source_recall_loss_mode("db_not_found", "pdf_exact_term_present")
+        == "pdf_text_present_but_chunk_missing"
+    )
+    assert (
+        helper._source_recall_loss_mode("db_not_found", "pdf_not_found")
+        == "pdf_text_absent_or_alias_needed"
+    )
+    assert (
+        helper._source_recall_loss_mode("db_exact_term_present", "pdf_exact_term_present")
+        == "parsed_chunk_present_lost_before_report_artifact"
+    )
+
+    examples = helper._source_recall_examples_by_loss_mode(
+        [
+            {
+                "case_id": "case_a",
+                "examples": [
+                    {
+                        "claim_id": "claim-1",
+                        "item_type": "entity",
+                        "term": "Bergson-type welfare functions",
+                        "db_visibility": "db_not_found",
+                        "pdf_visibility": "pdf_exact_term_present",
+                        "chunk_payload_visibility": "report_chunk_payload_missing",
+                        "pdf_trace": "pdf: ...Bergson-type welfare functions...",
+                    }
+                ],
+            }
+        ],
+        {"pdf_text_present_but_chunk_missing": 1},
+    )
+    assert examples["pdf_text_present_but_chunk_missing"][0]["case_id"] == "case_a"
+    assert examples["pdf_text_present_but_chunk_missing"][0]["trace"].startswith("pdf:")
+    assert (
+        examples["pdf_text_present_but_chunk_missing"][0]["chunk_payload_visibility"]
+        == "report_chunk_payload_missing"
+    )
+    assert (
+        helper._chunk_payload_match_for_stage_item(
+            ["The model uses Bergson-type welfare functions."],
+            item,
+        )
+        == "report_chunk_payload_contains_term"
+    )
+    assert (
+        helper._chunk_payload_match_for_stage_item([], item)
+        == "report_chunk_payload_missing"
+    )
+
+
+def test_source_chunk_inventory_sidecar_is_bounded_and_searchable(tmp_path: Path) -> None:
+    helper = _load_helper_module()
+    db_path = tmp_path / "app.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            create table chunk (
+                id integer primary key,
+                document_id integer not null,
+                anchor text,
+                modality text,
+                content text
+            )
+            """
+        )
+        conn.execute(
+            "insert into chunk (id, document_id, anchor, modality, content) values (?, ?, ?, ?, ?)",
+            (
+                1,
+                7,
+                "section:Methods:1",
+                "text",
+                "The model uses Bergson-type welfare functions and QALY assumptions.",
+            ),
+        )
+        conn.commit()
+
+    sidecar_path = helper._write_source_chunk_inventory(
+        {"document": {"id": 7}},
+        tmp_path / "source_chunks.json",
+        db_path=db_path,
+        max_chunks=1,
+        max_chars=32,
+    )
+
+    assert sidecar_path == tmp_path / "source_chunks.json"
+    payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["chunk_count"] == 1
+    assert payload["stored_chunk_count"] == 1
+    assert payload["chunks"][0]["content_sha256"]
+    assert payload["chunks"][0]["excerpt"] == "The model uses Bergson-type welf"
+    assert helper._source_chunk_inventory_texts(sidecar_path) == [
+        "The model uses Bergson-type welf"
+    ]
+    assert (
+        helper._chunk_payload_match_for_stage_item(
+            helper._source_chunk_inventory_texts(sidecar_path),
+            {"term": "Bergson-type"},
+        )
+        == "report_chunk_payload_contains_term"
+    )
+    stage_index_path = tmp_path / "intermediate_stage_index.json"
+    llm_inventory_path = tmp_path / "llm_input_inventory.json"
+    metadata = helper._artifact_metadata(
+        report_path=tmp_path / "report.json",
+        html_path=tmp_path / "report.html",
+        slack_summary_path=tmp_path / "slack_summary.md",
+        source_chunks_json_path=sidecar_path,
+        intermediate_stage_index_json_path=stage_index_path,
+        llm_input_inventory_json_path=llm_inventory_path,
+    )
+    assert metadata["source_chunks_json"] == str(sidecar_path)
+    assert metadata["intermediate_stage_index_json"] == str(stage_index_path)
+    assert metadata["llm_input_inventory_json"] == str(llm_inventory_path)
 
 
 def test_write_detailed_analysis_html_is_reader_first_and_links_webapp(tmp_path: Path) -> None:

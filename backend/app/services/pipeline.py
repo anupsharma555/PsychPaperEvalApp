@@ -13,6 +13,7 @@ from sqlmodel import Session
 from app.core.config import settings
 from app.db.models import Job, JobStatus
 from app.db.session import engine
+from app.services.analysis.intermediate_artifacts import write_intermediate_stage_index
 from app.services.analysis.latency import build_latency_profile
 from app.services.analysis.runner import run_full_analysis
 from app.services.parser import parse_document_assets
@@ -215,6 +216,14 @@ def run_pipeline(job_id: int) -> None:
                         retention.get("pruned_document_ids", []),
                     )
             _write_run_timeline(job.document_id)
+            try:
+                write_intermediate_stage_index(
+                    session,
+                    job.document_id,
+                    diagnostics=analysis_diag if isinstance(analysis_diag, dict) else None,
+                )
+            except Exception as exc:
+                print("[pipeline] intermediate stage index failed:", exc)
         except Exception as exc:
             error_text = traceback.format_exc()
             error_path = artifacts_dir(job.document_id) / "error.log"

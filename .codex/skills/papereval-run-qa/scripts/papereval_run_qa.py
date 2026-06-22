@@ -128,6 +128,276 @@ def _file_state(path: Path) -> dict[str, Any]:
     return {"present": True, "bytes": stat.st_size, "mtime": int(stat.st_mtime)}
 
 
+def _latest_report_payload(document_id: int) -> dict[str, Any]:
+    if not DB_PATH.exists():
+        return {}
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                """
+                select payload
+                from report
+                where document_id = ?
+                order by created_at desc
+                limit 1
+                """,
+                (document_id,),
+            ).fetchone()
+    except sqlite3.Error:
+        return {}
+    if not row:
+        return {}
+    try:
+        payload = json.loads(row[0] or "{}")
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _count_present(rows: list[Any], key: str) -> int:
+    return sum(1 for row in rows if isinstance(row, dict) and row.get(key) not in (None, "", [], {}))
+
+
+def _artifact_organization_audit(document_id: int) -> dict[str, Any]:
+    artifacts = _artifact_dir(document_id)
+    stage_index = _load_json(artifacts / "intermediate_stage_index.json")
+    report = _latest_report_payload(document_id)
+    source_manifest = _load_json(artifacts / "source_manifest.json")
+    retention = _load_json(artifacts / "information_retention_audit.json")
+    analysis_diag = _load_json(artifacts / "analysis_diagnostics.json").get("diagnostics", {})
+    if not isinstance(analysis_diag, dict):
+        analysis_diag = {}
+
+    packets = report.get("evidence_packets")
+    packets = packets if isinstance(packets, list) else []
+    native_organization = report.get("artifact_organization")
+    native_organization = native_organization if isinstance(native_organization, dict) else {}
+    llm_input_inventory = (
+        native_organization.get("llm_input_inventory")
+        if isinstance(native_organization.get("llm_input_inventory"), dict)
+        else {}
+    )
+    packet_total = len(packets)
+    packet_modalities: dict[str, int] = {}
+    packet_sections: dict[str, int] = {}
+    for packet in packets:
+        if not isinstance(packet, dict):
+            continue
+        modality = str(packet.get("modality") or "missing")
+        section = str(packet.get("section_label") or "missing")
+        packet_modalities[modality] = packet_modalities.get(modality, 0) + 1
+        packet_sections[section] = packet_sections.get(section, 0) + 1
+
+    completeness = {
+        "finding_id": _count_present(packets, "finding_id"),
+        "anchor": _count_present(packets, "anchor"),
+        "section_label": _count_present(packets, "section_label"),
+        "modality": _count_present(packets, "modality"),
+        "category": _count_present(packets, "category"),
+        "confidence": _count_present(packets, "confidence"),
+        "statement": _count_present(packets, "statement"),
+        "source_excerpt": _count_present(packets, "source_excerpt"),
+        "evidence_refs": _count_present(packets, "evidence_refs"),
+        "detail_types": _count_present(packets, "detail_types"),
+        "usable_for_gold_comparison": _count_present(packets, "usable_for_gold_comparison"),
+    }
+
+    coverage = report.get("coverage")
+    if not isinstance(coverage, dict):
+        coverage = {}
+    missing_supplement_refs = []
+    for key in ("supp_figures", "supp_tables"):
+        row = coverage.get(key)
+        if isinstance(row, dict):
+            refs = row.get("missing_refs")
+            if isinstance(refs, list):
+                missing_supplement_refs.extend(str(ref) for ref in refs)
+
+    source_supplements = source_manifest.get("supplements")
+    source_supplement_count = len(source_supplements) if isinstance(source_supplements, list) else 0
+    supplement_packet_count = packet_modalities.get("supplement", 0)
+    figure_packet_count = packet_modalities.get("figure", 0)
+    usable_figure_packet_count = sum(
+        1
+        for packet in packets
+        if isinstance(packet, dict)
+        and packet.get("modality") == "figure"
+        and bool(packet.get("usable_for_gold_comparison"))
+    )
+
+    stage_metrics = retention.get("compact_summary", {}).get("stage_metrics", [])
+    if not isinstance(stage_metrics, list):
+        stage_metrics = []
+    worst_loss = None
+    for metric in stage_metrics:
+        if not isinstance(metric, dict):
+            continue
+        if worst_loss is None or int(metric.get("lost_here_count", 0) or 0) > int(
+            worst_loss.get("lost_here_count", 0) or 0
+        ):
+            worst_loss = metric
+
+    issues: list[dict[str, Any]] = []
+    if report:
+        final_keys = {"executive_summary", "executive_report", "sections", "key_findings"}
+        intermediate_keys = {"evidence_packets", "extractive_evidence", "presentation_evidence", "section_diagnostics"}
+        if final_keys.intersection(report) and intermediate_keys.intersection(report):
+            issues.append(
+                {
+                    "code": "flat_payload_mixes_final_and_intermediate_fields",
+                    "severity": "medium",
+                    "why": "The report payload exposes generated report fields beside evidence and diagnostic fields without a stage wrapper.",
+                }
+            )
+    if packet_total and completeness["source_excerpt"] < packet_total:
+        issues.append(
+            {
+                "code": "evidence_packets_missing_source_excerpt",
+                "severity": "medium",
+                "count": packet_total - completeness["source_excerpt"],
+                "why": "Packets without source excerpts are harder to trace back to raw extraction and can obscure why facts were selected.",
+            }
+        )
+    if packet_total and completeness["detail_types"] < packet_total:
+        issues.append(
+            {
+                "code": "evidence_packets_missing_detail_types",
+                "severity": "medium",
+                "count": packet_total - completeness["detail_types"],
+                "why": "Untyped packets weaken selection for statistics, sensitivity analyses, secondary findings, and other benchmark slots.",
+            }
+        )
+    if packet_sections.get("unknown", 0):
+        issues.append(
+            {
+                "code": "evidence_packets_unknown_section",
+                "severity": "medium",
+                "count": packet_sections["unknown"],
+                "why": "Unknown sections make it difficult to preserve section boundaries during synthesis and scoring.",
+            }
+        )
+    if figure_packet_count and usable_figure_packet_count == 0:
+        issues.append(
+            {
+                "code": "figure_packets_not_usable_for_gold_comparison",
+                "severity": "medium",
+                "count": figure_packet_count,
+                "why": "Figure evidence exists but is not marked usable for comparison, so visual evidence may be undercounted downstream.",
+            }
+        )
+    if source_supplement_count == 0 and supplement_packet_count:
+        issues.append(
+            {
+                "code": "main_text_supplement_references_are_labeled_as_supplement_packets",
+                "severity": "medium",
+                "count": supplement_packet_count,
+                "why": "Supplement-referencing main text is useful, but labeling it as supplement modality can confuse source availability diagnostics.",
+            }
+        )
+    if missing_supplement_refs and not str(report.get("supplement_availability_note") or "").strip():
+        issues.append(
+            {
+                "code": "missing_supplements_without_availability_note",
+                "severity": "high",
+                "count": len(missing_supplement_refs),
+                "why": "The source manifest has no supplement files while coverage reports missing supplement refs, but the final supplement note is empty.",
+            }
+        )
+
+    return {
+        "report_payload_present": bool(report),
+        "top_level_key_count": len(report),
+        "stage_boundaries": {
+            "intermediate_stage_index_present": bool(stage_index),
+            "source_manifest_present": bool(source_manifest),
+            "report_payload_present": bool(report),
+            "evidence_packets_present": bool(packet_total),
+            "native_artifact_organization_present": bool(native_organization),
+            "section_diagnostics_present": isinstance(report.get("section_diagnostics"), dict),
+            "analysis_diagnostics_present": bool(analysis_diag),
+            "retention_audit_present": bool(retention),
+        },
+        "native_artifact_organization_quality_flags": [
+            str(flag)
+            for flag in native_organization.get("quality_flags", [])
+            if str(flag).strip()
+        ][:16],
+        "llm_input_inventory": _llm_input_inventory_summary(llm_input_inventory),
+        "intermediate_stage_index": _stage_index_summary(stage_index),
+        "evidence_packet_total": packet_total,
+        "evidence_packet_field_completeness": completeness,
+        "evidence_packet_modalities": dict(sorted(packet_modalities.items())),
+        "evidence_packet_sections": dict(sorted(packet_sections.items())),
+        "supplement_source_consistency": {
+            "uploaded_supplement_count": source_supplement_count,
+            "supplement_packet_count": supplement_packet_count,
+            "missing_supplement_ref_count": len(missing_supplement_refs),
+            "supplement_availability_note_present": bool(
+                str(report.get("supplement_availability_note") or "").strip()
+            ),
+        },
+        "figure_source_consistency": {
+            "figure_packet_count": figure_packet_count,
+            "usable_figure_packet_count": usable_figure_packet_count,
+        },
+        "retention_worst_loss_stage": {
+            "stage": str(worst_loss.get("stage") or ""),
+            "lost_here_count": int(worst_loss.get("lost_here_count", 0) or 0),
+            "wrong_section_rate": worst_loss.get("wrong_section_rate"),
+        }
+        if isinstance(worst_loss, dict)
+        else {},
+        "issues": issues,
+    }
+
+
+def _llm_input_inventory_summary(inventory: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(inventory, dict) or not inventory:
+        return {}
+    records = inventory.get("selected_detail_records")
+    record_rows = records if isinstance(records, list) else []
+    return {
+        "schema_version": inventory.get("schema_version"),
+        "eligible_scientific_detail_count": int(inventory.get("eligible_scientific_detail_count", 0) or 0),
+        "selected_prompt_detail_count": int(inventory.get("selected_prompt_detail_count", 0) or 0),
+        "omitted_candidate_count": int(inventory.get("omitted_candidate_count", 0) or 0),
+        "selected_quality": inventory.get("selected_quality") if isinstance(inventory.get("selected_quality"), dict) else {},
+        "focus_slot_counts": inventory.get("focus_slot_counts") if isinstance(inventory.get("focus_slot_counts"), dict) else {},
+        "quality_flags": [
+            str(flag)
+            for flag in inventory.get("quality_flags", [])
+            if str(flag).strip()
+        ][:16]
+        if isinstance(inventory.get("quality_flags"), list)
+        else [],
+        "selected_detail_refs": [
+            {
+                "prompt_index": int(row.get("prompt_index", 0) or 0),
+                "section_label": str(row.get("section_label") or ""),
+                "source_modality": str(row.get("source_modality") or ""),
+                "detail_types": [
+                    str(item)
+                    for item in row.get("detail_types", [])
+                    if str(item).strip()
+                ][:8]
+                if isinstance(row.get("detail_types"), list)
+                else [],
+                "evidence_refs": [
+                    str(ref)
+                    for ref in row.get("evidence_refs", [])
+                    if str(ref).strip()
+                ][:5]
+                if isinstance(row.get("evidence_refs"), list)
+                else [],
+                "statement_sha256": str(row.get("statement_sha256") or ""),
+                "source_excerpt_sha256": str(row.get("source_excerpt_sha256") or ""),
+            }
+            for row in record_rows
+            if isinstance(row, dict)
+        ][:12],
+    }
+
+
 def _stage_statuses(document_id: int, job_id: int | None = None) -> dict[str, Any]:
     artifacts = _artifact_dir(document_id)
     parse_diag = _load_json(artifacts / "parse_diagnostics.json")
@@ -190,6 +460,7 @@ def _stage_statuses(document_id: int, job_id: int | None = None) -> dict[str, An
         "document_id": document_id,
         "artifacts": str(artifacts),
         "artifact_state": {
+            "intermediate_stage_index": _file_state(artifacts / "intermediate_stage_index.json"),
             "source_manifest": _file_state(artifacts / "source_manifest.json"),
             "parse_diagnostics": _file_state(artifacts / "parse_diagnostics.json"),
             "parser_asset_diagnostics": _file_state(artifacts / "parser_asset_diagnostics.json"),
@@ -220,7 +491,52 @@ def _stage_statuses(document_id: int, job_id: int | None = None) -> dict[str, An
             "audit_present": bool(retention),
             "stage_metrics": stage_metrics,
         },
+        "artifact_organization": _artifact_organization_audit(document_id),
         "timeline_completed_steps": sorted(completed_steps),
+    }
+
+
+def _stage_index_summary(stage_index: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(stage_index, dict) or not stage_index:
+        return {}
+    stages = stage_index.get("stages")
+    stage_rows = stages if isinstance(stages, list) else []
+    transitions = stage_index.get("stage_transitions")
+    transition_rows = transitions if isinstance(transitions, list) else []
+    readiness = stage_index.get("llm_input_readiness")
+    return {
+        "schema_version": stage_index.get("schema_version"),
+        "stage_order": [
+            str(stage.get("stage_id"))
+            for stage in stage_rows
+            if isinstance(stage, dict) and str(stage.get("stage_id") or "").strip()
+        ],
+        "quality_flags": [
+            str(flag)
+            for flag in stage_index.get("quality_flags", [])
+            if str(flag).strip()
+        ][:16]
+        if isinstance(stage_index.get("quality_flags"), list)
+        else [],
+        "stage_transitions": [
+            {
+                "transition_id": str(row.get("transition_id") or ""),
+                "from_stage": str(row.get("from_stage") or ""),
+                "to_stage": str(row.get("to_stage") or ""),
+                "loss_count": int(row.get("loss_count", 0) or 0),
+                "loss_rate": row.get("loss_rate"),
+                "diagnostic_flags": [
+                    str(flag)
+                    for flag in row.get("diagnostic_flags", [])
+                    if str(flag).strip()
+                ][:8]
+                if isinstance(row.get("diagnostic_flags"), list)
+                else [],
+            }
+            for row in transition_rows
+            if isinstance(row, dict)
+        ][:12],
+        "llm_input_readiness": readiness if isinstance(readiness, dict) else {},
     }
 
 

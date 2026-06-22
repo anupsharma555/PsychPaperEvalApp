@@ -32,6 +32,8 @@ There are two valid modes:
    - For running or failed jobs, first use the helper's stage diagnostics mode before rerunning:
      `.venv/bin/python .codex/skills/papereval-run-qa/scripts/papereval_run_qa.py --job-id <id> --stage-diagnostics`
    - Treat stage diagnostics as a checkpoint map: parse/source health, text/table/figure/supplement availability, model calls/errors, fallback flags, report-assembly artifacts, and whether final diagnostics exist yet.
+   - Review `artifact_organization` in stage diagnostics when output quality is good but benchmark misses remain. It checks whether report payload stages are mixed, evidence packets are typed and source-backed, figure/supplement packets are consistently labeled, supplement availability is explicit, and retention losses point to weak LLM inputs.
+   - Review `intermediate_stage_index.json` when present. It is the canonical ordered map of source manifest, parsed chunks, modality packets, audited evidence packets, synthesis inputs, retention audit, final report, and runtime diagnostics, including `llm_input_readiness` blockers.
    - Do not rerun the whole paper until the failing or missing stage is identified and a targeted fix or configuration change has been made.
    - `run_timeline.json`: pipeline step timestamps and durations.
    - `analysis_diagnostics.json`: `analysis_timing`, `analysis_timeline`, `model_usage`, `openai_usage`, `coverage`, fallbacks, invalid-report flags.
@@ -180,6 +182,9 @@ Use the bundled helper for a deterministic local summary:
 ```
 
 The helper reads local artifacts only. Use `--stage-diagnostics` for running, failed, or partially completed jobs; it does not require a final report or `analysis_diagnostics.json`. `--run-checks` runs local compile and focused pytest checks.
+The stage diagnostics payload includes an `artifact_organization` audit. Use it to decide whether the intermediate data fed to synthesis is well structured enough before changing prompts or rerunning the whole paper.
+Future completed runs write `intermediate_stage_index.json` under the document artifacts directory. This additive index organizes existing artifacts into stable stages and flags whether the data sent toward local LLM synthesis is source-backed, typed, and sectioned enough for reliable synthesis.
+Newer reports also include `artifact_organization.llm_input_inventory`, a bounded diagnostic inventory of the scientific details selected for LLM-facing synthesis. It stores hashes, refs, sections, modalities, detail types, and quality counts rather than full duplicated prompt text, so use it to verify what synthesis could see before changing prompts or rerunning.
 
 Manual commands that are often useful:
 

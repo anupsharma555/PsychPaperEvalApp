@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -2609,6 +2610,20 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
             "supplement_availability_note": supplement_availability_note,
         }
     )
+    artifact_organization = _artifact_organization_summary(
+        text_packets=text_packets,
+        table_packets=table_packets,
+        figure_packets=figure_packets,
+        supp_packets=supp_packets,
+        evidence_packets=evidence_packets,
+        scientific_details=scientific_details,
+        prompt_scientific_details=prompt_scientific_details,
+        synthesis_evidence_plan=synthesis_evidence_plan,
+        supplement_availability_note=supplement_availability_note,
+        coverage=coverage,
+        detailed_sections=detailed_sections,
+    )
+    section_diagnostics["artifact_organization"] = artifact_organization
     strengths = _methods_strengths_from_compact(methods_compact, max_items=5)
     weaknesses = _methods_weaknesses_from_compact(methods_compact, max_items=5)
     if not weaknesses:
@@ -2680,6 +2695,8 @@ def _assemble_structured_dossier(payload: dict[str, Any]) -> dict[str, Any]:
         "evidence_packets": evidence_packets,
         "evidence_packet_coverage_version": 1 if evidence_packets else 0,
         "evidence_packet_coverage": evidence_packet_coverage,
+        "artifact_organization_version": 1,
+        "artifact_organization": artifact_organization,
         "executive_summary": executive_summary,
         "extractive_evidence_version": 1,
         "extractive_evidence": extractive_evidence,
@@ -3766,7 +3783,7 @@ def _scientific_details(
         detail = {
             "detail_types": detail_types[:5],
             "statement": statement,
-            "source_excerpt": _scientific_detail_source_excerpt(packet),
+            "source_excerpt": _scientific_detail_source_excerpt_or_statement(packet, statement),
             "evidence_refs": refs,
             "source_modality": _normalize_modality_name(str(packet.get("modality", ""))),
             "section_label": _packet_section_label(packet),
@@ -3804,6 +3821,11 @@ def _evidence_packet_audit(
             continue
         seen.add(key)
         detail_types = _scientific_detail_types(packet, statement)
+        source_excerpt = _scientific_detail_source_excerpt(packet)
+        quality_flags = _as_str_list(packet.get("quality_flags"))
+        if not source_excerpt:
+            source_excerpt = _summary_fragment(statement, max_chars=620)
+            quality_flags = _unique_strings(quality_flags + ["source_excerpt_from_statement"])
         audit_packets.append(
             {
                 "finding_id": str(packet.get("finding_id") or f"evidence-packet-{idx}").strip(),
@@ -3811,12 +3833,12 @@ def _evidence_packet_audit(
                 "section_label": section_label,
                 "anchor": str(packet.get("anchor") or (refs[0] if refs else "")).strip(),
                 "statement": _summary_fragment(statement, max_chars=420),
-                "source_excerpt": _scientific_detail_source_excerpt(packet),
+                "source_excerpt": source_excerpt,
                 "evidence_refs": refs,
                 "confidence": clamp_confidence(packet.get("confidence", 0.0)),
                 "category": str(packet.get("category") or "other"),
                 "detail_types": detail_types[:6],
-                "quality_flags": _as_str_list(packet.get("quality_flags")),
+                "quality_flags": quality_flags,
                 "result_evidence_type": _normalize_result_evidence_type(packet.get("result_evidence_type")),
                 "usable_for_gold_comparison": bool(
                     statement and refs and section_label in SECTION_LABELS and section_label != "unknown"
@@ -3917,6 +3939,207 @@ def _evidence_packet_coverage(
     }
 
 
+def _artifact_organization_summary(
+    *,
+    text_packets: list[dict[str, Any]],
+    table_packets: list[dict[str, Any]],
+    figure_packets: list[dict[str, Any]],
+    supp_packets: list[dict[str, Any]],
+    evidence_packets: list[dict[str, Any]],
+    scientific_details: list[dict[str, Any]],
+    prompt_scientific_details: list[dict[str, Any]],
+    synthesis_evidence_plan: dict[str, Any],
+    supplement_availability_note: str,
+    coverage: dict[str, Any],
+    detailed_sections: dict[str, Any],
+) -> dict[str, Any]:
+    packet_total = len(evidence_packets)
+    source_excerpt_present = sum(1 for packet in evidence_packets if str(packet.get("source_excerpt") or "").strip())
+    source_excerpt_from_statement = sum(
+        1
+        for packet in evidence_packets
+        if "source_excerpt_from_statement" in {str(flag) for flag in packet.get("quality_flags", [])}
+    )
+    typed_packet_count = sum(1 for packet in evidence_packets if packet.get("detail_types"))
+    usable_packet_count = sum(1 for packet in evidence_packets if bool(packet.get("usable_for_gold_comparison")))
+    unknown_section_count = sum(1 for packet in evidence_packets if str(packet.get("section_label") or "") == "unknown")
+    figure_packet_count = sum(1 for packet in evidence_packets if str(packet.get("modality") or "") == "figure")
+    usable_figure_packet_count = sum(
+        1
+        for packet in evidence_packets
+        if str(packet.get("modality") or "") == "figure" and bool(packet.get("usable_for_gold_comparison"))
+    )
+    supplement_packet_count = sum(1 for packet in evidence_packets if str(packet.get("modality") or "") == "supplement")
+    missing_supplement_refs = _coverage_refs(
+        coverage.get("supp_figures", {}) if isinstance(coverage, dict) else {},
+        "missing_refs",
+    ) + _coverage_refs(
+        coverage.get("supp_tables", {}) if isinstance(coverage, dict) else {},
+        "missing_refs",
+    )
+
+    output_section_counts: dict[str, int] = {}
+    for section in EXEC_REPORT_SECTION_ORDER:
+        block = detailed_sections.get(section, {}) if isinstance(detailed_sections, dict) else {}
+        items = block.get("items", []) if isinstance(block, dict) else []
+        output_section_counts[section] = len(items) if isinstance(items, list) else 0
+
+    quality_flags: list[str] = []
+    if packet_total and source_excerpt_present < packet_total:
+        quality_flags.append("missing_source_excerpts")
+    if source_excerpt_from_statement:
+        quality_flags.append("source_excerpt_reconstructed_from_statement")
+    if packet_total and typed_packet_count < packet_total:
+        quality_flags.append("untyped_evidence_packets")
+    if unknown_section_count:
+        quality_flags.append("unknown_section_evidence_packets")
+    if figure_packet_count and usable_figure_packet_count == 0:
+        quality_flags.append("figure_packets_not_gold_usable")
+    if supplement_packet_count and missing_supplement_refs:
+        quality_flags.append("supplement_reference_packets_without_extracted_supplements")
+    if missing_supplement_refs and not str(supplement_availability_note or "").strip():
+        quality_flags.append("missing_supplement_availability_note")
+    missing_focus_slots = synthesis_evidence_plan.get("critical_missing_focus_slots", [])
+    if isinstance(missing_focus_slots, list) and missing_focus_slots:
+        quality_flags.append("critical_synthesis_focus_slots_missing")
+
+    return {
+        "schema_version": 1,
+        "stage_order": [
+            "source_manifest",
+            "parsed_chunks",
+            "modality_packets",
+            "audited_evidence_packets",
+            "scientific_details",
+            "synthesis_evidence_plan",
+            "final_report_sections",
+        ],
+        "modality_packet_counts": {
+            "text": len(text_packets),
+            "table": len(table_packets),
+            "figure": len(figure_packets),
+            "supplement": len(supp_packets),
+        },
+        "audited_packet_quality": {
+            "total": packet_total,
+            "usable_for_gold_comparison": usable_packet_count,
+            "typed_packet_count": typed_packet_count,
+            "source_excerpt_present": source_excerpt_present,
+            "source_excerpt_direct": max(0, source_excerpt_present - source_excerpt_from_statement),
+            "source_excerpt_from_statement": source_excerpt_from_statement,
+            "unknown_section_count": unknown_section_count,
+            "figure_packet_count": figure_packet_count,
+            "usable_figure_packet_count": usable_figure_packet_count,
+            "supplement_packet_count": supplement_packet_count,
+        },
+        "synthesis_input_counts": {
+            "scientific_details": len(scientific_details),
+            "prompt_scientific_details": len(prompt_scientific_details),
+            "critical_missing_focus_slots": len(missing_focus_slots) if isinstance(missing_focus_slots, list) else 0,
+        },
+        "llm_input_inventory": _llm_input_inventory(
+            scientific_details=scientific_details,
+            prompt_scientific_details=prompt_scientific_details,
+            synthesis_evidence_plan=synthesis_evidence_plan,
+        ),
+        "supplement_source_consistency": {
+            "missing_supplement_ref_count": len(missing_supplement_refs),
+            "supplement_availability_note_present": bool(str(supplement_availability_note or "").strip()),
+        },
+        "final_report_section_counts": output_section_counts,
+        "quality_flags": _unique_strings(quality_flags, max_items=16),
+    }
+
+
+def _llm_input_inventory(
+    *,
+    scientific_details: list[dict[str, Any]],
+    prompt_scientific_details: list[dict[str, Any]],
+    synthesis_evidence_plan: dict[str, Any],
+) -> dict[str, Any]:
+    selected_records = [
+        _llm_input_detail_record(detail, index=idx)
+        for idx, detail in enumerate(prompt_scientific_details, start=1)
+        if isinstance(detail, dict)
+    ]
+    selected_records = [record for record in selected_records if record]
+    selected_missing_excerpt = sum(1 for record in selected_records if not record.get("source_excerpt_sha256"))
+    selected_untyped = sum(1 for record in selected_records if not record.get("detail_types"))
+    selected_unknown_section = sum(1 for record in selected_records if record.get("section_label") == "unknown")
+    quality_flags: list[str] = []
+    if selected_missing_excerpt:
+        quality_flags.append("selected_prompt_details_missing_source_excerpt")
+    if selected_untyped:
+        quality_flags.append("selected_prompt_details_missing_detail_types")
+    if selected_unknown_section:
+        quality_flags.append("selected_prompt_details_unknown_section")
+    critical_missing = synthesis_evidence_plan.get("critical_missing_focus_slots", [])
+    if isinstance(critical_missing, list) and critical_missing:
+        quality_flags.append("critical_focus_slots_missing")
+
+    return {
+        "schema_version": 1,
+        "eligible_scientific_detail_count": len(scientific_details),
+        "selected_prompt_detail_count": len(selected_records),
+        "omitted_candidate_count": max(0, len(scientific_details) - len(selected_records)),
+        "selected_detail_records": selected_records,
+        "selected_detail_counts": {
+            "by_section": _count_values(str(record.get("section_label") or "unknown") for record in selected_records),
+            "by_modality": _count_values(str(record.get("source_modality") or "unknown") for record in selected_records),
+            "by_detail_type": _count_values(
+                detail_type
+                for record in selected_records
+                for detail_type in record.get("detail_types", [])
+                if str(detail_type).strip()
+            ),
+        },
+        "selected_quality": {
+            "missing_source_excerpt": selected_missing_excerpt,
+            "missing_detail_types": selected_untyped,
+            "unknown_section": selected_unknown_section,
+        },
+        "focus_slot_counts": {
+            "total": len(synthesis_evidence_plan.get("focus_slots", []))
+            if isinstance(synthesis_evidence_plan.get("focus_slots"), list)
+            else 0,
+            "missing": int(synthesis_evidence_plan.get("missing_focus_slot_count", 0) or 0),
+            "critical_missing": len(critical_missing) if isinstance(critical_missing, list) else 0,
+        },
+        "quality_flags": _unique_strings(quality_flags, max_items=16),
+    }
+
+
+def _llm_input_detail_record(detail: dict[str, Any], *, index: int) -> dict[str, Any]:
+    statement = str(detail.get("statement") or "").strip()
+    source_excerpt = str(detail.get("source_excerpt") or "").strip()
+    refs = [str(ref).strip() for ref in detail.get("evidence_refs", []) if str(ref).strip()][:5]
+    detail_types = [
+        str(value).strip()
+        for value in detail.get("detail_types", [])
+        if str(value).strip()
+    ][:8] if isinstance(detail.get("detail_types"), list) else []
+    return {
+        "prompt_index": index,
+        "statement_sha256": _diagnostic_sha256(statement),
+        "statement_chars": len(statement),
+        "source_excerpt_sha256": _diagnostic_sha256(source_excerpt),
+        "source_excerpt_chars": len(source_excerpt),
+        "evidence_refs": refs,
+        "section_label": str(detail.get("section_label") or "unknown").strip().lower() or "unknown",
+        "source_modality": _normalize_modality_name(str(detail.get("source_modality") or "")),
+        "detail_types": detail_types,
+        "category": str(detail.get("category") or "").strip(),
+        "confidence": clamp_confidence(detail.get("confidence", 0.0)),
+    }
+
+
+def _diagnostic_sha256(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _evidence_packet_section_rank(value: str) -> int:
     order = {"introduction": 0, "methods": 1, "results": 2, "discussion": 3, "conclusion": 4}
     return order.get(str(value or "").strip().lower(), 99)
@@ -3940,8 +4163,16 @@ def _scientific_detail_source_excerpt(packet: dict[str, Any]) -> str:
     return ""
 
 
+def _scientific_detail_source_excerpt_or_statement(packet: dict[str, Any], statement: str) -> str:
+    return _scientific_detail_source_excerpt(packet) or _summary_fragment(statement, max_chars=620)
+
+
 def _scientific_detail_types(packet: dict[str, Any], statement: str) -> list[str]:
     found: list[str] = []
+    for value in packet.get("detail_types", []):
+        text = str(value or "").strip()
+        if text:
+            found.append(text)
     category_tokens = _category_tokens(str(packet.get("category", "")))
     for token in category_tokens:
         detail_type = SCIENTIFIC_CATEGORY_HINTS.get(token)
@@ -7622,48 +7853,6 @@ def _coverage_gaps(coverage: dict[str, Any]) -> list[str]:
     return gaps
 
 
-def _supplement_availability_note(
-    *,
-    coverage: dict[str, Any],
-    supp_packets: list[dict[str, Any]],
-    text_chunk_records: list[dict[str, Any]],
-) -> str:
-    supp_figures = coverage.get("supp_figures", {}) if isinstance(coverage, dict) else {}
-    supp_tables = coverage.get("supp_tables", {}) if isinstance(coverage, dict) else {}
-    expected = _coverage_int(supp_figures, "expected") + _coverage_int(supp_tables, "expected")
-    extracted = _coverage_int(supp_figures, "extracted") + _coverage_int(supp_tables, "extracted")
-    missing_refs = _coverage_refs(supp_figures, "missing_refs") + _coverage_refs(supp_tables, "missing_refs")
-    packet_count = len([packet for packet in supp_packets if isinstance(packet, dict)])
-
-    if _source_appears_supplement_only(text_chunk_records):
-        return (
-            "Supplement availability: the parsed source appears to be supplementary material rather than the "
-            "main article; synthesis should not infer unavailable main-article sections from this source alone."
-        )
-    if expected == 0 and extracted == 0 and packet_count == 0:
-        return (
-            "Supplement availability: no supplementary figures or tables were detected in the parsed source; "
-            "synthesis is based on main-article evidence only."
-        )
-    if expected > 0 and extracted == 0 and packet_count == 0:
-        refs = f" Missing refs: {', '.join(missing_refs[:6])}." if missing_refs else ""
-        return (
-            f"Supplement availability: supplementary material was cited ({expected} cited supplementary "
-            f"figure/table refs) but was not extracted or reviewed.{refs}"
-        )
-    if extracted < expected:
-        refs = f" Missing refs: {', '.join(missing_refs[:6])}." if missing_refs else ""
-        return (
-            f"Supplement availability: supplementary evidence was only partially available "
-            f"({extracted}/{expected} cited supplementary figure/table refs extracted; "
-            f"{packet_count} supplement evidence packets).{refs}"
-        )
-    return (
-        f"Supplement availability: supplementary evidence was available to synthesis "
-        f"({extracted} cited supplementary figure/table refs extracted; {packet_count} supplement evidence packets)."
-    )
-
-
 def _coverage_refs(coverage_block: Any, key: str) -> list[str]:
     if not isinstance(coverage_block, dict):
         return []
@@ -7702,37 +7891,46 @@ def _supplement_availability_note(
     supp_packets: list[dict[str, Any]],
     text_chunk_records: list[dict[str, Any]],
 ) -> str:
+    supp_figures = coverage.get("supp_figures", {}) if isinstance(coverage, dict) else {}
+    supp_tables = coverage.get("supp_tables", {}) if isinstance(coverage, dict) else {}
+    expected = _coverage_int(supp_figures, "expected") + _coverage_int(supp_tables, "expected")
+    extracted = _coverage_int(supp_figures, "extracted") + _coverage_int(supp_tables, "extracted")
+    missing_refs = _coverage_refs(supp_figures, "missing_refs") + _coverage_refs(supp_tables, "missing_refs")
+    packet_count = len([packet for packet in supp_packets if isinstance(packet, dict)])
+
     if _source_appears_supplement_only(text_chunk_records):
         return (
-            "The available source appears to be supplementary material rather than the main article; "
-            "interpret this report as supplement-only unless the primary paper is also loaded."
+            "Supplement availability: the parsed source appears to be supplementary material rather than the "
+            "main article; synthesis should not infer unavailable main-article sections from this source alone."
         )
-    if supp_packets:
-        return ""
-
-    missing_refs: list[str] = []
-    expected_total = 0
-    for key in ("supp_figures", "supp_tables"):
-        block = coverage.get(key, {}) if isinstance(coverage, dict) else {}
-        if not isinstance(block, dict):
-            continue
-        try:
-            expected_total += int(block.get("expected", 0) or 0)
-        except Exception:
-            expected_total += 0
-        missing = block.get("missing_refs", []) or []
-        if isinstance(missing, list):
-            missing_refs.extend(str(item) for item in missing if str(item).strip())
-
-    if missing_refs:
+    if expected > 0 and extracted == 0:
+        refs = f" Missing refs: {', '.join(missing_refs[:12])}." if missing_refs else ""
         return (
-            "Supplement availability: supplementary material was not extracted or reviewed completely; "
-            "missing supplementary refs: "
-            + ", ".join(missing_refs[:12])
+            f"Supplement availability: supplementary material was cited ({expected} cited supplementary "
+            f"figure/table refs) but was not extracted or reviewed.{refs}"
         )
-    if expected_total > 0:
-        return "Supplement availability: supplementary material was referenced but not extracted or reviewed."
-    return ""
+    if extracted < expected:
+        refs = f" Missing refs: {', '.join(missing_refs[:12])}." if missing_refs else ""
+        return (
+            f"Supplement availability: supplementary evidence was only partially available "
+            f"({extracted}/{expected} cited supplementary figure/table refs extracted; "
+            f"{packet_count} supplement evidence packets).{refs}"
+        )
+    if expected == 0 and extracted == 0 and packet_count > 0:
+        return (
+            "Supplement availability: no supplementary files were extracted, but main-article text contained "
+            f"{packet_count} supplement-referencing evidence packets; treat these as references to unavailable "
+            "supplementary material rather than reviewed supplements."
+        )
+    if expected == 0 and extracted == 0:
+        return (
+            "Supplement availability: no supplementary figures or tables were detected in the parsed source; "
+            "synthesis is based on main-article evidence only."
+        )
+    return (
+        f"Supplement availability: supplementary evidence was available to synthesis "
+        f"({extracted} cited supplementary figure/table refs extracted; {packet_count} supplement evidence packets)."
+    )
 
 
 def _supplement_note_is_limitation(note: str) -> bool:

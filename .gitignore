@@ -36,10 +36,12 @@ secrets/*
 data/
 
 # Generated benchmark/comparison outputs
+output/
 test/*.pdf
 test/bench_review/
 test/bench_runs*/
 test/active_benchmark/
+test/artifact_organization_review/
 test/multi_paper_benchmark/
 test/upstream_ab/
 test/text/*_app_extraction_*.md
@@ -75,3 +77,7 @@ dist/
 
 # Vendored third-party tool checkout (keep out of primary repo)
 tools/pdffigures2/
+
+# Local planning/backlog notes
+docs/*BACKLOG*.md
+docs/*backlog*.md

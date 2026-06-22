@@ -130,6 +130,8 @@ def add_source_excerpts_to_packets(
         for anchor, excerpt in anchor_excerpts.items()
         if str(anchor or "").strip()
     }
+    valid_anchors = set(clean_map)
+    anchor_maps = _build_anchor_resolution_maps(valid_anchors)
     for item in raw_items:
         if not isinstance(item, dict):
             continue
@@ -138,12 +140,27 @@ def add_source_excerpts_to_packets(
             refs = ensure_str_list(updated.get("evidence_refs") or updated.get("evidence"))
             anchor_candidates = [str(updated.get("anchor") or "").strip()] + [str(ref or "").strip() for ref in refs]
             for anchor in anchor_candidates:
-                excerpt = clean_map.get(anchor)
+                excerpt = _source_excerpt_for_anchor(anchor, clean_map, valid_anchors, anchor_maps)
                 if excerpt:
                     updated["source_excerpt"] = excerpt
                     break
         out.append(updated)
     return out
+
+
+def _source_excerpt_for_anchor(
+    anchor: str,
+    clean_map: dict[str, str],
+    valid_anchors: set[str],
+    anchor_maps: dict[str, Any],
+) -> str:
+    token = str(anchor or "").strip()
+    if not token:
+        return ""
+    if token in clean_map:
+        return clean_map[token]
+    resolved = _resolve_anchor_ref(token, valid_anchors, anchor_maps)
+    return clean_map.get(resolved, "")
 
 
 def truncate_list(items: list[Any], max_items: int) -> list[Any]:
@@ -225,6 +242,149 @@ def _num(value: str) -> int | None:
 NUMERIC_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*([a-zA-Z%]+)?")
 PVALUE_RE = re.compile(r"\bp\s*[=<]\s*(0?\.\d+|\d+)", re.IGNORECASE)
 EFFECT_RE = re.compile(r"\b(?:cohen'?s?\s*d|hedges'?g|or|rr)\s*[=:]?\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
+DETAIL_TYPE_SET = {
+    "medication_or_therapeutic",
+    "dose_schedule",
+    "intervention_or_exposure",
+    "outcome_measure",
+    "adverse_event",
+    "model_system",
+    "assay_readout",
+    "statistical_result",
+    "data_source_or_design",
+    "rationale_or_objective",
+    "interpretation_or_implication",
+    "limitation_or_caution",
+    "conclusion_or_takeaway",
+    "tool_or_algorithm",
+    "cross_modal_result",
+    "secondary_finding",
+    "sensitivity_analysis",
+}
+DETAIL_CATEGORY_HINTS = {
+    "medication": "medication_or_therapeutic",
+    "therapeutic": "medication_or_therapeutic",
+    "dose": "dose_schedule",
+    "intervention": "intervention_or_exposure",
+    "exposure": "intervention_or_exposure",
+    "clinical": "outcome_measure",
+    "outcome": "outcome_measure",
+    "assay": "assay_readout",
+    "model_system": "model_system",
+    "model": "model_system",
+    "stats": "statistical_result",
+    "statistical": "statistical_result",
+    "table_quality": "statistical_result",
+    "data_consistency": "statistical_result",
+    "objective": "rationale_or_objective",
+    "rationale": "rationale_or_objective",
+    "interpretation": "interpretation_or_implication",
+    "implications": "interpretation_or_implication",
+    "limitations": "limitation_or_caution",
+    "limitation": "limitation_or_caution",
+    "conclusion": "conclusion_or_takeaway",
+    "tool": "tool_or_algorithm",
+    "algorithm": "tool_or_algorithm",
+}
+DETAIL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "medication_or_therapeutic",
+        re.compile(
+            r"\b(medication|drug|therapeutic|pharmacologic|antidepressant|antipsychotic|"
+            r"ketamine|ssri|snri|lithium|clozapine|risperidone|olanzapine|quetiapine)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dose_schedule",
+        re.compile(
+            r"\b(\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|ml|iu|units?)\b|dose|dosage|route|"
+            r"daily|weekly|administered|duration|weeks?|months?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "intervention_or_exposure",
+        re.compile(
+            r"\b(intervention|treatment|therapy|exposure|comparator|control arm|placebo|"
+            r"stimulation|training|randomi[sz]ed|trial arm)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "outcome_measure",
+        re.compile(
+            r"\b(outcome|endpoint|measure|scale|questionnaire|instrument|score|timepoint|"
+            r"follow[- ]up|symptom)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("adverse_event", re.compile(r"\b(adverse event|side effect|safety|tolerability|dropout)\b", re.IGNORECASE)),
+    (
+        "model_system",
+        re.compile(
+            r"\b(cell lines?|organoid|mouse|mice|rat|animal model|in vivo|in vitro|specimens?|"
+            r"culture|construct|plasmid|vector|transfection|mutagenesis)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "assay_readout",
+        re.compile(
+            r"\b(assay|readout|qpcr|pcr|western blot|elisa|rna[- ]?seq|sequencing|"
+            r"flow cytometry|microscopy|biomarker|protein|gene expression|validation)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "statistical_result",
+        re.compile(
+            r"\b(p\s*[<=>]\s*0?\.\d+|confidence interval|ci\b|odds ratio|hazard ratio|"
+            r"effect size|regression|bayesian|subgroup|adjusted|covariate|significant|"
+            r"increased|decreased|higher|lower)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "data_source_or_design",
+        re.compile(
+            r"\b(cohort|registry|claims database|survey|dataset|data source|cross[- ]sectional|"
+            r"case[- ]control|longitudinal|systematic review|meta[- ]analysis|eligibility criteria|"
+            r"search strategy|risk of bias)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "rationale_or_objective",
+        re.compile(r"\b(objective|aim|hypothesis|rationale|research question|knowledge gap)\b", re.IGNORECASE),
+    ),
+    (
+        "interpretation_or_implication",
+        re.compile(
+            r"\b(interpret(?:ation|ed)?|implication|may reflect|suggests?|supports?|"
+            r"consistent with|clinical relevance|mechanism)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "limitation_or_caution",
+        re.compile(
+            r"\b(limitation|caution|generalizability|underpowered|bias|confounding|"
+            r"cannot establish|future work|future research|replication needed)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "conclusion_or_takeaway",
+        re.compile(r"\b(conclusion|in conclusion|overall|taken together|these findings|these results)\b", re.IGNORECASE),
+    ),
+    (
+        "tool_or_algorithm",
+        re.compile(r"\b(algorithm|software|pipeline|classifier|benchmark|validation dataset|model performance)\b", re.IGNORECASE),
+    ),
+    ("secondary_finding", re.compile(r"\b(secondary|exploratory|post hoc|additional analysis)\b", re.IGNORECASE)),
+    ("sensitivity_analysis", re.compile(r"\b(sensitivity analysis|robustness check|sensitivity model)\b", re.IGNORECASE)),
+]
 SECTION_LABEL_SET = {"introduction", "methods", "results", "discussion", "conclusion", "unknown"}
 SECTION_SOURCE_SET = {
     "meta",
@@ -430,6 +590,17 @@ def normalize_evidence_packets(
             continue
         seen.add(dedupe_key)
 
+        category = str(raw.get("category") or default_category)
+        section_label, section_source_hint = _infer_section_label_with_source(
+            raw.get("section_label"),
+            anchor=anchor,
+            category=category,
+            statement=statement,
+        )
+        section_source = _normalize_section_source(raw.get("section_source"))
+        if section_source == "fallback" and section_label != "unknown" and section_source_hint:
+            section_source = section_source_hint
+
         packet = ModalityEvidence(
             finding_id=str(raw.get("finding_id") or f"{prefix}-{idx}"),
             modality=modality if modality != "supp" else "supplement",
@@ -451,9 +622,15 @@ def normalize_evidence_packets(
             p_value=p_value,
             effect_size=effect_size,
             category=str(raw.get("category") or default_category),
-            section_label=_normalize_section_label(raw.get("section_label")),
+            detail_types=infer_scientific_detail_types(
+                raw.get("detail_types"),
+                category=category,
+                statement=statement,
+                modality=modality if modality != "supp" else "supplement",
+            ),
+            section_label=section_label,
             section_confidence=clamp_confidence(raw.get("section_confidence", raw.get("confidence", 0.0))),
-            section_source=_normalize_section_source(raw.get("section_source")),
+            section_source=section_source,
             result_evidence_type=_normalize_result_evidence_type(raw.get("result_evidence_type")),
         )
         packets.append(packet)
@@ -465,6 +642,130 @@ def _normalize_section_label(value: Any) -> str:
     if token in SECTION_LABEL_SET:
         return token
     return "unknown"
+
+
+def _infer_section_label_with_source(
+    value: Any,
+    *,
+    anchor: str,
+    category: str,
+    statement: str,
+) -> tuple[str, str]:
+    label = _normalize_section_label(value)
+    if label != "unknown":
+        return label, ""
+
+    anchor_label = _section_label_from_anchor(anchor)
+    if anchor_label != "unknown":
+        return anchor_label, "anchor"
+
+    category_label = _section_label_from_category(category)
+    if category_label != "unknown":
+        return category_label, "category"
+
+    statement_label = _section_label_from_statement_prefix(statement)
+    if statement_label != "unknown":
+        return statement_label, "statement_prefix"
+
+    return "unknown", ""
+
+
+def _section_label_from_anchor(anchor: str) -> str:
+    _idx, title = _section_anchor_parts(anchor)
+    return _section_label_from_tokens(_category_tokens(title))
+
+
+def _section_label_from_category(category: str) -> str:
+    tokens = _category_tokens(category)
+    if "stats" in tokens or "statistical" in tokens:
+        return "results"
+    if "limitation" in tokens or "limitations" in tokens:
+        return "discussion"
+    if "objective" in tokens or "rationale" in tokens:
+        return "introduction"
+    return _section_label_from_tokens(tokens)
+
+
+def _section_label_from_statement_prefix(statement: str) -> str:
+    text = str(statement or "").strip().lower()
+    match = re.match(r"^(introduction|background|methods?|results?|discussion|conclusions?)\s*[:\-]", text)
+    if not match:
+        return "unknown"
+    return _section_label_from_tokens([match.group(1)])
+
+
+def _section_label_from_tokens(tokens: list[str]) -> str:
+    token_set = {str(token or "").strip().lower() for token in tokens if str(token or "").strip()}
+    if token_set & {"introduction", "intro", "background"}:
+        return "introduction"
+    if token_set & {"method", "methods", "methodology", "design"}:
+        return "methods"
+    if token_set & {"result", "results", "finding", "findings"}:
+        return "results"
+    if token_set & {"discussion", "interpretation"}:
+        return "discussion"
+    if token_set & {"conclusion", "conclusions", "concluding"}:
+        return "conclusion"
+    return "unknown"
+
+
+def infer_scientific_detail_types(
+    raw_detail_types: Any,
+    *,
+    category: str,
+    statement: str,
+    modality: str,
+) -> list[str]:
+    found: list[str] = []
+    for value in ensure_str_list(raw_detail_types):
+        normalized = _normalize_detail_type(value)
+        if normalized:
+            found.append(normalized)
+    for token in _category_tokens(category):
+        detail_type = DETAIL_CATEGORY_HINTS.get(token)
+        if detail_type:
+            found.append(detail_type)
+    text = str(statement or "")
+    for detail_type, pattern in DETAIL_PATTERNS:
+        if pattern.search(text):
+            found.append(detail_type)
+    if str(modality or "").strip().lower() in {"table", "figure", "supplement"}:
+        if any(
+            detail_type in found
+            for detail_type in (
+                "statistical_result",
+                "outcome_measure",
+                "assay_readout",
+                "secondary_finding",
+                "sensitivity_analysis",
+            )
+        ):
+            found.append("cross_modal_result")
+    return _unique_detail_types(found)
+
+
+def _normalize_detail_type(value: Any) -> str:
+    token = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return token if token in DETAIL_TYPE_SET else ""
+
+
+def _category_tokens(value: str) -> list[str]:
+    text = str(value or "").strip().lower()
+    if not text:
+        return []
+    return [token for token in re.split(r"[^a-z0-9]+", text) if token]
+
+
+def _unique_detail_types(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = _normalize_detail_type(value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out[:8]
 
 
 def _normalize_section_source(value: Any) -> str:
