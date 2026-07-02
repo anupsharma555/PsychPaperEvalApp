@@ -24,11 +24,22 @@ jobs:
 
       - name: Run Emerge
         run: |
+          set +e
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -v "$GITHUB_WORKSPACE:/tmp/emerge" \
             achtelik/emerge:2.0.0 \
             /tmp/emerge/.github/emerge.yml
+          emerge_status=$?
+          set -e
+
+          if [ "$emerge_status" -ne 0 ] && [ ! -f images/emerge/html/emerge.html ]; then
+            exit "$emerge_status"
+          fi
+
+          if [ "$emerge_status" -ne 0 ]; then
+            echo "::warning::Emerge exited with status $emerge_status after generating output. Continuing because images/emerge/html/emerge.html exists."
+          fi
 
       - name: Verify Emerge output
         run: test -f images/emerge/html/emerge.html
