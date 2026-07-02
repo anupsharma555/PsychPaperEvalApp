@@ -1,0 +1,27 @@
+name: Repo Visualizer
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "50 9 1 * *"
+
+permissions:
+  contents: write
+
+jobs:
+  update-diagram:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create output directory
+        run: mkdir -p images
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@0.9.1
+        with:
+          output_file: images/diagram.svg
+          excluded_paths: node_modules,bower_components,dist,out,build,eject,.next,.netlify,.yarn,.vscode,.git,.github,images,coverage,htmlcov,playwright-report,test-results,.playwright-home,.pytest_cache,.mypy_cache,.ruff_cache,.tox,.venv,venv,__pycache__,artifacts,outputs,tmp,temp,package-lock.json,yarn.lock,pnpm-lock.yaml
+          excluded_globs: "**/*.png;**/*.jpg;**/*.jpeg;**/*.gif;**/*.webp;**/*.ico;**/*.sqlite;**/*.sqlite3;**/*.db;**/*.db-*"
+          commit_message: "Update repo diagram [skip ci]"
